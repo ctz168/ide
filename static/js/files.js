@@ -1,0 +1,804 @@
+/**
+ * FileManager - File tree and file operations for PhoneIDE
+ * Works with Flask backend on port 1239
+ */
+const FileManager = (() => {
+    'use strict';
+
+    // ── State ──────────────────────────────────────────────────────
+    let currentPath = '/workspace';
+    let currentFilePath = null;
+    let currentFileName = null;
+    let fileCache = {};           // path -> { content, modified }
+    let longPressTimer = null;
+    let navigationHistory = [];
+    let historyIndex = -1;
+    let isNavigating = false;
+
+    // ── Helpers ────────────────────────────────────────────────────
+
+    /**
+     * Normalize a path — strip trailing slash unless root
+     */
+    function normalizePath(p) {
+        p = p || '/workspace';
+        if (p !== '/' && p.endsWith('/')) p = p.slice(0, -1);
+        return p;
+    }
+
+    /**
+     * Get parent directory of a path
+     */
+    function parentPath(p) {
+        if (p === '/' || p === '/workspace') return p;
+        const idx = p.lastIndexOf('/');
+        return idx <= 0 ? '/' : p.substring(0, idx);
+    }
+
+    /**
+     * Join path segments
+     */
+    function joinPath(base, name) {
+        if (base === '/') return '/' + name;
+        return base + '/' + name;
+    }
+
+    /**
+     * Get file extension
+     */
+    function getExtension(filename) {
+        const i = filename.lastIndexOf('.');
+        return i > 0 ? filename.substring(i + 1).toLowerCase() : '';
+    }
+
+    /**
+     * Check if a path looks like a directory
+     */
+    function isDirectory(item) {
+        return item.type === 'directory' || item.isdir || item.is_dir;
+    }
+
+    /**
+     * Push a path onto navigation history (only when user navigates, not back/forward)
+     */
+    function pushHistory(path) {
+        if (isNavigating) return;
+        // Trim forward history when a new navigation happens
+        navigationHistory = navigationHistory.slice(0, historyIndex + 1);
+        navigationHistory.push(path);
+        historyIndex = navigationHistory.length - 1;
+    }
+
+    /**
+     * Navigate back
+     */
+    function navigateBack() {
+        if (historyIndex > 0) {
+            historyIndex--;
+            isNavigating = true;
+            loadFileList(navigationHistory[historyIndex]);
+            isNavigating = false;
+        }
+    }
+
+    /**
+     * Navigate forward
+     */
+    function navigateForward() {
+        if (historyIndex < navigationHistory.length - 1) {
+            historyIndex++;
+            isNavigating = true;
+            loadFileList(navigationHistory[historyIndex]);
+            isNavigating = false;
+        }
+    }
+
+    // ── API Calls ──────────────────────────────────────────────────
+
+    /**
+     * Fetch the file list for a given directory path
+     */
+    async function loadFileList(path) {
+        // currentPath like '/workspace' = root (server needs no path param)
+        // currentPath like '/workspace/myrepo' = subdirectory (server needs 'myrepo')
+        let param = '';
+        if (path && path !== '/workspace' && path !== '/') {
+            const rel = path.replace(/^\/workspace\/?/, '');
+            if (rel) param = `?path=${encodeURIComponent(rel)}`;
+        }
+        path = normalizePath(path);
+        currentPath = path;
+        updateBreadcrumb(path);
+
+        try {
+            const resp = await fetch(`/api/files/list${param}`);
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to list files: ${resp.statusText}`);
+            }
+            const data = await resp.json();
+            renderFileTree(data.items || data || [], path);
+            // Update currentPath to match server's base if we loaded root
+            if (data.base && !param) {
+                currentPath = '';
+                updateBreadcrumb('');
+            }
+            return data;
+        } catch (err) {
+            showToast(`Error loading files: ${err.message}`, 'error');
+            return [];
+        }
+    }
+
+    /**
+     * Open a file and set its content in the editor
+     */
+    async function openFile(path) {
+        try {
+            // Convert absolute path to relative path for server API
+            const relPath = path.replace(/^\/workspace\/?/, '');
+            const resp = await fetch(`/api/files/read?path=${encodeURIComponent(relPath)}`);
+            if (!resp.ok) throw new Error(`Failed to open file: ${resp.statusText}`);
+            const data = await resp.json();
+            const content = data.content !== undefined ? data.content : '';
+
+            currentFilePath = path;
+            currentFileName = path.split('/').pop();
+            fileCache[path] = { content, modified: false };
+
+            // Set content in editor
+            if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+                window.EditorManager.setContent(content, path);
+            }
+
+            // Update active state in tree
+            document.querySelectorAll('.file-item.active').forEach(el => el.classList.remove('active'));
+            const activeEl = document.querySelector(`.file-item[data-path="${CSS.escape(path)}"]`);
+            if (activeEl) activeEl.classList.add('active');
+
+            showToast(`Opened ${currentFileName}`, 'info');
+        } catch (err) {
+            showToast(`Error opening file: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Save the current file (overwrite)
+     */
+    async function saveFile() {
+        // If no file is open, treat as Save As
+        if (!currentFilePath) {
+            return saveAs();
+        }
+
+        let content = '';
+        if (window.EditorManager && typeof window.EditorManager.getContent === 'function') {
+            content = window.EditorManager.getContent();
+        } else {
+            showToast('Editor not available', 'error');
+            return;
+        }
+
+        try {
+            const relPath = currentFilePath ? currentFilePath.replace(/^\/workspace\/?/, '') : '';
+            const resp = await fetch('/api/files/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: relPath,
+                    content: content
+                })
+            });
+            if (!resp.ok) throw new Error(`Failed to save file: ${resp.statusText}`);
+            const data = await resp.json();
+
+            fileCache[currentFilePath] = { content, modified: false };
+            showToast(`Saved ${currentFileName}`, 'success');
+            return data;
+        } catch (err) {
+            showToast(`Error saving file: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Save file to a new path (Save As)
+     */
+    async function saveAs(newPath) {
+        if (!newPath) {
+            // Show dialog
+            newPath = await promptDialog('Save As', 'Enter new file path:', currentFilePath || '/workspace/newfile.txt');
+            if (!newPath) return; // cancelled
+        }
+
+        newPath = normalizePath(newPath);
+        const relPath = newPath.replace(/^\/workspace\/?/, '');
+
+        let content = '';
+        if (window.EditorManager && typeof window.EditorManager.getContent === 'function') {
+            content = window.EditorManager.getContent();
+        } else {
+            showToast('Editor not available', 'error');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/files/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: relPath,
+                    content: content
+                })
+            });
+            if (!resp.ok) throw new Error(`Failed to save file: ${resp.statusText}`);
+            const data = await resp.json();
+
+            currentFilePath = newPath;
+            currentFileName = newPath.split('/').pop();
+            fileCache[newPath] = { content, modified: false };
+
+            if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+                window.EditorManager.setContent(content, newPath);
+            }
+
+            showToast(`Saved as ${currentFileName}`, 'success');
+            await loadFileList(currentPath);
+            return data;
+        } catch (err) {
+            showToast(`Error saving file: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Create a new file via dialog
+     */
+    async function createFile() {
+        const name = await promptDialog('New File', 'Enter file name:', 'untitled.txt');
+        if (!name) return;
+
+        const path = joinPath(currentPath, name);
+        const relPath = path.replace(/^\/workspace\/?/, '');
+
+        try {
+            const resp = await fetch('/api/files/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: relPath, type: 'file' })
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to create file: ${resp.statusText}`);
+            }
+
+            showToast(`Created ${name}`, 'success');
+            await loadFileList(currentPath);
+
+            // Open the newly created file
+            await openFile(path);
+        } catch (err) {
+            showToast(`Error creating file: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Create a new folder via dialog
+     */
+    async function createFolder() {
+        const name = await promptDialog('New Folder', 'Enter folder name:', 'new_folder');
+        if (!name) return;
+
+        const path = joinPath(currentPath, name);
+        const relPath = path.replace(/^\/workspace\/?/, '');
+
+        try {
+            const resp = await fetch('/api/files/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: relPath, type: 'directory' })
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to create folder: ${resp.statusText}`);
+            }
+
+            showToast(`Created folder ${name}`, 'success');
+            await loadFileList(currentPath);
+        } catch (err) {
+            showToast(`Error creating folder: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Delete a file or folder with confirmation
+     */
+    async function deleteFile(path) {
+        const name = path.split('/').pop();
+        const confirmed = await confirmDialog(`Delete "${name}"?`, 'This action cannot be undone.');
+        if (!confirmed) return;
+
+        const relPath = path.replace(/^\/workspace\/?/, '');
+        try {
+            const resp = await fetch('/api/files/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: relPath })
+            });
+            if (!resp.ok) throw new Error(`Failed to delete: ${resp.statusText}`);
+
+            // Clear from cache
+            delete fileCache[path];
+
+            // If we deleted the currently open file, clear state
+            if (currentFilePath === path) {
+                currentFilePath = null;
+                currentFileName = null;
+                if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+                    window.EditorManager.setContent('', '');
+                }
+            }
+
+            showToast(`Deleted ${name}`, 'success');
+            await loadFileList(currentPath);
+        } catch (err) {
+            showToast(`Error deleting: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Rename a file or folder
+     */
+    async function renameFile(oldPath, newName) {
+        if (!oldPath) {
+            if (!currentFilePath) {
+                showToast('No file selected to rename', 'warning');
+                return;
+            }
+            oldPath = currentFilePath;
+        }
+
+        if (!newName) {
+            const oldName = oldPath.split('/').pop();
+            newName = await promptDialog('Rename', 'Enter new name:', oldName);
+            if (!newName) return;
+        }
+
+        const oldRel = oldPath.replace(/^\/workspace\/?/, '');
+        const parentDir = parentPath(oldPath);
+        const newRel = parentDir !== '/workspace' && parentDir !== '/'
+            ? parentDir.replace(/^\/workspace\/?/, '') + '/' + newName
+            : newName;
+
+        try {
+            const resp = await fetch('/api/files/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ old_path: oldRel, new_path: newRel })
+            });
+            if (!resp.ok) throw new Error(`Failed to rename: ${resp.statusText}`);
+
+            const data = await resp.json();
+
+            // Update current file reference if this was the open file
+            if (currentFilePath === oldPath) {
+                currentFilePath = data.new_path || joinPath(parentPath(oldPath), newName);
+                currentFileName = newName;
+            }
+
+            // Update cache key
+            if (fileCache[oldPath]) {
+                const newPath = data.new_path || joinPath(parentPath(oldPath), newName);
+                fileCache[newPath] = fileCache[oldPath];
+                delete fileCache[oldPath];
+            }
+
+            showToast(`Renamed to ${newName}`, 'success');
+            await loadFileList(currentPath);
+        } catch (err) {
+            showToast(`Error renaming: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Open / navigate into a directory
+     */
+    async function openFolder(path) {
+        path = normalizePath(path);
+        pushHistory(path);
+        await loadFileList(path);
+    }
+
+    // ── File Icon Mapping ─────────────────────────────────────────
+    function getFileIcon(name) {
+        const ext = name.split('.').pop().toLowerCase();
+        const iconMap = {
+            'py': '🐍', 'js': '📜', 'ts': '📘', 'jsx': '📜', 'tsx': '📘',
+            'html': '🌐', 'htm': '🌐',
+            'css': '🎨', 'scss': '🎨', 'sass': '🎨', 'less': '🎨',
+            'json': '📋', 'jsonc': '📋',
+            'md': '📝', 'txt': '📄', 'log': '📄',
+            'sh': '⚡', 'bash': '⚡', 'zsh': '⚡', 'fish': '⚡',
+            'yaml': '⚙️', 'yml': '⚙️', 'toml': '⚙️', 'cfg': '⚙️', 'ini': '⚙️', 'conf': '⚙️', 'env': '🔒',
+            'c': '🔧', 'cpp': '🔧', 'h': '🔧', 'hpp': '🔧', 'cc': '🔧',
+            'java': '☕', 'kt': '🟣', 'swift': '🍎',
+            'rs': '🦀', 'go': '🐹', 'rb': '💎', 'php': '🐘',
+            'sql': '🗃️', 'xml': '📰', 'svg': '🖼️',
+            'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'webp': '🖼️', 'ico': '🖼️',
+            'gitignore': '🚫', 'dockerfile': '🐳', 'makefile': '🔨',
+            'lock': '🔒', 'pyc': '🔒',
+        };
+        // Special filenames
+        if (name === 'Dockerfile') return '🐳';
+        if (name === 'Makefile') return '🔨';
+        if (name === 'README.md') return '📖';
+        if (name === 'requirements.txt') return '📦';
+        if (name.startsWith('.git')) return '🚫';
+        return iconMap[ext] || '📄';
+    }
+
+    // ── Rendering ──────────────────────────────────────────────────
+
+    /**
+     * Render the file tree from API items
+     * @param {Array} items - array of { name, path, type, icon, size }
+     * @param {string} basePath - the directory these items belong to
+     */
+    function renderFileTree(items, basePath) {
+        const treeEl = document.getElementById('file-tree');
+        if (!treeEl) return;
+
+        // Sort: directories first, then files, alphabetical within each group
+        items.sort((a, b) => {
+            const aDir = isDirectory(a);
+            const bDir = isDirectory(b);
+            if (aDir !== bDir) return aDir ? -1 : 1;
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        // Build HTML
+        let html = '';
+
+        // Add "go up" button if not at workspace root
+        if (currentPath !== '/workspace' && currentPath !== '/') {
+            html += `
+                <div class="file-item directory" data-path="${escapeAttr(parentPath(currentPath))}" data-action="go-up">
+                    <span class="arrow">&#9664;</span>
+                    <span class="icon">📁</span>
+                    <span class="name">..</span>
+                    <span class="size"></span>
+                </div>`;
+        }
+
+        for (const item of items) {
+            const dir = isDirectory(item);
+            const icon = dir ? '📁' : getFileIcon(item.name || '');
+            const size = dir ? '' : formatSize(item.size || 0);
+            const isActive = item.path === currentFilePath ? ' active' : '';
+            const escapedPath = escapeAttr(item.path);
+            const escapedName = escapeHTML(item.name || '');
+
+            html += `
+                <div class="file-item${dir ? ' directory' : ''}${isActive}" 
+                     data-path="${escapedPath}" 
+                     data-name="${escapedName}"
+                     data-type="${dir ? 'directory' : 'file'}">
+                    ${dir ? `<span class="arrow">&#9654;</span>` : '<span class="arrow-spacer"></span>'}
+                    <span class="icon">${icon}</span>
+                    <span class="name">${escapedName}</span>
+                    <span class="size">${size}</span>
+                </div>`;
+        }
+
+        if (items.length === 0) {
+            html = '<div class="file-tree-empty">Empty folder</div>';
+        }
+
+        treeEl.innerHTML = html;
+        bindFileItemEvents(treeEl);
+    }
+
+    /**
+     * Update the breadcrumb display
+     */
+    function updateBreadcrumb(path) {
+        const wsEl = document.getElementById('workspace-path');
+        if (!wsEl) return;
+
+        const parts = path.split('/').filter(Boolean);
+        let html = '';
+
+        // Build breadcrumb segments
+        let accumulated = '';
+        for (let i = 0; i < parts.length; i++) {
+            accumulated += '/' + parts[i];
+            const segPath = accumulated;
+            const isLast = i === parts.length - 1;
+
+            html += `<span class="breadcrumb-segment${isLast ? ' current' : ''}" data-path="${escapeAttr(segPath)}">${escapeHTML(parts[i])}</span>`;
+            if (!isLast) {
+                html += '<span class="breadcrumb-separator"> / </span>';
+            }
+        }
+
+        wsEl.innerHTML = html;
+
+        // Bind breadcrumb clicks
+        wsEl.querySelectorAll('.breadcrumb-segment:not(.current)').forEach(seg => {
+            seg.addEventListener('click', () => {
+                openFolder(seg.dataset.path);
+            });
+        });
+    }
+
+    /**
+     * Bind click and long-press events to rendered file items
+     */
+    function bindFileItemEvents(container) {
+        container.querySelectorAll('.file-item').forEach(item => {
+            // ── Click handler ──
+            item.addEventListener('click', (e) => {
+                // Ignore if a context menu is open
+                if (document.querySelector('.context-menu.visible')) return;
+
+                const path = item.dataset.path;
+                const type = item.dataset.type;
+                const action = item.dataset.action;
+
+                if (action === 'go-up') {
+                    openFolder(parentPath(currentPath));
+                    return;
+                }
+
+                if (type === 'directory') {
+                    // Toggle expand/collapse arrow
+                    const arrow = item.querySelector('.arrow');
+                    const isOpen = arrow && arrow.classList.contains('open');
+
+                    if (isOpen) {
+                        // Collapse — reload parent
+                        arrow.classList.remove('open');
+                    } else {
+                        if (arrow) arrow.classList.add('open');
+                    }
+
+                    openFolder(path);
+                } else {
+                    openFile(path);
+                }
+            });
+
+            // ── Long-press (context menu) handler ──
+            item.addEventListener('touchstart', (e) => {
+                longPressTimer = setTimeout(() => {
+                    e.preventDefault();
+                    const path = item.dataset.path;
+                    const name = item.dataset.name;
+                    const type = item.dataset.type;
+                    showContextMenu(e.touches[0].clientX, e.touches[0].clientY, path, name, type);
+                }, 500);
+            }, { passive: false });
+
+            item.addEventListener('touchend', () => {
+                clearTimeout(longPressTimer);
+            });
+
+            item.addEventListener('touchmove', () => {
+                clearTimeout(longPressTimer);
+            });
+
+            // Desktop right-click
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                const path = item.dataset.path;
+                const name = item.dataset.name;
+                const type = item.dataset.type;
+                showContextMenu(e.clientX, e.clientY, path, name, type);
+            });
+        });
+    }
+
+    // ── Context Menu ───────────────────────────────────────────────
+
+    /**
+     * Show a context menu for a file/folder
+     */
+    function showContextMenu(x, y, path, name, type) {
+        // Remove any existing context menu
+        removeContextMenu();
+
+        const menu = document.createElement('div');
+        menu.className = 'context-menu visible';
+        menu.style.left = `${Math.min(x, window.innerWidth - 200)}px`;
+        menu.style.top = `${Math.min(y, window.innerHeight - 250)}px`;
+
+        const items = [];
+
+        if (type === 'file') {
+            items.push({ label: 'Open', action: () => openFile(path) });
+            items.push({ label: 'Rename', action: () => renameFile(path) });
+            items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
+        } else {
+            items.push({ label: 'Open Folder', action: () => openFolder(path) });
+            items.push({ label: 'Rename', action: () => renameFile(path) });
+            items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
+        }
+
+        items.push({ label: 'New File', action: () => createFileIn(path) });
+        items.push({ label: 'New Folder', action: () => createFolderIn(path) });
+
+        for (const item of items) {
+            const btn = document.createElement('button');
+            btn.className = `context-menu-item${item.cls ? ' ' + item.cls : ''}`;
+            btn.textContent = item.label;
+            btn.addEventListener('click', () => {
+                item.action();
+                removeContextMenu();
+            });
+            menu.appendChild(btn);
+        }
+
+        document.body.appendChild(menu);
+
+        // Dismiss on tap/click outside
+        setTimeout(() => {
+            document.addEventListener('click', dismissContextMenu, { once: true });
+            document.addEventListener('touchstart', dismissContextMenu, { once: true });
+        }, 10);
+    }
+
+    function dismissContextMenu(e) {
+        if (!e.target.closest('.context-menu')) {
+            removeContextMenu();
+        }
+    }
+
+    function removeContextMenu() {
+        document.querySelectorAll('.context-menu').forEach(m => m.remove());
+    }
+
+    /**
+     * Create file in a specific directory (for context menu)
+     */
+    async function createFileIn(dirPath) {
+        const name = await promptDialog('New File', 'Enter file name:', 'untitled.txt');
+        if (!name) return;
+        const path = joinPath(dirPath, name);
+        const relPath = path.replace(/^\/workspace\/?/, '');
+
+        try {
+            const resp = await fetch('/api/files/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: relPath, type: 'file' })
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to create file: ${resp.statusText}`);
+            }
+            showToast(`Created ${name}`, 'success');
+            await loadFileList(currentPath);
+        } catch (err) {
+            showToast(`Error creating file: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Create folder in a specific directory (for context menu)
+     */
+    async function createFolderIn(dirPath) {
+        const name = await promptDialog('New Folder', 'Enter folder name:', 'new_folder');
+        if (!name) return;
+        const path = joinPath(dirPath, name);
+        const relPath = path.replace(/^\/workspace\/?/, '');
+
+        try {
+            const resp = await fetch('/api/files/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: relPath, type: 'directory' })
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to create folder: ${resp.statusText}`);
+            }
+            showToast(`Created folder ${name}`, 'success');
+            await loadFileList(currentPath);
+        } catch (err) {
+            showToast(`Error creating folder: ${err.message}`, 'error');
+        }
+    }
+
+    // ── Utility ────────────────────────────────────────────────────
+
+    function formatSize(bytes) {
+        if (bytes === 0) return '0 B';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+        return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    /**
+     * Simple prompt dialog (replaces window.prompt for mobile)
+     * Returns a promise that resolves to the entered value or null if cancelled.
+     */
+    function promptDialog(title, label, defaultValue) {
+        return new Promise((resolve) => {
+            // If a custom dialog system exists, use it
+            if (window.showPromptDialog) {
+                window.showPromptDialog(title, label, defaultValue, resolve);
+                return;
+            }
+            // Fallback to native prompt
+            const result = window.prompt(`${title}\n${label}`, defaultValue);
+            resolve(result);
+        });
+    }
+
+    /**
+     * Simple confirm dialog (replaces window.confirm for mobile)
+     * Returns a promise that resolves to true/false.
+     */
+    function confirmDialog(title, message) {
+        return new Promise((resolve) => {
+            if (window.showConfirmDialog) {
+                window.showConfirmDialog(title, message, resolve);
+                return;
+            }
+            const result = window.confirm(`${title}\n${message}`);
+            resolve(result);
+        });
+    }
+
+    // ── Initialize ─────────────────────────────────────────────────
+
+    function init() {
+        // Initial load
+        loadFileList(currentPath);
+        pushHistory(currentPath);
+    }
+
+    // Auto-init when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    // ── Public API ─────────────────────────────────────────────────
+    return {
+        loadFileList,
+        openFile,
+        saveFile,
+        saveAs,
+        createFile,
+        createFolder,
+        deleteFile,
+        renameFile,
+        openFolder,
+        renderFileTree,
+        navigateBack,
+        navigateForward,
+        refresh: () => loadFileList(currentPath),
+
+        // Getters
+        get currentPath() { return currentPath; },
+        get currentFilePath() { return currentFilePath; },
+        get currentFileName() { return currentFileName; },
+        set currentFilePath(v) { currentFilePath = v; },
+
+        // Utilities exposed for other modules
+        normalizePath,
+        parentPath,
+        joinPath,
+        pushHistory
+    };
+})();

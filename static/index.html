@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    <title>PhoneIDE</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <!-- CodeMirror 5 CSS (bundled locally) -->
+    <link rel="stylesheet" href="/vendor/codemirror/codemirror.min.css">
+    <link rel="stylesheet" href="/vendor/codemirror/theme/dracula.min.css">
+    <link rel="stylesheet" href="/vendor/codemirror/addon/hint/show-hint.min.css">
+    <link rel="stylesheet" href="/vendor/codemirror/addon/dialog/dialog.min.css">
+    <link rel="stylesheet" href="/vendor/codemirror/addon/fold/foldgutter.min.css">
+</head>
+<body>
+    <!-- Top Toolbar -->
+    <header id="toolbar">
+        <button id="btn-menu" title="文件">☰</button>
+        <span id="file-name">未打开文件</span>
+        <div id="toolbar-actions">
+            <button id="btn-undo" title="撤销">↩</button>
+            <button id="btn-redo" title="重做">↪</button>
+            <button id="btn-save" title="保存">💾</button>
+            <button id="btn-run" title="运行">▶</button>
+            <button id="btn-stop" title="停止" style="display:none">⏹</button>
+            <button id="btn-server-logs" title="服务器日志">📋</button>
+            <button id="btn-check-updates" title="检查更新">⬆</button>
+            <button id="btn-chat" title="AI助手">🤖</button>
+        </div>
+    </header>
+
+    <!-- Left Sidebar -->
+    <div id="sidebar-left" class="sidebar left">
+        <div id="sidebar-left-header">
+            <h3>PhoneIDE</h3>
+            <button id="close-left">✕</button>
+        </div>
+        <!-- Tabs -->
+        <div id="left-tabs">
+            <button class="tab active" data-tab="files">📂 文件</button>
+            <button class="tab" data-tab="git">🔀 Git</button>
+            <button class="tab" data-tab="search">🔍 搜索</button>
+            <button class="tab" data-tab="debug">🐛 调试</button>
+        </div>
+        <!-- Tab Panels -->
+        <div id="left-panels">
+            <!-- Files Panel -->
+            <div id="panel-files" class="panel active">
+                <div class="panel-toolbar">
+                    <button id="btn-open-folder" title="打开文件夹">📂</button>
+                    <button id="btn-new-file" title="新建文件">➕ 文件</button>
+                    <button id="btn-new-folder" title="新建文件夹">➕ 文件夹</button>
+                    <input type="text" id="workspace-path" placeholder="工作区路径" readonly>
+                </div>
+                <div id="file-tree"></div>
+            </div>
+            <!-- Git Panel -->
+            <div id="panel-git" class="panel">
+                <div class="panel-toolbar">
+                    <button id="git-clone" title="克隆">📥 克隆</button>
+                    <button id="git-pull" title="拉取">⬇ 拉取</button>
+                    <button id="git-push" title="推送">⬆ 推送</button>
+                    <button id="git-sync" title="同步">🔄</button>
+                    <button id="git-refresh" title="刷新">🔃</button>
+                    <button id="git-token-btn" title="配置 Token">🔑</button>
+                </div>
+                <div id="git-branch-info">
+                    <span id="git-current-branch">-</span>
+                    <span id="git-status-count"></span>
+                </div>
+                <div id="git-changes-list"></div>
+                <div id="git-commit-area">
+                    <textarea id="git-commit-msg" placeholder="提交信息..." rows="2"></textarea>
+                    <button id="git-commit-btn">提交</button>
+                </div>
+                <div id="git-log-list"></div>
+            </div>
+            <!-- Search Panel -->
+            <div id="panel-search" class="panel">
+                <div class="search-box">
+                    <input type="text" id="search-input" placeholder="搜索...">
+                    <button id="search-btn">搜索</button>
+                </div>
+                <div class="search-options">
+                    <label><input type="checkbox" id="search-case"> 区分大小写</label>
+                    <label><input type="checkbox" id="search-regex"> 正则</label>
+                    <input type="text" id="search-file-pattern" placeholder="文件过滤 (*.py)">
+                </div>
+                <div id="search-results"></div>
+            </div>
+            <!-- Debug Panel -->
+            <div id="panel-debug" class="panel">
+                <div class="panel-toolbar">
+                    <select id="compiler-select">
+                        <option value="python3">Python 3</option>
+                    </select>
+                    <button id="venv-btn" title="虚拟环境">🔧</button>
+                </div>
+                <div id="debug-config">
+                    <div id="venv-info">
+                        <span>虚拟环境: </span><span id="current-venv">未设置</span>
+                    </div>
+                    <button id="create-venv-btn">创建虚拟环境</button>
+                    <button id="install-pkg-btn">安装包</button>
+                    <button id="import-req-btn">📥 导入</button>
+                </div>
+                <div id="debug-breakpoints"></div>
+                <div id="venv-packages" style="display:none;">
+                    <div style="padding:4px 12px 8px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);">已安装包:</div>
+                    <div id="venv-pkg-list" style="flex:1;overflow-y:auto;padding:0 4px;font-size:11px;font-family:var(--font-mono);"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Editor Area -->
+    <main id="main-area">
+        <div id="editor-toolbar">
+            <input type="text" id="editor-search" placeholder="在文件中查找..." style="display:none">
+            <input type="text" id="editor-replace" placeholder="替换..." style="display:none">
+            <button id="editor-search-btn" title="查找">🔍</button>
+            <button id="editor-goto-line-btn" title="跳转到行">⤒</button>
+            <button id="btn-md-toggle" title="切换预览" style="display:none">📖</button>
+        </div>
+        <div id="editor-container">
+            <div id="markdown-preview" class="hidden" style="display:none;"></div>
+            <textarea id="code-editor"></textarea>
+        </div>
+        <!-- Bottom Panel (Debug Tools) -->
+        <div id="bottom-panel" class="hidden">
+            <div id="bottom-panel-header">
+                <div id="bottom-tabs">
+                    <button class="btab active" data-btab="output">🖥 输出</button>
+                    <button class="btab" data-btab="console">📋 控制台</button>
+                    <button class="btab" data-btab="network">🌐 网络</button>
+                    <button class="btab" data-btab="errors">⚠ 错误</button>
+                    <button class="btab" data-btab="http">📡 HTTP</button>
+                    <button class="btab" data-btab="procs">⚙ 进程</button>
+                </div>
+                <button id="bottom-panel-close">✕</button>
+                <button id="bottom-panel-clear">🗑</button>
+            </div>
+            <div id="bottom-panels">
+                <!-- Output (original terminal output) -->
+                <div id="bpanel-output" class="bpanel active">
+                    <div id="output-content"></div>
+                    <div id="shell-input-bar">
+                        <span id="shell-prompt">$</span>
+                        <input type="text" id="shell-input" placeholder="输入命令并按回车执行..." autocomplete="off" spellcheck="false">
+                    </div>
+                    <div id="terminal-extra-keys">
+                        <button class="tkey" data-key="esc" title="ESC">ESC</button>
+                        <button class="tkey" data-key="ctrl" title="CTRL">CTRL</button>
+                        <button class="tkey" data-key="tab" title="TAB">TAB</button>
+                        <button class="tkey" data-key="up" title="Up">&#x2191;</button>
+                        <button class="tkey" data-key="down" title="Down">&#x2193;</button>
+                        <button class="tkey" data-key="left" title="Left">&#x2190;</button>
+                        <button class="tkey" data-key="right" title="Right">&#x2192;</button>
+                        <button class="tkey" data-key="home" title="Home">HOME</button>
+                        <button class="tkey" data-key="end" title="End">END</button>
+                        <button class="tkey" data-key="pgup" title="PgUp">PGUP</button>
+                        <button class="tkey" data-key="pgdn" title="PgDn">PGDN</button>
+                        <button class="tkey" data-key="pipe" title="Pipe">|</button>
+                        <button class="tkey" data-key="slash" title="/">/</button>
+                        <button class="tkey" data-key="tilde" title="~">~</button>
+                        <button class="tkey" data-key="minus" title="-">-</button>
+                        <button class="tkey" data-key="enter" title="Enter">ENTER</button>
+                    </div>
+                </div>
+                <!-- Console -->
+                <div id="bpanel-console" class="bpanel">
+                    <div id="debug-console-content"></div>
+                </div>
+                <!-- Network -->
+                <div id="bpanel-network" class="bpanel">
+                    <div id="debug-network-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;"></div>
+                </div>
+                <!-- Errors -->
+                <div id="bpanel-errors" class="bpanel">
+                    <div id="debug-errors-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;"></div>
+                </div>
+                <!-- HTTP Client -->
+                <div id="bpanel-http" class="bpanel">
+                    <div id="http-client-panel">
+                        <div class="http-row">
+                            <select id="http-method">
+                                <option value="GET">GET</option>
+                                <option value="POST">POST</option>
+                                <option value="PUT">PUT</option>
+                                <option value="PATCH">PATCH</option>
+                                <option value="DELETE">DELETE</option>
+                            </select>
+                            <input type="text" id="http-url" placeholder="http://localhost:1239/api/...">
+                            <button id="http-send">发送</button>
+                        </div>
+                        <div class="http-row">
+                            <textarea id="http-body" placeholder='请求体 (JSON)' rows="3" style="width:100%;"></textarea>
+                        </div>
+                        <div id="http-status"></div>
+                        <div id="http-response"></div>
+                    </div>
+                </div>
+                <!-- Process Manager -->
+                <div id="bpanel-procs" class="bpanel">
+                    <div id="process-manager">
+                        <table>
+                            <thead><tr><th>ID</th><th>状态</th><th>运行时间</th><th>操作</th></tr></thead>
+                            <tbody id="process-list"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div id="bottom-panel-resize"></div>
+        </div>
+    </main>
+
+    <!-- Right Sidebar (Chat) -->
+    <div id="sidebar-right" class="sidebar right">
+        <div id="sidebar-right-header">
+            <h3>🤖 AI 助手</h3>
+            <div>
+                <button id="chat-settings-btn" title="LLM设置">⚙️</button>
+                <button id="chat-clear" title="清空记录">🗑</button>
+                <button id="close-right">✕</button>
+            </div>
+        </div>
+        <div id="chat-messages"></div>
+        <div id="chat-input-area">
+            <div id="chat-execute-status"></div>
+            <textarea id="chat-input" placeholder="输入消息... (Enter发送)" rows="2"></textarea>
+            <button id="chat-send">发送</button>
+        </div>
+    </div>
+
+    <!-- Server Management Bar: removed (Android native bar provides this) -->
+
+    <!-- Log Viewer Panel -->
+    <div id="log-viewer-panel" class="hidden">
+        <div id="log-viewer-header">
+            <span>📋 Server Logs</span>
+            <div>
+                <button id="log-viewer-refresh" title="Refresh">🔃</button>
+                <button id="log-viewer-clear" title="Clear">🗑</button>
+                <button id="log-viewer-close" title="Close">✕</button>
+            </div>
+        </div>
+        <div id="log-viewer-content"></div>
+    </div>
+
+    <!-- Update Dialog -->
+    <div id="update-dialog-overlay" class="hidden">
+        <div id="update-dialog">
+            <div id="update-dialog-title">⬆ Updates</div>
+            <div id="update-dialog-body">
+                <div id="update-current-version"></div>
+                <div id="update-status"></div>
+                <div id="update-info" class="hidden"></div>
+                <div id="update-token-section">
+                    <label for="update-github-token">GitHub Token (仅私有仓库需要):</label>
+                    <div style="display:flex;gap:6px;margin-top:4px;">
+                        <input type="password" id="update-github-token" placeholder="公开仓库无需填写" style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;">
+                        <button id="update-save-token" class="btn-secondary" style="padding:6px 12px;font-size:12px;white-space:nowrap;">保存</button>
+                    </div>
+                </div>
+            </div>
+            <div id="update-dialog-actions">
+                <button id="update-check-btn" class="btn-secondary">检查更新</button>
+                <button id="update-diagnose-btn" class="btn-secondary">🔧 诊断</button>
+                <button id="update-apply-btn" class="btn-primary hidden">立即更新</button>
+                <button id="update-close-btn" class="btn-secondary">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overlays/Modals -->
+    <div id="overlay" class="hidden"></div>
+
+    <!-- Dialogs -->
+    <div id="dialog-overlay" class="hidden">
+        <div id="dialog">
+            <div id="dialog-title"></div>
+            <div id="dialog-body"></div>
+            <div id="dialog-buttons"></div>
+        </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="hidden"></div>
+
+    <!-- Server Management Styles (web mgmt bar removed, Android native bar used instead) -->
+    <style>
+        /* Log Viewer Panel */
+        #log-viewer-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 250px;
+            background: var(--bg-surface, #1a1a2e);
+            border-top: 1px solid var(--border, #2a2a4a);
+            display: flex;
+            flex-direction: column;
+            z-index: 399;
+            box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+            animation: slideUp 0.2s ease;
+        }
+        @keyframes slideUp {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+        }
+        #log-viewer-panel.hidden {
+            display: none;
+        }
+        #log-viewer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary, #f8f8f2);
+            border-bottom: 1px solid var(--border, #2a2a4a);
+            flex-shrink: 0;
+        }
+        #log-viewer-header div {
+            display: flex;
+            gap: 4px;
+        }
+        #log-viewer-header button {
+            width: 26px;
+            height: 26px;
+            border: none;
+            background: none;
+            color: var(--text-secondary, #aaa);
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: var(--radius-sm, 4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #log-viewer-header button:hover {
+            background: var(--bg-hover, #2a2a4a);
+            color: var(--text-primary, #f8f8f2);
+        }
+        #log-viewer-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 12px;
+            font-family: var(--font-mono, monospace);
+            font-size: 11px;
+            color: var(--text-secondary, #aaa);
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.5;
+            -webkit-overflow-scrolling: touch;
+        }
+        #log-viewer-content:empty::before {
+            content: 'No logs yet...';
+            color: var(--text-muted, #666);
+            font-style: italic;
+        }
+
+        /* Update Dialog */
+        #update-dialog-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            animation: fadeIn 0.2s ease;
+        }
+        #update-dialog-overlay.hidden {
+            display: none;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        #update-dialog {
+            background: var(--bg-surface, #1a1a2e);
+            border: 1px solid var(--border, #2a2a4a);
+            border-radius: var(--radius, 8px);
+            width: 100%;
+            max-width: 360px;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+        #update-dialog-title {
+            padding: 14px 16px 8px;
+            font-weight: 600;
+            font-size: 15px;
+            color: var(--text-primary, #f8f8f2);
+        }
+        #update-dialog-body {
+            padding: 8px 16px 14px;
+            min-height: 60px;
+        }
+        #update-current-version {
+            font-size: 12px;
+            color: var(--text-muted, #666);
+            font-family: var(--font-mono, monospace);
+        }
+        #update-status {
+            font-size: 13px;
+            color: var(--text-secondary, #aaa);
+            margin-top: 8px;
+        }
+        #update-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: var(--radius-sm, 4px);
+            font-size: 12px;
+            font-family: var(--font-mono, monospace);
+            color: var(--text-secondary, #aaa);
+            line-height: 1.5;
+        }
+        #update-info.hidden {
+            display: none;
+        }
+        #update-token-section {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        #update-token-section label {
+            font-size: 12px;
+            color: var(--text-muted, #888);
+        }
+        .update-progress-bar {
+            height: 4px;
+            background: var(--bg-hover, #2a2a4a);
+            border-radius: 2px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .update-progress-fill {
+            height: 100%;
+            background: var(--accent, #bd93f9);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        #update-dialog-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            padding: 8px 16px 14px;
+        }
+        #update-dialog-actions button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: var(--radius-sm, 4px);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.15s, transform 0.1s;
+        }
+        #update-dialog-actions button:active {
+            transform: scale(0.95);
+        }
+        .btn-primary {
+            background: var(--accent, #bd93f9);
+            color: var(--bg-primary, #1e1e2e);
+        }
+        .btn-primary:hover {
+            filter: brightness(1.1);
+        }
+        .btn-secondary {
+            background: var(--bg-hover, #2a2a4a);
+            color: var(--text-secondary, #aaa);
+        }
+        .btn-secondary:hover {
+            background: var(--bg-active, #3a3a5a);
+            color: var(--text-primary, #f8f8f2);
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+
+    <!-- CodeMirror 5 JS (bundled locally) -->
+    <script src="/vendor/codemirror/codemirror.min.js"></script>
+    <script src="/vendor/codemirror/mode/python/python.min.js"></script>
+    <script src="/vendor/codemirror/mode/javascript/javascript.min.js"></script>
+    <script src="/vendor/codemirror/mode/htmlmixed/htmlmixed.min.js"></script>
+    <script src="/vendor/codemirror/mode/css/css.min.js"></script>
+    <script src="/vendor/codemirror/mode/xml/xml.min.js"></script>
+    <script src="/vendor/codemirror/mode/markdown/markdown.min.js"></script>
+    <script src="/vendor/codemirror/mode/shell/shell.min.js"></script>
+    <script src="/vendor/codemirror/mode/clike/clike.min.js"></script>
+    <script src="/vendor/codemirror/mode/rust/rust.min.js"></script>
+    <script src="/vendor/codemirror/mode/go/go.min.js"></script>
+    <script src="/vendor/codemirror/mode/sql/sql.min.js"></script>
+    <script src="/vendor/codemirror/addon/edit/closebrackets.min.js"></script>
+    <script src="/vendor/codemirror/addon/edit/matchbrackets.min.js"></script>
+    <script src="/vendor/codemirror/addon/edit/closetag.min.js"></script>
+    <script src="/vendor/codemirror/addon/selection/active-line.min.js"></script>
+    <script src="/vendor/codemirror/addon/search/search.min.js"></script>
+    <script src="/vendor/codemirror/addon/search/searchcursor.min.js"></script>
+    <script src="/vendor/codemirror/addon/search/jump-to-line.min.js"></script>
+    <script src="/vendor/codemirror/addon/dialog/dialog.min.js"></script>
+    <script src="/vendor/codemirror/addon/hint/show-hint.min.js"></script>
+    <script src="/vendor/codemirror/addon/hint/anyword-hint.min.js"></script>
+    <script src="/vendor/codemirror/addon/fold/foldcode.min.js"></script>
+    <script src="/vendor/codemirror/addon/fold/foldgutter.min.js"></script>
+    <script src="/vendor/codemirror/addon/fold/indent-fold.min.js"></script>
+    <script src="/vendor/codemirror/addon/fold/comment-fold.min.js"></script>
+    <script src="/vendor/codemirror/addon/comment/comment.min.js"></script>
+    <script src="/vendor/codemirror/addon/display/placeholder.min.js"></script>
+    <!-- Markdown Renderer (bundled locally) -->
+    <script src="/vendor/marked/marked.min.js"></script>
+
+    <!-- App Scripts -->
+    <script src="/js/files.js"></script>
+    <script src="/js/git.js"></script>
+    <script src="/js/search.js"></script>
+    <script src="/js/terminal.js"></script>
+    <script src="/js/chat.js"></script>
+    <script src="/js/editor.js"></script>
+    <script src="/js/debug.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
