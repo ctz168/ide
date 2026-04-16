@@ -15,6 +15,7 @@ from flask_cors import CORS
 from utils import SERVER_DIR, WORKSPACE, PORT, HOST, CONFIG_DIR, CHAT_HISTORY_FILE
 
 app = Flask(__name__, static_folder=os.path.join(SERVER_DIR, 'static'), static_url_path=None)
+app.url_map.strict_slashes = False
 CORS(app)
 
 # Ensure all API errors return JSON, not HTML
