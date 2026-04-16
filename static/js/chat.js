@@ -902,16 +902,28 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const signal = currentAbortController.signal;
 
         try {
-            const resp = await fetch('/api/chat/send/stream', {
+            const reqUrl = '/api/chat/send/stream';
+            const reqBody = { message: actualMessage, conv_id: currentConvId };
+
+            const resp = await fetch(reqUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: actualMessage, conv_id: currentConvId }),
+                body: JSON.stringify(reqBody),
                 signal
             });
 
             if (!resp.ok) {
                 const errBody = await resp.text().catch(() => '');
-                throw new Error(errBody || `Server error: ${resp.status} ${resp.statusText}`);
+                // Build detailed error info
+                const detail = [
+                    `Status: ${resp.status} ${resp.statusText}`,
+                    `Type: ${resp.type}`,
+                    `Redirected: ${resp.redirected}`,
+                    `URL: ${resp.url}`,
+                    `Request: POST ${reqUrl}`,
+                ].join('\n');
+                const fullMsg = errBody ? `${detail}\n\n${errBody}` : detail;
+                throw new Error(fullMsg);
             }
 
             // Read the SSE stream
