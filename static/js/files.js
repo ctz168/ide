@@ -412,6 +412,8 @@ const FileManager = (() => {
         path = normalizePath(path);
         pushHistory(path);
         await loadFileList(path);
+        // Notify other modules (e.g. GitManager) that the directory changed
+        document.dispatchEvent(new CustomEvent('filemanager:navigate', { detail: { path } }));
     }
 
     // ── File Icon Mapping ─────────────────────────────────────────

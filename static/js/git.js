@@ -910,10 +910,12 @@ const GitManager = (() => {
 
     function wireButtons() {
         const buttonMap = {
+            'git-init-btn': () => gitInit(),
             'git-clone': () => clone(),
             'git-pull': () => pull(),
             'git-push': () => push(),
             'git-sync': () => sync(),
+            'git-diff-all-btn': () => diff(),
             'git-refresh': () => refresh(),
             'git-token-btn': () => showTokenConfig(),
             'git-commit-btn': () => commit(),
@@ -996,6 +998,13 @@ const GitManager = (() => {
             }, 500);
         }
     }
+
+    // Listen for directory changes from FileManager
+    document.addEventListener('filemanager:navigate', () => {
+        // Debounce: don't refresh on every navigation event
+        clearTimeout(window._gitNavTimer);
+        window._gitNavTimer = setTimeout(() => refresh(), 200);
+    });
 
     // Auto-init when DOM is ready
     if (document.readyState === 'loading') {
