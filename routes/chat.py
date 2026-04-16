@@ -1152,6 +1152,10 @@ def _call_llm_stream_raw(messages, llm_config):
     headers = headers or {'Content-Type': 'application/json'}
 
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+    print(f'[LLM] Calling: {url}')
+    print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}')
+    print(f'[LLM] Headers: {dict((k, v[:20]+"..." if len(v)>20 else v) for k,v in headers.items())}')
+    print(f'[LLM] Messages count: {len(api_messages)}')
 
     with urllib.request.urlopen(req, timeout=180) as resp:
         buffer = ''
@@ -1410,6 +1414,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
                 current_tool_call_idx = {}
                 delta_content = ''
                 delta_tool_calls = []
+                # Pre-compute LLM URL for error reporting
+                try:
+                    current_llm_url, _ = _get_llm_endpoint(llm_config, llm_config.get('model', 'gpt-4o-mini'))
+                except:
+                    current_llm_url = '(unknown)'
 
                 for delta in _call_llm_stream_raw(context, llm_config):
                     # Handle text content
@@ -1459,19 +1468,21 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
 
             except urllib.error.HTTPError as e:
                 body = e.read().decode() if hasattr(e, 'read') else ''
+                err_detail = f'URL: {current_llm_url}\nHTTP {e.code}: {body[:300]}'
                 if retry < MAX_ITERATION_RETRIES - 1:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'LLM API error (retry {retry + 1}): {e.code} {body[:200]}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'LLM API error (retry {retry + 1}): {err_detail[:200]}'})}\n\n"
                     time.sleep(1 * (retry + 1))
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'content': f'LLM API error after {MAX_ITERATION_RETRIES} retries ({e.code}): {body[:500]}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'LLM API error after {MAX_ITERATION_RETRIES} retries:\n{err_detail}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
             except Exception as e:
+                err_detail = f'URL: {current_llm_url}\nError: {str(e)}'
                 if retry < MAX_ITERATION_RETRIES - 1:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Retry {retry + 1}: {str(e)[:200]}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Retry {retry + 1}: {err_detail[:200]}'})}\n\n"
                     time.sleep(1 * (retry + 1))
                 else:
-                    yield f"data: {json.dumps({'type': 'error', 'content': f'LLM request failed: {str(e)}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'LLM request failed after {MAX_ITERATION_RETRIES} retries:\n{err_detail}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
 
@@ -1635,6 +1646,8 @@ def send_chat_stream():
         return jsonify({'error': 'Message required'}), 400
 
     llm_config = get_active_llm_config()
+    print(f'[CHAT] send_chat_stream called')
+    print(f'[CHAT] LLM config: name={llm_config.get("name")}, api_type={llm_config.get("api_type")}, model={llm_config.get("model")}, api_base={llm_config.get("api_base")}, api_key={"***"+llm_config.get("api_key","")[-6:] if llm_config.get("api_key") else "EMPTY"}')
 
     def generate():
         try:
