@@ -150,6 +150,14 @@ fi
 
 ok "flask + flask-cors"
 
+# ── Git clone with retry + mirror fallback ───────────
+CLONE_URLS=(
+    "https://github.com/ctz168/ide.git"
+    "https://ghfast.top/https://github.com/ctz168/ide.git"
+    "https://gh-proxy.com/https://github.com/ctz168/ide.git"
+    "https://mirror.ghproxy.com/https://github.com/ctz168/ide.git"
+)
+
 # ── Step 3: Clone & launch ────────────────────────────
 echo ""
 echo -e "${BLUE}[3/3]${NC} Setting up PhoneIDE IDE..."
@@ -158,18 +166,51 @@ echo -e "${BLUE}[3/3]${NC} Setting up PhoneIDE IDE..."
 if [ -d "$INSTALL_DIR/.git" ]; then
     info "Updating existing installation..."
     cd "$INSTALL_DIR"
-    git pull --ff-only 2>/dev/null || warn "git pull failed — using existing files"
+    git pull --ff-only 2>&1 || warn "git pull failed — using existing files"
 else
     if [ -d "$INSTALL_DIR" ]; then
         warn "Directory $INSTALL_DIR exists but is not a git repo"
         INSTALL_DIR="${INSTALL_DIR}-$(date +%s)"
         warn "Using $INSTALL_DIR instead"
     fi
-    info "Cloning ctz168/ide..."
-    git clone --depth 1 https://github.com/ctz168/ide.git "$INSTALL_DIR" 2>/dev/null || {
-        fail "git clone failed — check your network"
+
+    # Try cloning with retries and mirror fallback
+    CLONE_OK=false
+    for url in "${CLONE_URLS[@]}"; do
+        for attempt in 1 2 3; do
+            info "Cloning (attempt $attempt/3)..."
+            CLONE_ERR=$(git clone --depth 1 "$url" "$INSTALL_DIR" 2>&1) && {
+                CLONE_OK=true
+                break 2
+            }
+            # Show the actual error on last attempt for this URL
+            if [ $attempt -eq 3 ]; then
+                warn "Failed with ${url%%\/*} — $(echo "$CLONE_ERR" | tail -1)"
+            else
+                sleep 2
+            fi
+        done
+        $CLONE_OK && break
+        # Clean up failed partial clone
+        rm -rf "$INSTALL_DIR"
+    done
+
+    if ! $CLONE_OK; then
+        fail "All clone attempts failed."
+        fail "Last error: $(echo "$CLONE_ERR" | tail -3)"
+        echo ""
+        info "Try manually:"
+        echo -e "  ${CYAN}git clone https://github.com/ctz168/ide.git ~/phoneide-ide${NC}"
+        echo -e "  ${CYAN}cd ~/phoneide-ide && python3 server.py${NC}"
         exit 1
-    }
+    fi
+
+    # Normalize remote to official GitHub (in case we cloned via mirror)
+    if [ "$url" != "https://github.com/ctz168/ide.git" ]; then
+        cd "$INSTALL_DIR"
+        git remote set-url origin https://github.com/ctz168/ide.git 2>/dev/null || true
+        info "Remote set to official GitHub URL"
+    fi
 fi
 
 # Create workspace & config dirs
