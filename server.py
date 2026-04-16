@@ -8,7 +8,7 @@ Refactored: routes split into routes/ directory, shared utilities in utils.py.
 
 import os
 import sys
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, jsonify
 from flask_cors import CORS
 
 # ==================== Create App ====================
@@ -58,6 +58,9 @@ def index():
 
 @app.route('/<path:path>')
 def static_files(path):
+    # Don't intercept API routes — let blueprints handle them
+    if path.startswith('api/'):
+        return jsonify({'error': 'Not found'}), 404
     return send_from_directory(app.static_folder, path)
 
 # ==================== Main ====================

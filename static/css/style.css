@@ -1092,41 +1092,7 @@ html, body {
     border-radius: 2px;
 }
 
-/* ==================== Terminal Extra Keys ==================== */
-#terminal-extra-keys {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 6px 8px;
-    background: var(--bg-tertiary);
-    border-top: 1px solid var(--border);
-    flex-shrink: 0;
-}
-#terminal-extra-keys .tkey {
-    padding: 6px 10px;
-    border: 1px solid var(--border);
-    background: var(--bg-surface);
-    color: var(--text-primary);
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-    user-select: none;
-    -webkit-tap-highlight-color: transparent;
-    min-width: 36px;
-    text-align: center;
-    transition: background 0.1s;
-}
-#terminal-extra-keys .tkey:active {
-    background: var(--bg-hover);
-    transform: scale(0.94);
-}
-#terminal-extra-keys .tkey.active {
-    background: var(--accent);
-    color: var(--bg-primary);
-    border-color: var(--accent);
-}
+/* ==================== Terminal Extra Keys (removed) ==================== */
 
 /* ==================== Chat Panel ==================== */
 #chat-messages {
@@ -1842,46 +1808,7 @@ button, .file-item, .search-result-item, .git-change-item {
     font-size: 12px;
 }
 
-/* Terminal Extra Keys Bar (Termux-style) */
-#terminal-extra-keys {
-    display: flex;
-    gap: 3px;
-    padding: 4px 6px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    flex-shrink: 0;
-    background: var(--bg-tertiary);
-    border-top: 1px solid var(--border);
-}
-#terminal-extra-keys::-webkit-scrollbar { display: none; }
-.tkey {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 36px;
-    height: 32px;
-    padding: 0 8px;
-    border: none;
-    border-radius: 6px;
-    background: var(--bg-surface);
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-    flex-shrink: 0;
-    transition: background 0.1s, color 0.1s;
-}
-.tkey:active {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
-.tkey[data-key="ctrl"].active {
-    background: var(--accent);
-    color: var(--bg-primary);
-}
+/* Terminal Extra Keys Bar (removed) */
 
 /* Mobile editor fixes */
 .CodeMirror {
