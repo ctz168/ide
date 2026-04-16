@@ -12,6 +12,17 @@ import fnmatch
 import urllib.request
 import urllib.error
 import urllib.parse
+
+# Custom redirect handler that follows 307/308 for POST requests
+class _PostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if code in (307, 308):
+            # Preserve POST method and body
+            return urllib.request.Request(newurl, data=req.data, headers=req.headers,
+                                          method=req.method, origin_req_host=req.origin_req_host)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+_urllib_opener = urllib.request.build_opener(_PostRedirectHandler)
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response
 from utils import (
@@ -1114,7 +1125,7 @@ def _call_llm_api(messages, llm_config, stream=False):
 
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
 
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with _urllib_opener.open(req, timeout=180) as resp:
         resp_body = resp.read().decode()
         try:
             result = json.loads(resp_body)
@@ -1155,7 +1166,7 @@ def _call_llm_stream_raw(messages, llm_config):
     print(f'[LLM] Headers: {dict((k, v[:20]+"..." if len(v)>20 else v) for k,v in headers.items())}')
     print(f'[LLM] Messages count: {len(api_messages)}')
 
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with _urllib_opener.open(req, timeout=180) as resp:
         buffer = ''
         while True:
             chunk = resp.read(4096)
@@ -1732,7 +1743,7 @@ def test_llm_config():
         }
 
         req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with _urllib_opener.open(req, timeout=60) as resp:
             resp_body = resp.read().decode()
             try:
                 result = json.loads(resp_body)
