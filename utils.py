@@ -28,6 +28,7 @@ CONFIG_DIR = os.path.expanduser('~/.phoneide')
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 LLM_CONFIG_FILE = os.path.join(CONFIG_DIR, 'llm_config.json')
 CHAT_HISTORY_FILE = os.path.join(CONFIG_DIR, 'chat_history.json')
+CONVERSATIONS_FILE = os.path.join(CONFIG_DIR, 'conversations.json')
 
 # ==================== Log Buffer ====================
 import collections
@@ -189,6 +190,70 @@ def save_chat_history(history):
     history = history[-200:]
     with open(CHAT_HISTORY_FILE, 'w') as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
+
+
+# ==================== Conversations (multi-session) ====================
+
+def load_conversations():
+    """Load all conversations. Returns list of {id, title, created_at, updated_at, messages}."""
+    if os.path.exists(CONVERSATIONS_FILE):
+        with open(CONVERSATIONS_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+
+def save_conversations(conversations):
+    """Save all conversations."""
+    with open(CONVERSATIONS_FILE, 'w') as f:
+        json.dump(conversations, f, indent=2, ensure_ascii=False)
+
+
+def get_conversation(conv_id):
+    """Get a single conversation by id."""
+    convs = load_conversations()
+    for c in convs:
+        if c.get('id') == conv_id:
+            return c
+    return None
+
+
+def save_conversation(conv_id, messages, title=None):
+    """Save messages to a conversation, auto-creating if needed. Returns updated conv."""
+    convs = load_conversations()
+    now = datetime.now().isoformat()
+    conv = None
+    for c in convs:
+        if c.get('id') == conv_id:
+            conv = c
+            break
+    if not conv:
+        # Auto-generate title from first user message
+        auto_title = title or 'New Chat'
+        for m in messages:
+            if m.get('role') == 'user':
+                auto_title = (m.get('content', '') or '')[:50]
+                break
+        conv = {
+            'id': conv_id,
+            'title': auto_title,
+            'created_at': now,
+            'updated_at': now,
+            'messages': [],
+        }
+        convs.insert(0, conv)  # newest first
+    conv['messages'] = messages[-200:]  # keep last 200
+    conv['updated_at'] = now
+    if title:
+        conv['title'] = title
+    save_conversations(convs)
+    return conv
+
+
+def delete_conversation(conv_id):
+    """Delete a conversation by id."""
+    convs = load_conversations()
+    convs = [c for c in convs if c.get('id') != conv_id]
+    save_conversations(convs)
 
 
 # ==================== Process Management ====================

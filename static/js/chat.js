@@ -20,6 +20,7 @@ const ChatManager = (() => {
     let chatMode = 'execute';           // 'plan' or 'execute'
     let planContent = '';               // stored plan markdown for editing
     let lastPlanMsgEl = null;           // reference to plan message element for actions
+    let currentConvId = null;           // current conversation id (null = unsaved new chat)
 
     // ── Constants ──────────────────────────────────────────────────
     const KNOWN_TOOLS = [
@@ -870,6 +871,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             return;
         }
 
+        // Ensure we have a conversation id
+        if (!currentConvId) {
+            currentConvId = 'conv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        }
+
         // Clear input
         if (input) input.value = '';
         autoResizeInput();
@@ -899,7 +905,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             const resp = await fetch('/api/chat/send/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: actualMessage }),
+                body: JSON.stringify({ message: actualMessage, conv_id: currentConvId }),
                 signal
             });
 
@@ -1078,28 +1084,19 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             showToast('Please wait for current generation to finish', 'warning');
             return;
         }
-        try {
-            // Clear backend history
-            const resp = await fetch('/api/chat/clear', { method: 'POST' });
-            if (!resp.ok) throw new Error(`Failed to clear: ${resp.statusText}`);
-            await resp.json();
+        // Reset conversation
+        currentConvId = null;
+        messages = [];
+        lastUserMessage = null;
+        renderMessages([]);
 
-            // Clear local state
-            messages = [];
-            lastUserMessage = null;
-            renderMessages([]);
-
-            // Focus input
-            const input = document.getElementById('chat-input');
-            if (input) {
-                input.value = '';
-                input.focus();
-            }
-
-            showToast('New conversation started', 'success');
-        } catch (err) {
-            showToast('Error starting new chat: ' + err.message, 'error');
+        // Focus input
+        const input = document.getElementById('chat-input');
+        if (input) {
+            input.value = '';
+            input.focus();
         }
+        showToast('New conversation started', 'success');
     }
 
     // ── Re-Send Last Message ───────────────────────────────────────
@@ -1269,6 +1266,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     btn.textContent = '⏳';
                     btn.disabled = true;
                     try {
+                        // Sync latest field values before testing
+                        syncFieldsFromDOM();
                         // Save current models first so test endpoint can read them
                         const saveConfig = { models: workingModels, system_prompt: overlay.querySelector('#llm-system-prompt').value.trim() };
                         await saveLLMConfig(saveConfig);
@@ -1326,29 +1325,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             });
         }
 
-        renderModelList();
-
-        // Add model button
-        overlay.querySelector('#llm-add-model-btn').addEventListener('click', () => {
-            workingModels.push({
-                name: '新模型',
-                provider: 'openai',
-                api_type: 'openai',
-                api_key: '',
-                api_base: '',
-                model: '',
-                enabled: false,
-                temperature: 0.7,
-                max_tokens: 4096,
-            });
-            renderModelList();
-        });
-
-        // Close / Cancel / Save
-        overlay.querySelector('.chat-settings-close').addEventListener('click', removeSettingsDialog);
-        overlay.querySelector('#llm-settings-cancel').addEventListener('click', removeSettingsDialog);
-        overlay.querySelector('#llm-settings-save').addEventListener('click', async () => {
-            // Read latest field values
+        // Sync all DOM field values into workingModels (call before save/test)
+        function syncFieldsFromDOM() {
             overlay.querySelectorAll('.llm-model-name').forEach(input => {
                 workingModels[parseInt(input.dataset.idx)].name = input.value.trim();
             });
@@ -1373,6 +1351,32 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             overlay.querySelectorAll('.llm-max-tokens').forEach(input => {
                 workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096;
             });
+        }
+
+        renderModelList();
+
+        // Add model button
+        overlay.querySelector('#llm-add-model-btn').addEventListener('click', () => {
+            workingModels.push({
+                name: '新模型',
+                provider: 'openai',
+                api_type: 'openai',
+                api_key: '',
+                api_base: '',
+                model: '',
+                enabled: false,
+                temperature: 0.7,
+                max_tokens: 4096,
+            });
+            renderModelList();
+        });
+
+        // Close / Cancel / Save
+        overlay.querySelector('.chat-settings-close').addEventListener('click', removeSettingsDialog);
+        overlay.querySelector('#llm-settings-cancel').addEventListener('click', removeSettingsDialog);
+        overlay.querySelector('#llm-settings-save').addEventListener('click', async () => {
+            // Sync latest field values from DOM
+            syncFieldsFromDOM();
 
             const newConfig = {
                 models: workingModels,
@@ -1991,6 +1995,57 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 gap: 8px;
                 margin-top: 6px;
             }
+
+            /* ── Conversation History Dialog ── */
+            .conv-empty {
+                text-align: center;
+                color: var(--text-muted);
+                padding: 40px 16px;
+                font-size: 13px;
+            }
+            .conv-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px 12px;
+                border-bottom: 1px solid var(--border);
+                gap: 8px;
+            }
+            .conv-item:last-child { border-bottom: none; }
+            .conv-info {
+                flex: 1;
+                min-width: 0;
+            }
+            .conv-title {
+                font-size: 13px;
+                font-weight: 500;
+                color: var(--text-primary);
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .conv-meta {
+                font-size: 11px;
+                color: var(--text-muted);
+                margin-top: 2px;
+            }
+            .conv-actions {
+                display: flex;
+                gap: 4px;
+                flex-shrink: 0;
+            }
+            .conv-actions button {
+                border: none;
+                background: none;
+                cursor: pointer;
+                font-size: 14px;
+                padding: 4px 6px;
+                border-radius: var(--radius-sm);
+                opacity: 0.7;
+            }
+            .conv-actions button:hover { opacity: 1; }
+            .conv-actions button:active { background: var(--bg-hover); }
+            .conv-delete-btn:hover { color: var(--red); }
         `;
         document.head.appendChild(style);
     }
@@ -2138,6 +2193,133 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         forceScrollToBottom();
     }
 
+    // ── Conversation Management ────────────────────────────────────
+
+    let historyDialogEl = null;
+
+    async function loadConversation(convId) {
+        try {
+            const resp = await fetch(`/api/conversations/${convId}`);
+            if (!resp.ok) throw new Error(`Failed to load conversation: ${resp.statusText}`);
+            const conv = await resp.json();
+            currentConvId = conv.id;
+            messages = conv.messages || [];
+            renderMessages(messages);
+            showToast('已加载会话: ' + truncate(conv.title || 'New Chat', 30), 'success');
+        } catch (err) {
+            showToast('加载会话失败: ' + err.message, 'error');
+        }
+    }
+
+    async function deleteConversation(convId) {
+        try {
+            const resp = await fetch(`/api/conversations/${convId}`, { method: 'DELETE' });
+            if (!resp.ok) throw new Error(`Failed: ${resp.statusText}`);
+            await resp.json();
+            // If deleted the current conversation, clear
+            if (currentConvId === convId) {
+                currentConvId = null;
+                messages = [];
+                renderMessages([]);
+            }
+            showToast('会话已删除', 'success');
+            // Refresh the list if dialog is open
+            if (historyDialogEl) {
+                historyDialogEl.remove();
+                historyDialogEl = null;
+                showHistoryDialog();
+            }
+        } catch (err) {
+            showToast('删除失败: ' + err.message, 'error');
+        }
+    }
+
+    async function showHistoryDialog() {
+        if (historyDialogEl) {
+            historyDialogEl.remove();
+            historyDialogEl = null;
+            return;
+        }
+        try {
+            const resp = await fetch('/api/conversations');
+            const data = await resp.json();
+            const convs = data.conversations || [];
+
+            const overlay = document.createElement('div');
+            overlay.className = 'chat-settings-overlay';
+            overlay.id = 'chat-history-overlay';
+
+            let listHTML = '';
+            if (convs.length === 0) {
+                listHTML = '<div class="conv-empty">暂无历史会话</div>';
+            } else {
+                for (const c of convs) {
+                    const dateStr = c.updated_at ? formatTime(c.updated_at) : '';
+                    listHTML += `
+                        <div class="conv-item" data-id="${escapeAttr(c.id)}">
+                            <div class="conv-info">
+                                <div class="conv-title">${escapeHTML(c.title || 'New Chat')}</div>
+                                <div class="conv-meta">${dateStr} · ${c.message_count} 条消息</div>
+                            </div>
+                            <div class="conv-actions">
+                                <button class="conv-continue-btn" data-id="${escapeAttr(c.id)}" title="继续此会话">▶</button>
+                                <button class="conv-delete-btn" data-id="${escapeAttr(c.id)}" title="删除此会话">🗑</button>
+                            </div>
+                        </div>`;
+                }
+            }
+
+            overlay.innerHTML = `
+                <div class="chat-settings-dialog" style="max-width:420px">
+                    <div class="chat-settings-header">
+                        <span>📋 历史会话</span>
+                        <button class="chat-settings-close" title="Close">✕</button>
+                    </div>
+                    <div class="chat-settings-body" id="conv-list-body" style="max-height:60vh">
+                        ${listHTML}
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(overlay);
+            historyDialogEl = overlay;
+            injectSettingsStyles();
+
+            // Bind close
+            overlay.querySelector('.chat-settings-close').addEventListener('click', () => {
+                overlay.remove();
+                historyDialogEl = null;
+            });
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    overlay.remove();
+                    historyDialogEl = null;
+                }
+            });
+
+            // Bind continue buttons
+            overlay.querySelectorAll('.conv-continue-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = btn.dataset.id;
+                    overlay.remove();
+                    historyDialogEl = null;
+                    await loadConversation(id);
+                });
+            });
+
+            // Bind delete buttons
+            overlay.querySelectorAll('.conv-delete-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    deleteConversation(id);
+                });
+            });
+
+        } catch (err) {
+            showToast('加载历史会话失败: ' + err.message, 'error');
+        }
+    }
+
     // ── Wire Up Events ─────────────────────────────────────────────
 
     function wireEvents() {
@@ -2171,12 +2353,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             });
         }
 
-        // Clear button
-        const clearBtn = document.getElementById('chat-clear');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', (e) => {
+        // History button (replaces clear button)
+        const historyBtn = document.getElementById('chat-history-btn');
+        if (historyBtn) {
+            historyBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                clearHistory();
+                showHistoryDialog();
             });
         }
 
@@ -2297,11 +2479,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         injectPlanActions,
         showSettingsDialog,
         showPlanEditor,
+        showHistoryDialog,
+        loadConversation,
 
         // Getters
         get isProcessing() { return isProcessing; },
         get messages() { return messages.slice(); },
         get lastUserMessage() { return lastUserMessage; },
+        get currentConvId() { return currentConvId; },
 
         // Mode control
         get chatMode() { return chatMode; },

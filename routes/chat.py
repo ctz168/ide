@@ -17,7 +17,9 @@ from flask import Blueprint, jsonify, request, Response
 from utils import (
     handle_error, load_config, load_llm_config, save_llm_config,
     get_active_llm_config,
-    load_chat_history, save_chat_history, WORKSPACE, SERVER_DIR,
+    load_chat_history, save_chat_history,
+    load_conversations, save_conversations, get_conversation, save_conversation, delete_conversation,
+    WORKSPACE, SERVER_DIR,
     get_file_type, shlex_quote,
 )
 from routes.git import git_cmd
@@ -1373,9 +1375,14 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
         'history': history,
     }
 
-def run_agent_loop_stream(user_message, llm_config):
+def run_agent_loop_stream(user_message, llm_config, conv_id=None):
     """Generator that runs the agent loop and yields SSE events."""
-    history = load_chat_history()
+    # Load history from conversation if conv_id provided, otherwise from legacy chat_history
+    if conv_id:
+        conv = get_conversation(conv_id)
+        history = list(conv.get('messages', [])) if conv else []
+    else:
+        history = load_chat_history()
     user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
     history.append(user_msg)
 
@@ -1529,6 +1536,9 @@ def run_agent_loop_stream(user_message, llm_config):
     }
     history.append(final_assistant)
     save_chat_history(history)
+    # Also save to conversation if conv_id was provided
+    if conv_id:
+        save_conversation(conv_id, history)
 
     yield f"data: {json.dumps({'type': 'done', 'iterations': total_iterations, 'tool_calls': len(tool_calls_in_progress), 'completed': True})}\n\n"
 
@@ -1541,6 +1551,51 @@ def get_chat_history():
 @bp.route('/api/chat/clear', methods=['POST'])
 def clear_chat_history():
     save_chat_history([])
+    return jsonify({'ok': True})
+
+# ==================== Conversations API ====================
+@bp.route('/api/conversations', methods=['GET'])
+def list_conversations():
+    """List all conversations (summary, no messages)."""
+    convs = load_conversations()
+    result = []
+    for c in convs:
+        result.append({
+            'id': c.get('id', ''),
+            'title': c.get('title', 'New Chat'),
+            'created_at': c.get('created_at', ''),
+            'updated_at': c.get('updated_at', ''),
+            'message_count': len(c.get('messages', [])),
+        })
+    return jsonify({'conversations': result})
+
+@bp.route('/api/conversations/<conv_id>', methods=['GET'])
+def get_conv(conv_id):
+    """Get a single conversation with messages."""
+    conv = get_conversation(conv_id)
+    if not conv:
+        return jsonify({'error': 'Conversation not found'}), 404
+    return jsonify(conv)
+
+@bp.route('/api/conversations/<conv_id>', methods=['DELETE'])
+def delete_conv(conv_id):
+    """Delete a conversation."""
+    delete_conversation(conv_id)
+    return jsonify({'ok': True})
+
+@bp.route('/api/conversations/<conv_id>', methods=['PATCH'])
+def update_conv(conv_id):
+    """Update conversation title."""
+    data = request.json or {}
+    convs = load_conversations()
+    for c in convs:
+        if c.get('id') == conv_id:
+            if 'title' in data:
+                c['title'] = data['title']
+            break
+    else:
+        return jsonify({'error': 'Conversation not found'}), 404
+    save_conversations(convs)
     return jsonify({'ok': True})
 
 @bp.route('/api/chat/send', methods=['POST'])
@@ -1575,6 +1630,7 @@ def send_chat_stream():
     """SSE streaming agent endpoint. Streams text, tool execution, and status in real-time."""
     data = request.json
     message = data.get('message', '').strip()
+    conv_id = data.get('conv_id')  # optional conversation id
     if not message:
         return jsonify({'error': 'Message required'}), 400
 
@@ -1584,7 +1640,7 @@ def send_chat_stream():
 
     def generate():
         try:
-            for sse_event in run_agent_loop_stream(message, llm_config):
+            for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id):
                 yield sse_event
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
