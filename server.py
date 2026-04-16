@@ -8,7 +8,7 @@ Refactored: routes split into routes/ directory, shared utilities in utils.py.
 
 import os
 import sys
-from flask import Flask, send_from_directory, jsonify
+from flask import Flask, send_from_directory, jsonify, make_response
 from flask_cors import CORS
 
 # ==================== Create App ====================
@@ -65,11 +65,15 @@ app.register_blueprint(server_mgmt_bp)
 
 @app.route('/')
 def index():
-    return send_from_directory(app.static_folder, 'index.html')
+    resp = make_response(send_from_directory(app.static_folder, 'index.html'))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
 
 @app.route('/<path:path>', methods=['GET'])
 def static_files(path):
-    return send_from_directory(app.static_folder, path)
+    resp = make_response(send_from_directory(app.static_folder, path))
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
 
 # ==================== Main ====================
 if __name__ == '__main__':
