@@ -52,16 +52,14 @@ if update_bp:
 app.register_blueprint(server_mgmt_bp)
 
 # ==================== Frontend Serving ====================
+# Note: static_url_path='' is set when creating the app, so Flask's built-in
+# static file handler already serves all files from the root URL.
+# We do NOT add a custom /<path:path> catch-all because it conflicts with
+# blueprint API routes and causes 405 errors on POST/PUT/DELETE requests.
+
 @app.route('/')
 def index():
     return send_from_directory(app.static_folder, 'index.html')
-
-@app.route('/<path:path>')
-def static_files(path):
-    # Don't intercept API routes — let blueprints handle them
-    if path.startswith('api/'):
-        return jsonify({'error': 'Not found'}), 404
-    return send_from_directory(app.static_folder, path)
 
 # ==================== Main ====================
 if __name__ == '__main__':

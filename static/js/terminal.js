@@ -780,24 +780,33 @@ const TerminalManager = (() => {
         const shellInput = document.getElementById('shell-input');
         if (!shellInput) return;
 
+        function handleShellEnter() {
+            const cmd = shellInput.value.trim();
+            if (!cmd) return;
+
+            // Debounce: prevent double-fire from keydown+keyup+keypress
+            if (handleShellEnter._busy) return;
+            handleShellEnter._busy = true;
+            setTimeout(() => { handleShellEnter._busy = false; }, 300);
+
+            // Add to history
+            shellHistory.push(cmd);
+            shellHistoryIndex = shellHistory.length;
+
+            // Show the command in output
+            appendOutput(`─────────────────────────────────────────`, 'status');
+            appendOutput(`$ ${cmd}`, 'system');
+            appendOutput(`[info] Shell command | Time: ${new Date().toLocaleString()}`, 'info');
+
+            // Execute via API
+            executeCode(cmd, 'bash');
+            shellInput.value = '';
+        }
+
         shellInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                const cmd = shellInput.value.trim();
-                if (!cmd) return;
-
-                // Add to history
-                shellHistory.push(cmd);
-                shellHistoryIndex = shellHistory.length;
-
-                // Show the command in output
-                appendOutput(`─────────────────────────────────────────`, 'status');
-                appendOutput(`$ ${cmd}`, 'system');
-                appendOutput(`[info] Shell command | Time: ${new Date().toLocaleString()}`, 'info');
-
-                // Execute via API
-                executeCode(cmd, 'bash');
-                shellInput.value = '';
+                handleShellEnter();
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
                 if (shellHistoryIndex > 0) {
@@ -829,6 +838,31 @@ const TerminalManager = (() => {
                 clearOutput();
             }
         });
+
+        // Fallback: some Android WebViews / soft keyboards fire keypress or keyup
+        // instead of keydown for the Enter key. Listen for them too.
+        shellInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleShellEnter();
+            }
+        });
+
+        shellInput.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleShellEnter();
+            }
+        });
+
+        // Fallback: some mobile keyboards submit the parent form instead
+        const inputBar = document.getElementById('shell-input-bar');
+        if (inputBar) {
+            inputBar.addEventListener('submit', (e) => {
+                e.preventDefault();
+                handleShellEnter();
+            });
+        }
 
         // Focus shell input when clicking on output area
         const outputContent = document.getElementById('output-content');
