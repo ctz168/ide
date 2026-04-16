@@ -1075,13 +1075,11 @@ def _get_llm_endpoint(llm_config, model=None):
         # openai / custom — OpenAI-compatible format
         if not api_base:
             api_base = 'https://api.openai.com/v1'
-        # Ensure we use /v1/chat/completions/ (with trailing slash to avoid redirects)
-        # If api_base already ends with /v1, use /chat/completions/
-        # Otherwise, use /v1/chat/completions/
+        # Remove trailing slash to avoid 307 redirects from some providers (e.g. ModelScope)
         if api_base.endswith('/v1'):
-            url = api_base + '/chat/completions/'
+            url = api_base.rstrip('/') + '/chat/completions'
         else:
-            url = api_base + '/v1/chat/completions/'
+            url = api_base.rstrip('/') + '/v1/chat/completions'
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
 
