@@ -22,7 +22,6 @@
             <button id="btn-redo" title="重做">↪</button>
             <button id="btn-run" title="运行">▶</button>
             <button id="btn-stop" title="停止" style="display:none">⏹</button>
-            <button id="btn-server-logs" title="服务器日志">📋</button>
             <button id="btn-check-updates" title="检查更新">⬆</button>
             <button id="btn-chat" title="AI助手">🤖</button>
         </div>
@@ -222,19 +221,6 @@
 
     <!-- Server Management Bar: removed (Android native bar provides this) -->
 
-    <!-- Log Viewer Panel -->
-    <div id="log-viewer-panel" class="hidden">
-        <div id="log-viewer-header">
-            <span>📋 Server Logs</span>
-            <div>
-                <button id="log-viewer-refresh" title="Refresh">🔃</button>
-                <button id="log-viewer-clear" title="Clear">🗑</button>
-                <button id="log-viewer-close" title="Close">✕</button>
-            </div>
-        </div>
-        <div id="log-viewer-content"></div>
-    </div>
-
     <!-- Update Dialog -->
     <div id="update-dialog-overlay" class="hidden">
         <div id="update-dialog">
@@ -296,60 +282,7 @@
             from { transform: translateY(100%); }
             to { transform: translateY(0); }
         }
-        #log-viewer-panel.hidden {
-            display: none;
-        }
-        #log-viewer-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px 12px;
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-primary, #f8f8f2);
-            border-bottom: 1px solid var(--border, #2a2a4a);
-            flex-shrink: 0;
-        }
-        #log-viewer-header div {
-            display: flex;
-            gap: 4px;
-        }
-        #log-viewer-header button {
-            width: 26px;
-            height: 26px;
-            border: none;
-            background: none;
-            color: var(--text-secondary, #aaa);
-            font-size: 14px;
-            cursor: pointer;
-            border-radius: var(--radius-sm, 4px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #log-viewer-header button:hover {
-            background: var(--bg-hover, #2a2a4a);
-            color: var(--text-primary, #f8f8f2);
-        }
-        #log-viewer-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 8px 12px;
-            font-family: var(--font-mono, monospace);
-            font-size: 11px;
-            color: var(--text-secondary, #aaa);
-            white-space: pre-wrap;
-            word-break: break-all;
-            line-height: 1.5;
-            -webkit-overflow-scrolling: touch;
-        }
-        #log-viewer-content:empty::before {
-            content: 'No logs yet...';
-            color: var(--text-muted, #666);
-            font-style: italic;
-        }
-
-        /* Update Dialog */
+    /* Update Dialog */
         #update-dialog-overlay {
             position: fixed;
             inset: 0;

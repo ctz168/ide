@@ -779,45 +779,17 @@ const AppManager = (() => {
 
     // ── Server Management ──
     let serverStatusTimer = null;
-    let logViewerEventSource = null;
-    let logViewerOpen = false;
 
     function initServerManagement() {
         // Wire up server management bar buttons
         const restartBtn = document.getElementById('btn-server-restart');
-        const logsBtn = document.getElementById('btn-server-logs');
         const updatesBtn = document.getElementById('btn-check-updates');
 
         if (restartBtn) {
             restartBtn.addEventListener('click', () => restartServer());
         }
-        if (logsBtn) {
-            logsBtn.addEventListener('click', () => toggleLogViewer());
-        }
         if (updatesBtn) {
             updatesBtn.addEventListener('click', () => checkUpdates());
-        }
-
-        // Log viewer panel buttons
-        const logCloseBtn = document.getElementById('log-viewer-close');
-        const logClearBtn = document.getElementById('log-viewer-clear');
-        const logRefreshBtn = document.getElementById('log-viewer-refresh');
-
-        if (logCloseBtn) {
-            logCloseBtn.addEventListener('click', () => toggleLogViewer());
-        }
-        if (logClearBtn) {
-            logClearBtn.addEventListener('click', () => {
-                const content = document.getElementById('log-viewer-content');
-                if (content) content.textContent = '';
-            });
-        }
-        if (logRefreshBtn) {
-            logRefreshBtn.addEventListener('click', () => {
-                const content = document.getElementById('log-viewer-content');
-                if (content) content.textContent = '';
-                connectLogViewerSSE();
-            });
         }
 
         // Update dialog buttons
@@ -993,96 +965,6 @@ const AppManager = (() => {
                 showToast('Server restart timed out', 'error', 3000);
             }
         }, 1000);
-    }
-
-    /**
-     * Toggle the log viewer panel
-     */
-    function toggleLogViewer() {
-        const panel = document.getElementById('log-viewer-panel');
-        if (!panel) return;
-
-        logViewerOpen = !logViewerOpen;
-
-        if (logViewerOpen) {
-            panel.classList.remove('hidden');
-            connectLogViewerSSE();
-        } else {
-            panel.classList.add('hidden');
-            disconnectLogViewerSSE();
-        }
-    }
-
-    /**
-     * Connect to the SSE log stream endpoint
-     */
-    function connectLogViewerSSE() {
-        disconnectLogViewerSSE();
-
-        const content = document.getElementById('log-viewer-content');
-        if (!content) return;
-
-        try {
-            logViewerEventSource = new EventSource('/api/server/logs/stream');
-
-            logViewerEventSource.addEventListener('message', (e) => {
-                const line = e.data || '';
-                if (!line.trim()) return;
-
-                // Auto-scroll if already at bottom
-                const atBottom = content.scrollHeight - content.scrollTop - content.clientHeight < 60;
-
-                const lineEl = document.createElement('div');
-                lineEl.className = 'log-line';
-
-                // Colorize log levels
-                if (line.includes(' ERROR ') || line.includes('[ERROR]')) {
-                    lineEl.style.color = 'var(--red, #ff5555)';
-                } else if (line.includes(' WARNING ') || line.includes('[WARN]')) {
-                    lineEl.style.color = 'var(--yellow, #f1fa8c)';
-                } else if (line.includes(' INFO ') || line.includes('[INFO]')) {
-                    lineEl.style.color = 'var(--text-secondary, #aaa)';
-                } else if (line.includes(' DEBUG ') || line.includes('[DEBUG]')) {
-                    lineEl.style.color = 'var(--text-muted, #666)';
-                }
-
-                lineEl.textContent = line;
-                content.appendChild(lineEl);
-
-                // Keep max 2000 lines
-                while (content.children.length > 2000) {
-                    content.removeChild(content.firstChild);
-                }
-
-                if (atBottom) {
-                    content.scrollTop = content.scrollHeight;
-                }
-            });
-
-            logViewerEventSource.onerror = () => {
-                // EventSource auto-reconnects, but we can show status
-                console.warn('Log SSE connection error, will retry...');
-            };
-
-        } catch (err) {
-            console.warn('Failed to connect log SSE:', err.message);
-            // Fallback: no real-time logs
-            const lineEl = document.createElement('div');
-            lineEl.style.color = 'var(--text-muted, #666)';
-            lineEl.style.fontStyle = 'italic';
-            lineEl.textContent = 'Log streaming unavailable: ' + err.message;
-            content.appendChild(lineEl);
-        }
-    }
-
-    /**
-     * Disconnect the log viewer SSE connection
-     */
-    function disconnectLogViewerSSE() {
-        if (logViewerEventSource) {
-            logViewerEventSource.close();
-            logViewerEventSource = null;
-        }
     }
 
     /**
