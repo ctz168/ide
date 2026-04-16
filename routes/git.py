@@ -11,6 +11,34 @@ from utils import handle_error, load_config, WORKSPACE, shlex_quote
 bp = Blueprint('git', __name__)
 
 
+def resolve_cwd():
+    """Resolve the git working directory from the request (query args or JSON body).
+
+    The frontend sends the *relative* path inside the workspace (e.g. 'myrepo').
+    This function joins it with the configured workspace to get an absolute path.
+    If no path is provided, the workspace root is used.
+    """
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    # Try query string first (GET requests)
+    rel = request.args.get('path') or request.args.get('cwd', '')
+    # Fall back to JSON body (POST requests)
+    if not rel:
+        try:
+            data = request.json or {}
+            rel = data.get('path') or data.get('cwd', '')
+        except Exception:
+            pass
+
+    if rel and rel.strip():
+        target = os.path.realpath(os.path.join(base, rel.strip()))
+        # Security: must stay under workspace
+        if target.startswith(os.path.realpath(base)):
+            return target
+    return base
+
+
 def git_cmd(args, cwd=None, timeout=60):
     config = load_config()
     base = cwd or config.get('workspace', WORKSPACE)
@@ -24,10 +52,40 @@ def git_cmd(args, cwd=None, timeout=60):
         return {'ok': False, 'stdout': '', 'stderr': str(e), 'code': -1}
 
 
+@bp.route('/api/git/init', methods=['POST'])
+@handle_error
+def git_init():
+    """Initialize a new git repository in the current directory."""
+    cwd = resolve_cwd()
+    r = git_cmd('init', cwd=cwd)
+    if not r['ok']:
+        return jsonify({'error': r['stderr']}), 500
+
+    # Set safe defaults for mobile/termux environments
+    git_cmd('config user.name "PhoneIDE"', cwd=cwd)
+    git_cmd('config user.email "phoneide@local"', cwd=cwd)
+
+    return jsonify({'ok': True, 'path': cwd})
+
+
 @bp.route('/api/git/status', methods=['GET'])
 @handle_error
 def git_status():
-    r = git_cmd('status --porcelain -b')
+    cwd = resolve_cwd()
+
+    # Check if this is a git repo at all
+    check = git_cmd('rev-parse --is-inside-work-tree', cwd=cwd)
+    if not check['ok']:
+        return jsonify({
+            'branch': '',
+            'changed': [],
+            'staged': [],
+            'untracked': [],
+            'not_a_repo': True,
+            'error': 'Not a git repository',
+        })
+
+    r = git_cmd('status --porcelain -b', cwd=cwd)
     if not r['ok']:
         return jsonify({'error': r['stderr']}), 500
     lines = r['stdout'].strip().split('\n') if r['stdout'].strip() else []
@@ -60,7 +118,8 @@ def git_status():
 @handle_error
 def git_log():
     count = request.args.get('count', 20)
-    r = git_cmd(f'log --oneline --decorate -n {count} --format="%H|%an|%ae|%at|%s"')
+    cwd = resolve_cwd()
+    r = git_cmd(f'log --oneline --decorate -n {count} --format="%H|%an|%ae|%at|%s"', cwd=cwd)
     if not r['ok']:
         return jsonify({'commits': [], 'error': r['stderr']})
     commits = []
@@ -82,16 +141,20 @@ def git_log():
 @bp.route('/api/git/branch', methods=['GET'])
 @handle_error
 def git_branch():
-    r = git_cmd('branch -a')
+    cwd = resolve_cwd()
+    r = git_cmd('branch -a', cwd=cwd)
     if not r['ok']:
         return jsonify({'branches': [], 'error': r['stderr']})
     branches = []
+    current = ''
     for line in r['stdout'].strip().split('\n'):
         if line:
             active = line.startswith('*')
             name = line.lstrip('* ').strip()
+            if active:
+                current = name
             branches.append({'name': name, 'active': active})
-    return jsonify({'branches': branches})
+    return jsonify({'branches': branches, 'current': current})
 
 
 @bp.route('/api/git/checkout', methods=['POST'])
@@ -101,7 +164,8 @@ def git_checkout():
     branch = data.get('branch', '')
     if not branch:
         return jsonify({'error': 'Branch name required'}), 400
-    r = git_cmd(f'checkout {shlex_quote(branch)}')
+    cwd = resolve_cwd()
+    r = git_cmd(f'checkout {shlex_quote(branch)}', cwd=cwd)
     if not r['ok']:
         return jsonify({'error': r['stderr']}), 500
     return jsonify({'ok': True})
@@ -115,11 +179,12 @@ def git_add():
     except:
         data = {}
     paths = data.get('paths', [])
+    cwd = resolve_cwd()
     if not paths:
-        r = git_cmd('add -A')
+        r = git_cmd('add -A', cwd=cwd)
     else:
         files = ' '.join(shlex_quote(p) for p in paths)
-        r = git_cmd(f'add {files}')
+        r = git_cmd(f'add {files}', cwd=cwd)
     return jsonify({'ok': r['ok'], 'stderr': r['stderr']})
 
 
@@ -133,7 +198,8 @@ def git_commit():
     message = data.get('message', '')
     if not message:
         return jsonify({'error': 'Commit message required'}), 400
-    r = git_cmd(f'commit -m {shlex_quote(message)}')
+    cwd = resolve_cwd()
+    r = git_cmd(f'commit -m {shlex_quote(message)}', cwd=cwd)
     if not r['ok']:
         return jsonify({'error': r['stderr']}), 500
     return jsonify({'ok': True})
@@ -149,7 +215,8 @@ def git_push():
     cmd = f'push {remote} {branch}'
     if set_upstream:
         cmd = f'push -u {remote} {branch}'
-    r = git_cmd(cmd, timeout=120)
+    cwd = resolve_cwd()
+    r = git_cmd(cmd, cwd=cwd, timeout=120)
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -159,7 +226,8 @@ def git_pull():
     data = request.json
     remote = data.get('remote', 'origin')
     branch = data.get('branch', '')
-    r = git_cmd(f'pull {remote} {branch}', timeout=120)
+    cwd = resolve_cwd()
+    r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -193,7 +261,8 @@ def git_clone():
 @bp.route('/api/git/remote', methods=['GET'])
 @handle_error
 def git_remote():
-    r = git_cmd('remote -v')
+    cwd = resolve_cwd()
+    r = git_cmd('remote -v', cwd=cwd)
     if not r['ok']:
         return jsonify({'remotes': []})
     remotes = []
@@ -211,11 +280,12 @@ def git_remote():
 @handle_error
 def git_diff():
     staged = request.args.get('staged', 'false').lower() == 'true'
-    filepath = request.args.get('path', '')
+    filepath = request.args.get('file', request.args.get('filepath', ''))
+    cwd = resolve_cwd()
     cmd = 'diff --cached' if staged else 'diff'
     if filepath:
         cmd += f' -- {shlex_quote(filepath)}'
-    r = git_cmd(cmd)
+    r = git_cmd(cmd, cwd=cwd)
     return jsonify({'ok': r['ok'], 'diff': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -224,7 +294,8 @@ def git_diff():
 def git_stash():
     data = request.json
     action = data.get('action', 'push')
-    r = git_cmd(f'stash {action}')
+    cwd = resolve_cwd()
+    r = git_cmd(f'stash {action}', cwd=cwd)
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -233,5 +304,6 @@ def git_stash():
 def git_reset():
     data = request.json
     mode = data.get('mode', 'soft')
-    r = git_cmd(f'reset {mode} HEAD')
+    cwd = resolve_cwd()
+    r = git_cmd(f'reset {mode} HEAD', cwd=cwd)
     return jsonify({'ok': r['ok'], 'stderr': r['stderr']})

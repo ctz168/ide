@@ -31,6 +31,28 @@ const GitManager = (() => {
     // ── API: Status ────────────────────────────────────────────────
 
     /**
+     * Initialize git in the current directory
+     */
+    async function gitInit() {
+        try {
+            const gitCwd = getGitCwd();
+            const resp = await fetch('/api/git/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: gitCwd })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || 'Init failed');
+            }
+            showToast('Git 仓库已初始化', 'success');
+            await refresh();
+        } catch (err) {
+            showToast('初始化失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
      * Refresh git status and update UI
      */
     async function refreshStatus() {
@@ -41,6 +63,13 @@ const GitManager = (() => {
             if (!resp.ok) throw new Error(`Failed to get status: ${resp.statusText}`);
             const data = await resp.json();
             statusData = data;
+
+            // If not a git repo, show init prompt instead of empty list
+            if (data.not_a_repo) {
+                showNotARepoPrompt();
+                return data;
+            }
+
             renderChangesList(data);
             updateStatusBar(data);
             return data;
@@ -48,6 +77,30 @@ const GitManager = (() => {
             showToast(`Git status error: ${err.message}`, 'error');
             return null;
         }
+    }
+
+    /**
+     * Show 'not a git repo' prompt with init button
+     */
+    function showNotARepoPrompt() {
+        const el = document.getElementById('git-changes-list');
+        if (!el) return;
+        el.innerHTML = `
+            <div class="git-no-changes" style="text-align:center;padding:20px 12px;">
+                <div style="font-size:24px;margin-bottom:8px;">📦</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">此目录不是 Git 仓库</div>
+                <button id="git-init-btn" style="padding:8px 20px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:13px;cursor:pointer;">初始化 Git 仓库</button>
+            </div>`;
+        const btn = document.getElementById('git-init-btn');
+        if (btn) {
+            btn.addEventListener('click', () => gitInit());
+        }
+
+        const countEl = document.getElementById('git-status-count');
+        if (countEl) { countEl.textContent = 'no repo'; countEl.className = 'git-dirty'; }
+
+        const branchEl = document.getElementById('git-current-branch');
+        if (branchEl) { branchEl.textContent = '-'; }
     }
 
     // ── API: Log ───────────────────────────────────────────────────
@@ -539,18 +592,21 @@ const GitManager = (() => {
     async function diff(filepath) {
         try {
             const gitCwd = getGitCwd();
-            let url;
+            // Send cwd as 'path' query param, file as 'file' query param
+            let url = `/api/git/diff?path=${encodeURIComponent(gitCwd)}`;
             if (filepath) {
-                url = `/api/git/diff?path=${encodeURIComponent(filepath)}&cwd=${encodeURIComponent(gitCwd)}`;
-            } else {
-                const params = gitCwd ? `?cwd=${encodeURIComponent(gitCwd)}` : '';
-                url = `/api/git/diff${params}`;
+                url += `&file=${encodeURIComponent(filepath)}`;
             }
             const resp = await fetch(url);
             if (!resp.ok) throw new Error(`Diff failed: ${resp.statusText}`);
             const data = await resp.json();
 
             const diffText = data.diff || data.content || '';
+            if (!diffText.trim()) {
+                showToast('没有差异', 'info');
+                return '';
+            }
+
             if (window.EditorManager && typeof window.EditorManager.showDiff === 'function') {
                 window.EditorManager.showDiff(diffText, filepath || 'All changes');
             } else if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
@@ -964,6 +1020,7 @@ const GitManager = (() => {
         checkout,
         stash,
         diff,
+        gitInit,
 
         // Getters
         get currentBranch() { return currentBranch; },

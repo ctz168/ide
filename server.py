@@ -115,6 +115,9 @@ if __name__ == '__main__':
     if not os.path.exists(os.path.join(ws, '.git')):
         try:
             subprocess.run(f'git init {shlex_quote(ws)}', shell=True, capture_output=True, timeout=5)
+            # Set safe defaults for first-time users
+            subprocess.run(f'git -C {shlex_quote(ws)} config user.name "PhoneIDE"', shell=True, capture_output=True, timeout=5)
+            subprocess.run(f'git -C {shlex_quote(ws)} config user.email "phoneide@local"', shell=True, capture_output=True, timeout=5)
             print(f"[INFO] Initialized git repo in {ws}")
         except Exception:
             pass
