@@ -1293,7 +1293,9 @@ const AppManager = (() => {
             }
 
             // Load compilers
-            if (window.TerminalManager) await TerminalManager.init();
+            if (window.TerminalManager && typeof TerminalManager.loadCompilers === 'function') {
+                await TerminalManager.loadCompilers();
+            }
 
             // Load file tree (pass no path to use workspace root)
             if (window.FileManager) await FileManager.loadFileList();
