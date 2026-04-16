@@ -14,7 +14,7 @@ from flask_cors import CORS
 # ==================== Create App ====================
 from utils import SERVER_DIR, WORKSPACE, PORT, HOST, CONFIG_DIR, CHAT_HISTORY_FILE
 
-app = Flask(__name__, static_folder=os.path.join(SERVER_DIR, 'static'), static_url_path='')
+app = Flask(__name__, static_folder=os.path.join(SERVER_DIR, 'static'), static_url_path=None)
 CORS(app)
 
 # Ensure all API errors return JSON, not HTML
@@ -24,6 +24,13 @@ def handle_unhandled_exception(e):
     import traceback as _tb
     _tb.print_exc()
     return jsonify({'error': str(e)}), 500
+
+# Handle 405 specifically — show the real error, not a wrapper
+@app.errorhandler(405)
+def handle_method_not_allowed(e):
+    import traceback as _tb
+    _tb.print_exc()
+    return jsonify({'error': f'405 Method Not Allowed: {e.description or request.method}', 'url': request.path, 'method': request.method}), 405
 
 # Ensure directories exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -52,14 +59,17 @@ if update_bp:
 app.register_blueprint(server_mgmt_bp)
 
 # ==================== Frontend Serving ====================
-# Note: static_url_path='' is set when creating the app, so Flask's built-in
-# static file handler already serves all files from the root URL.
-# We do NOT add a custom /<path:path> catch-all because it conflicts with
-# blueprint API routes and causes 405 errors on POST/PUT/DELETE requests.
+# static_url_path=None: disable Flask's built-in static route to avoid
+# route conflicts with POST/PUT/DELETE API blueprints.
+# Instead we serve static files manually with an explicit GET-only route.
 
 @app.route('/')
 def index():
     return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>', methods=['GET'])
+def static_files(path):
+    return send_from_directory(app.static_folder, path)
 
 # ==================== Main ====================
 if __name__ == '__main__':

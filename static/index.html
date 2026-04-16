@@ -150,7 +150,8 @@
                     <div id="output-content"></div>
                     <div id="shell-input-bar">
                         <span id="shell-prompt">$</span>
-                        <input type="text" id="shell-input" placeholder="输入命令并按回车执行..." autocomplete="off" spellcheck="false">
+                        <input type="text" id="shell-input" placeholder="输入命令..." autocomplete="off" spellcheck="false" enterkeyhint="send" inputmode="text">
+                        <button id="shell-send-btn" type="button" style="padding:6px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0;">&#9166;</button>
                     </div>
                 </div>
                 <!-- Console -->

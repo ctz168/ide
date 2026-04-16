@@ -864,6 +864,19 @@ const TerminalManager = (() => {
             });
         }
 
+        // Send button: guaranteed to work on all devices
+        const sendBtn = document.getElementById('shell-send-btn');
+        if (sendBtn) {
+            if (window.bindTouchButton) {
+                window.bindTouchButton(sendBtn, () => handleShellEnter());
+            } else {
+                sendBtn.addEventListener('click', () => {
+                    handleShellEnter();
+                    shellInput.focus();
+                });
+            }
+        }
+
         // Focus shell input when clicking on output area
         const outputContent = document.getElementById('output-content');
         if (outputContent) {
