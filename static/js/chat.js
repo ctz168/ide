@@ -91,6 +91,33 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
+    /**
+     * Play a completion notification sound using Web Audio API
+     */
+    function playCompletionSound() {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            // Pleasant "ding" sound - two tone
+            oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime); // C5
+            oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime + 0.1); // E5
+            oscillator.frequency.setValueAtTime(783.99, audioContext.currentTime + 0.2); // G5
+
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.001, audioContext.currentTime + 0.4);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.4);
+        } catch (e) {
+            console.warn('Failed to play completion sound:', e);
+        }
+    }
+
     function truncate(str, maxLen) {
         if (!str) return '';
         if (str.length <= maxLen) return str;
@@ -973,6 +1000,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         }
                         summary += ` · ~${tokensUsed} tokens`;
                         setExecuteStatus(summary);
+                        
+                        // Play completion sound and show notification
+                        playCompletionSound();
+                        showToast('✅ Task completed successfully!', 'success', 3000);
+                        
                         // In plan mode, inject action buttons
                         if (chatMode === 'plan' && finalizedEl && streamBuffer) {
                             lastPlanMsgEl = finalizedEl;

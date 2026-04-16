@@ -1239,7 +1239,7 @@ def _compress_context(messages, max_tokens=None):
     return all_msgs
 
 # ==================== Agent Loop ====================
-MAX_AGENT_ITERATIONS = 15
+MAX_AGENT_ITERATIONS = 100  # Increased from 15 for complex tasks
 MAX_ITERATION_RETRIES = 3
 
 def run_agent_loop(user_message, llm_config, history=None, stream_callback=None):
@@ -1529,7 +1529,7 @@ def run_agent_loop_stream(user_message, llm_config):
     history.append(final_assistant)
     save_chat_history(history)
 
-    yield f"data: {json.dumps({'type': 'done', 'iterations': total_iterations, 'tool_calls': len(tool_calls_in_progress)})}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'iterations': total_iterations, 'tool_calls': len(tool_calls_in_progress), 'completed': True})}\n\n"
 
 # ==================== Chat Endpoints ====================
 @bp.route('/api/chat/history', methods=['GET'])
