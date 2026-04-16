@@ -96,11 +96,16 @@ const GitManager = (() => {
             <div class="git-no-changes" style="text-align:center;padding:20px 12px;">
                 <div style="font-size:24px;margin-bottom:8px;">📦</div>
                 <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">此目录不是 Git 仓库</div>
-                <button id="git-init-btn" style="padding:8px 20px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:13px;cursor:pointer;">初始化 Git 仓库</button>
+                <button class="git-init-prompt-btn" style="padding:8px 20px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:13px;cursor:pointer;">初始化 Git 仓库</button>
             </div>`;
-        const btn = document.getElementById('git-init-btn');
+        const btn = el.querySelector('.git-init-prompt-btn');
         if (btn) {
-            btn.addEventListener('click', () => gitInit());
+            // Use bindTouchButton for mobile compatibility if available
+            if (window.bindTouchButton) {
+                window.bindTouchButton(btn, () => gitInit());
+            } else {
+                btn.addEventListener('click', () => gitInit());
+            }
         }
 
         const countEl = document.getElementById('git-status-count');

@@ -21,7 +21,7 @@ from flask import jsonify
 # ==================== Constants ====================
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.environ.get('PHONEIDE_WORKSPACE', os.path.expanduser('~/phoneide_workspace'))
-PORT = int(os.environ.get('PHONEIDE_PORT', 1239))
+PORT = int(os.environ.get('PHONEIDE_PORT', 12345))
 HOST = os.environ.get('PHONEIDE_HOST', '0.0.0.0')
 
 CONFIG_DIR = os.path.expanduser('~/.phoneide')
