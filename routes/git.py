@@ -57,9 +57,24 @@ def git_cmd(args, cwd=None, timeout=60):
 def git_init():
     """Initialize a new git repository in the current directory."""
     cwd = resolve_cwd()
+    print(f'[git/init] cwd={cwd}')
+
+    # Ensure target directory exists
+    if not os.path.isdir(cwd):
+        print(f'[git/init] directory does not exist, creating: {cwd}')
+        try:
+            os.makedirs(cwd, exist_ok=True)
+        except Exception as e:
+            return jsonify({'error': f'无法创建目录 {cwd}: {str(e)}'}), 400
+
     r = git_cmd('init', cwd=cwd)
+    print(f'[git/init] result: ok={r["ok"]}, stderr={r["stderr"][:200]}')
     if not r['ok']:
-        return jsonify({'error': r['stderr']}), 500
+        # Friendly error message
+        stderr = r['stderr'].strip()
+        if 'already' in stderr.lower() or 'reinitialized' in stderr.lower():
+            return jsonify({'ok': True, 'path': cwd, 'note': 'Git 仓库已存在'})
+        return jsonify({'error': f'git init 失败: {stderr or "未知错误"}'}), 500
 
     # Set safe defaults for mobile/termux environments
     git_cmd('config user.name "PhoneIDE"', cwd=cwd)

@@ -896,123 +896,89 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || ''; // keep incomplete line in buffer
 
-                let currentEvent = null;
-                let currentData = '';
-
                 for (const line of lines) {
-                    if (line.startsWith('event: ')) {
-                        currentEvent = line.substring(7).trim();
-                    } else if (line.startsWith('data: ')) {
-                        currentData = line.substring(6);
+                    if (!line.startsWith('data: ')) continue;
+                    const rawData = line.substring(6).trim();
+                    if (!rawData || rawData === '[DONE]') continue;
 
-                        // Process event
-                        if (currentEvent === 'text') {
-                            // Text chunk from assistant
-                            hideTyping();
-                            if (!currentStreamEl) {
-                                startStreamingMessage();
-                            }
-                            // Parse JSON data
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                appendStreamChunk(parsed.content || parsed.text || currentData);
-                            } catch (_) {
-                                appendStreamChunk(currentData);
-                            }
-                        } else if (currentEvent === 'tool_start') {
-                            // Tool execution starting
-                            hideTyping();
-                            // Finalize any in-progress stream
-                            if (currentStreamEl && streamBuffer) {
-                                finalizeStreamMessage();
-                            }
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                currentToolEl = showToolProgress(
-                                    parsed.tool || parsed.name || 'unknown',
-                                    parsed.args
-                                );
-                                setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
-                            } catch (_) {
-                                currentToolEl = showToolProgress('tool', {});
-                            }
-                        } else if (currentEvent === 'tool_result') {
-                            // Tool execution completed
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                const ok = parsed.ok !== false && parsed.error === undefined;
-                                finalizeToolResult(
-                                    currentToolEl,
-                                    parsed.result || parsed.output || parsed.error || '',
-                                    ok
-                                );
-                                iterationCount++;
-                                updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
-                                setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
-                            } catch (_) {
-                                finalizeToolResult(currentToolEl, currentData, true);
-                            }
-                            currentToolEl = null;
-                            forceScrollToBottom();
-                        } else if (currentEvent === 'thinking') {
-                            // Status / thinking message
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                setExecuteStatus(parsed.message || parsed.text || 'Thinking...');
-                                hideTyping();
-                                showTyping();
-                            } catch (_) {
-                                setExecuteStatus('Thinking...');
-                            }
-                        } else if (currentEvent === 'error') {
-                            // Error occurred
-                            hasError = true;
-                            hideTyping();
-                            if (currentStreamEl && streamBuffer) {
-                                finalizeStreamMessage();
-                            }
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                addMessage('error', parsed.message || parsed.error || currentData, {
-                                    retryable: true
-                                });
-                                showToast('Chat error: ' + (parsed.message || parsed.error || 'Unknown error'), 'error');
-                            } catch (_) {
-                                addMessage('error', currentData, { retryable: true });
-                                showToast('Chat error: ' + currentData, 'error');
-                            }
-                        } else if (currentEvent === 'done') {
-                            // Generation complete
-                            hideTyping();
-                            let finalizedEl = null;
-                            if (currentStreamEl && streamBuffer) {
-                                finalizedEl = finalizeStreamMessage();
-                            }
-                            try {
-                                const parsed = JSON.parse(currentData);
-                                const totalDuration = Date.now() - streamingStartTime;
-                                const tokensUsed = estimateTokens(streamBuffer);
-                                let summary = `Completed in ${formatDuration(totalDuration)}`;
-                                if (parsed.iterations) {
-                                    summary += ` · ${parsed.iterations} iteration(s)`;
-                                }
-                                summary += ` · ~${tokensUsed} tokens`;
-                                setExecuteStatus(summary);
-                            } catch (_) {}
-                            // In plan mode, inject action buttons
-                            if (chatMode === 'plan' && finalizedEl && streamBuffer) {
-                                lastPlanMsgEl = finalizedEl;
-                                planContent = streamBuffer;
-                                injectPlanActions(finalizedEl, streamBuffer);
-                            }
+                    // Parse JSON and use 'type' field to determine event type
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(rawData);
+                    } catch (_) {
+                        continue;
+                    }
+
+                    const eventType = parsed.type || '';
+
+                    if (eventType === 'text') {
+                        // Text chunk from assistant
+                        hideTyping();
+                        if (!currentStreamEl) {
+                            startStreamingMessage();
                         }
-
-                        currentEvent = null;
-                        currentData = '';
-                    } else if (line === '' || line.startsWith(':')) {
-                        // Empty line (event separator) or comment — skip
-                        currentEvent = null;
-                        currentData = '';
+                        appendStreamChunk(parsed.content || parsed.text || '');
+                    } else if (eventType === 'tool_start') {
+                        // Tool execution starting
+                        hideTyping();
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        currentToolEl = showToolProgress(
+                            parsed.tool || parsed.name || 'unknown',
+                            parsed.args
+                        );
+                        setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
+                    } else if (eventType === 'tool_result') {
+                        // Tool execution completed
+                        const ok = parsed.ok !== false && parsed.error === undefined;
+                        finalizeToolResult(
+                            currentToolEl,
+                            parsed.result || parsed.output || parsed.error || '',
+                            ok
+                        );
+                        iterationCount++;
+                        updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
+                        setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
+                        currentToolEl = null;
+                        forceScrollToBottom();
+                    } else if (eventType === 'thinking') {
+                        // Status / thinking message
+                        setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
+                        hideTyping();
+                        showTyping();
+                    } else if (eventType === 'error') {
+                        // Error occurred
+                        hasError = true;
+                        hideTyping();
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        addMessage('error', parsed.content || parsed.message || parsed.error || rawData, {
+                            retryable: true
+                        });
+                        showToast('Chat error: ' + (parsed.content || parsed.message || parsed.error || 'Unknown error'), 'error');
+                    } else if (eventType === 'done') {
+                        // Generation complete
+                        hideTyping();
+                        let finalizedEl = null;
+                        if (currentStreamEl && streamBuffer) {
+                            finalizedEl = finalizeStreamMessage();
+                        }
+                        const totalDuration = Date.now() - streamingStartTime;
+                        const tokensUsed = estimateTokens(streamBuffer);
+                        let summary = `Completed in ${formatDuration(totalDuration)}`;
+                        if (parsed.iterations) {
+                            summary += ` · ${parsed.iterations} iteration(s)`;
+                        }
+                        summary += ` · ~${tokensUsed} tokens`;
+                        setExecuteStatus(summary);
+                        // In plan mode, inject action buttons
+                        if (chatMode === 'plan' && finalizedEl && streamBuffer) {
+                            lastPlanMsgEl = finalizedEl;
+                            planContent = streamBuffer;
+                            injectPlanActions(finalizedEl, streamBuffer);
+                        }
                     }
                 }
             }

@@ -35,6 +35,7 @@ const GitManager = (() => {
     async function gitInit() {
         try {
             const gitCwd = getGitCwd();
+            console.log('[GitManager] gitInit called, cwd:', gitCwd);
             const resp = await fetch('/api/git/init', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -44,7 +45,8 @@ const GitManager = (() => {
                 const err = await resp.json().catch(() => ({}));
                 throw new Error(err.error || 'Init failed');
             }
-            showToast('Git 仓库已初始化', 'success');
+            const data = await resp.json();
+            showToast(data.note || 'Git 仓库已初始化', 'success');
             await refresh();
         } catch (err) {
             showToast('初始化失败: ' + err.message, 'error');
