@@ -8,38 +8,79 @@
 
 ## 快速开始
 
-### Termux
+### 一行命令安装（推荐）
 
-```bash
-pkg install python python-pip
-pip install flask flask-cors
-git clone https://github.com/ctz168/ide.git
-cd ide
-python3 server.py
-# 浏览器打开 http://localhost:1239
-```
-
-### Ubuntu / WSL / macOS
-
-```bash
-pip3 install flask flask-cors
-git clone https://github.com/ctz168/ide.git
-cd ide
-python3 server.py
-# 浏览器打开 http://localhost:1239
-```
-
-### 一键安装（Termux）
+自动检测平台、安装 Python 依赖、克隆仓库，支持 Termux / Ubuntu / Debian / Fedora / CentOS / macOS / Alpine / Arch：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+```
+
+安装完成后：
+
+```bash
+cd ~/phoneide-ide && python3 server.py
+```
+
+浏览器打开 `http://localhost:1239` 即可使用。
+
+**自定义安装目录：**
+```bash
+PHONEIDE_INSTALL_DIR=~/my-ide curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+```
+
+**安装并自动启动：**
+```bash
+PHONEIDE_AUTO_START=1 curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+```
+
+### 手动安装
+
+**Termux：**
+```bash
+pkg install python python-pip
+pip install flask flask-cors
+git clone https://github.com/ctz168/ide.git && cd ide
+python3 server.py
+```
+
+**Ubuntu / Debian / WSL：**
+```bash
+sudo apt install python3 python3-pip python3-venv
+pip3 install --break-system-packages flask flask-cors
+git clone https://github.com/ctz168/ide.git && cd ide
+python3 server.py
+```
+
+**macOS：**
+```bash
+brew install python
+pip3 install flask flask-cors
+git clone https://github.com/ctz168/ide.git && cd ide
+python3 server.py
+```
+
+**Fedora / CentOS：**
+```bash
+sudo dnf install python3 python3-pip
+pip3 install flask flask-cors
+git clone https://github.com/ctz168/ide.git && cd ide
+python3 server.py
+```
+
+**Alpine：**
+```bash
+sudo apk add python3 py3-pip
+pip3 install --break-system-packages flask flask-cors
+git clone https://github.com/ctz168/ide.git && cd ide
+python3 server.py
 ```
 
 ### Docker
 
 ```bash
 docker run -d -p 1239:1239 -v ~/phoneide_workspace:/workspace python:3.12-slim bash -c \
-  "pip install flask flask-cors && git clone https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 server.py"
+  "pip install flask flask-cors && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 server.py"
 ```
 
 启动后浏览器打开 `http://localhost:1239` 即可使用。
@@ -85,7 +126,7 @@ ctz168/ide/
 ├── server.py              # Flask 入口，注册 7 个 Blueprint
 ├── utils.py               # 共享工具函数、常量、配置管理
 ├── requirements.txt       # Python 依赖 (flask, flask-cors)
-├── install.sh             # Termux 一键安装脚本
+├── install.sh             # 跨平台一键安装（Termux/Ubuntu/macOS/Fedora/Alpine/Arch）
 ├── start.sh               # 启动脚本（处理端口占用）
 ├── routes/
 │   ├── __init__.py

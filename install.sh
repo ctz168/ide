@@ -1,109 +1,198 @@
 #!/bin/bash
-# PhoneIDE - One-liner installer for Termux
+# PhoneIDE IDE - Cross-platform one-line installer
 #
 # Usage:
-#   bash install.sh                        # Install in current directory
-#   curl -fsSL https://raw.githubusercontent.com/ctz168/phoneide/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
 #
-# Strictly following stableclaw_android's install.sh pattern.
+# Works on: Termux, Ubuntu/Debian, Fedora, CentOS, macOS, Alpine, Arch Linux
+# Installs: Python 3, pip, flask, flask-cors, clones repo, launches server
 
 set -e
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# ── Colors ──────────────────────────────────────────────
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
+fi
 
-echo -e "${BLUE}"
-echo "╔═══════════════════════════════════════════╗"
-echo "║     PhoneIDE Installer                    ║"
-echo "║     Mobile Web IDE for Android            ║"
-echo "╚═══════════════════════════════════════════╝"
+info()  { echo -e "${BLUE}  [✦]${NC} $1"; }
+ok()    { echo -e "${GREEN}  [✓]${NC} $1"; }
+warn()  { echo -e "${YELLOW}  [!]${NC} $1"; }
+fail()  { echo -e "${RED}  [✗]${NC} $1"; }
+
+echo -e "${CYAN}"
+echo "╔══════════════════════════════════════════╗"
+echo "║       PhoneIDE IDE Installer             ║"
+echo "║       Mobile Web IDE                     ║"
+echo "╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# Check if running in Termux
-if [ ! -d "/data/data/com.termux" ] && [ -z "$TERMUX_VERSION" ]; then
-    echo -e "${YELLOW}Warning:${NC} Not running in Termux - some features may not work"
-fi
-
-# Detect package manager
-if command -v pkg &> /dev/null; then
-    PKG_MANAGER="pkg"
-    echo -e "  Detected: Termux"
-elif command -v apt-get &> /dev/null; then
-    PKG_MANAGER="apt-get"
-    echo -e "  Detected: Ubuntu/Debian"
-elif command -v dnf &> /dev/null; then
-    PKG_MANAGER="dnf"
-    echo -e "  Detected: Fedora"
-else
-    echo -e "${YELLOW}Warning:${NC} No recognized package manager found"
-    PKG_MANAGER=""
-fi
-
-install_pkg() {
-    if [ -n "$PKG_MANAGER" ]; then
-        echo -e "  ${GREEN}✓${NC} Installing $1..."
-        if [ "$PKG_MANAGER" = "pkg" ]; then
-            pkg install -y "$1" 2>/dev/null || echo -e "  ${YELLOW}!${NC} Install $1 failed"
-        elif [ "$PKG_MANAGER" = "apt-get" ]; then
-            sudo apt-get install -y "$1" 2>/dev/null || echo -e "  ${YELLOW}!${NC} Install $1 failed"
-        elif [ "$PKG_MANAGER" = "dnf" ]; then
-            sudo dnf install -y "$1" 2>/dev/null || echo -e "  ${YELLOW}!${NC} Install $1 failed"
-        fi
+# ── Detect platform ───────────────────────────────────
+detect_platform() {
+    if [ -n "$TERMUX_VERSION" ] || [ -d "/data/data/com.termux" ]; then
+        echo "termux"
+    elif [ "$(uname)" = "Darwin" ]; then
+        echo "macos"
+    elif command -v apt-get &>/dev/null; then
+        echo "debian"
+    elif command -v dnf &>/dev/null; then
+        echo "fedora"
+    elif command -v yum &>/dev/null; then
+        echo "centos"
+    elif command -v apk &>/dev/null; then
+        echo "alpine"
+    elif command -v pacman &>/dev/null; then
+        echo "arch"
+    elif command -v zypper &>/dev/null; then
+        echo "opensuse"
+    else
+        echo "unknown"
     fi
 }
 
-# Step 1: Install Python
-echo ""
-echo -e "${BLUE}[1/2]${NC} Installing Python..."
-install_pkg python
-install_pkg python3
+PLATFORM=$(detect_platform)
+INSTALL_DIR="${PHONEIDE_INSTALL_DIR:-$HOME/phoneide-ide}"
+INSTALL_DIR="$(echo "$INSTALL_DIR" | sed "s|~|$HOME|")"
 
-if command -v python3 &> /dev/null; then
+info "Platform: $PLATFORM"
+info "Install dir: $INSTALL_DIR"
+echo ""
+
+# ── Package installer ─────────────────────────────────
+install_packages() {
+    # $1 = platform, $2.. = packages
+    local platform="$1"; shift
+    case "$platform" in
+        termux)  pkg install -y "$@" 2>/dev/null ;;
+        debian)  sudo apt-get update -qq && sudo apt-get install -y "$@" 2>/dev/null ;;
+        fedora)  sudo dnf install -y "$@" 2>/dev/null ;;
+        centos)  sudo yum install -y "$@" 2>/dev/null ;;
+        alpine)  sudo apk add --no-progress "$@" 2>/dev/null ;;
+        arch)    sudo pacman -S --noconfirm "$@" 2>/dev/null ;;
+        opensuse) sudo zypper install -y "$@" 2>/dev/null ;;
+        macos)   brew install "$@" 2>/dev/null ;;
+    esac
+}
+
+# ── Step 1: Install Python ─────────────────────────────
+echo -e "${BLUE}[1/3]${NC} Checking Python..."
+
+if command -v python3 &>/dev/null && python3 -c "import sys; exit(0 if sys.version_info >= (3,8) else 1)" 2>/dev/null; then
     PYTHON="python3"
-elif command -v python &> /dev/null; then
+    ok "$($PYTHON --version 2>&1)"
+elif command -v python &>/dev/null && python -c "import sys; exit(0 if sys.version_info >= (3,8) else 1)" 2>/dev/null; then
     PYTHON="python"
+    ok "$($PYTHON --version 2>&1)"
 else
-    echo -e "  ${RED}✗${NC} Python not found! Please install Python 3.8+"
-    exit 1
-fi
-echo -e "  ${GREEN}✓${NC} $($PYTHON --version 2>&1)"
+    info "Python 3.8+ not found, installing..."
+    case "$PLATFORM" in
+        termux)  install_packages termux python python-pip ;;
+        debian)  install_packages debian python3 python3-pip python3-venv ;;
+        fedora)  install_packages fedora python3 python3-pip ;;
+        centos)  install_packages centos python3 python3-pip ;;
+        alpine)  install_packages alpine python3 py3-pip ;;
+        arch)    install_packages arch python python-pip ;;
+        opensuse) install_packages opensuse python3 python3-pip ;;
+        macos)   install_packages macos python ;;
+        *)       warn "Unknown platform — please install Python 3.8+ manually" && exit 1 ;;
+    esac
 
-# Step 2: Install pip + dependencies
-echo ""
-echo -e "${BLUE}[2/2]${NC} Installing pip and dependencies..."
-if ! $PYTHON -m pip --version &> /dev/null; then
-    echo -e "  Installing pip..."
-    if [ "$PKG_MANAGER" = "pkg" ]; then
-        pkg install -y python-pip 2>/dev/null || true
+    # Re-detect after install
+    if command -v python3 &>/dev/null; then
+        PYTHON="python3"
+    elif command -v python &>/dev/null; then
+        PYTHON="python"
     else
-        curl -sS https://bootstrap.pypa.io/get-pip.py | $PYTHON
+        fail "Python installation failed"
+        exit 1
     fi
+    ok "$($PYTHON --version 2>&1)"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-$PYTHON -m pip install --upgrade pip 2>/dev/null || true
-$PYTHON -m pip install flask flask-cors 2>/dev/null || \
-    $PYTHON -m pip install -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null || \
-    echo -e "  ${YELLOW}!${NC} Python dependencies install failed"
+# ── Step 2: Install pip + dependencies ────────────────
+echo ""
+echo -e "${BLUE}[2/3]${NC} Installing dependencies..."
 
-# Create workspace
+# Ensure pip
+if ! $PYTHON -m pip --version &>/dev/null 2>&1; then
+    info "Installing pip..."
+    case "$PLATFORM" in
+        termux)
+            pkg install -y python-pip 2>/dev/null || true
+            ;;
+        macos)
+            # pip should come with python on macOS
+            ;;
+        *)
+            curl -sS https://bootstrap.pypa.io/get-pip.py | $PYTHON 2>/dev/null || \
+            $PYTHON -m ensurepip --upgrade 2>/dev/null || true
+            ;;
+    esac
+fi
+
+if ! $PYTHON -m pip --version &>/dev/null 2>&1; then
+    warn "pip not available — trying alternative install..."
+fi
+
+# Install flask + flask-cors
+# Use --break-system-packages on Debian/Ubuntu 12+ where externally managed env blocks pip
+PIP_FLAGS=""
+if [ "$PLATFORM" = "debian" ] || [ "$PLATFORM" = "ubuntu" ] || [ "$PLATFORM" = "alpine" ]; then
+    $PYTHON -m pip install --break-system-packages flask flask-cors 2>/dev/null || \
+    $PYTHON -m pip install flask flask-cors 2>/dev/null || \
+        warn "pip install failed — try: $PYTHON -m pip install --user flask flask-cors"
+else
+    $PYTHON -m pip install flask flask-cors 2>/dev/null || \
+        warn "pip install failed — try: $PYTHON -m pip install --user flask flask-cors"
+fi
+
+ok "flask + flask-cors"
+
+# ── Step 3: Clone & launch ────────────────────────────
+echo ""
+echo -e "${BLUE}[3/3]${NC} Setting up PhoneIDE IDE..."
+
+# Clone or update
+if [ -d "$INSTALL_DIR/.git" ]; then
+    info "Updating existing installation..."
+    cd "$INSTALL_DIR"
+    git pull --ff-only 2>/dev/null || warn "git pull failed — using existing files"
+else
+    if [ -d "$INSTALL_DIR" ]; then
+        warn "Directory $INSTALL_DIR exists but is not a git repo"
+        INSTALL_DIR="${INSTALL_DIR}-$(date +%s)"
+        warn "Using $INSTALL_DIR instead"
+    fi
+    info "Cloning ctz168/ide..."
+    git clone --depth 1 https://github.com/ctz168/ide.git "$INSTALL_DIR" 2>/dev/null || {
+        fail "git clone failed — check your network"
+        exit 1
+    }
+fi
+
+# Create workspace & config dirs
 mkdir -p "$HOME/phoneide_workspace"
 mkdir -p "$HOME/.phoneide"
 
+ok "Ready at $INSTALL_DIR"
+
+# ── Done ───────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
-echo -e "${GREEN}Installation complete!${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════${NC}"
+echo -e "${GREEN}════════════════════════════════════════════${NC}"
+echo -e "${GREEN}  Installation complete!${NC}"
+echo -e "${GREEN}════════════════════════════════════════════${NC}"
 echo ""
-echo -e "Start PhoneIDE:"
-echo "  cd $SCRIPT_DIR"
-echo "  python3 server.py"
+echo -e "  Start server:"
+echo -e "    ${CYAN}cd $INSTALL_DIR && python3 server.py${NC}"
 echo ""
-echo -e "Open in browser: ${BLUE}http://localhost:1239${NC}"
+echo -e "  Then open: ${BLUE}http://localhost:1239${NC}"
 echo ""
-echo -e "${YELLOW}Tip:${NC} Disable battery optimization for Termux"
-echo ""
+
+# Auto-launch
+if [ -n "$PHONEIDE_AUTO_START" ]; then
+    echo -e "${CYAN}Starting server...${NC}"
+    cd "$INSTALL_DIR"
+    exec python3 server.py
+fi
