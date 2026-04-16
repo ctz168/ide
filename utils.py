@@ -63,6 +63,7 @@ def load_config():
 
 
 def save_config(config):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
@@ -151,6 +152,7 @@ def load_llm_config():
 
 
 def save_llm_config(config):
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(LLM_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
@@ -188,6 +190,7 @@ def load_chat_history():
 def save_chat_history(history):
     # Keep last 200 messages
     history = history[-200:]
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CHAT_HISTORY_FILE, 'w') as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
 
@@ -204,6 +207,7 @@ def load_conversations():
 
 def save_conversations(conversations):
     """Save all conversations."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONVERSATIONS_FILE, 'w') as f:
         json.dump(conversations, f, indent=2, ensure_ascii=False)
 
