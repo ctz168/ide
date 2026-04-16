@@ -984,13 +984,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         // Error occurred
                         hasError = true;
                         hideTyping();
+                        setExecuteStatus('');  // clear retry status
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
                         }
-                        addMessage('error', parsed.content || parsed.message || parsed.error || rawData, {
-                            retryable: true
-                        });
-                        showToast('Chat error: ' + (parsed.content || parsed.message || parsed.error || 'Unknown error'), 'error');
+                        const errMsg = parsed.content || parsed.message || parsed.error || rawData;
+                        addMessage('error', errMsg, { retryable: true });
+                        showToast('Chat error: ' + errMsg, 'error');
                     } else if (eventType === 'done') {
                         // Generation complete
                         hideTyping();

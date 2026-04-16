@@ -1464,6 +1464,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
                     time.sleep(1 * (retry + 1))
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'content': f'LLM API error after {MAX_ITERATION_RETRIES} retries ({e.code}): {body[:500]}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
             except Exception as e:
                 if retry < MAX_ITERATION_RETRIES - 1:
@@ -1471,6 +1472,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
                     time.sleep(1 * (retry + 1))
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'content': f'LLM request failed: {str(e)}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
 
         if response_message is None:
