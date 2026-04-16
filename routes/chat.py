@@ -1060,7 +1060,8 @@ def _get_llm_endpoint(llm_config, model=None):
         # Ollama local server — no auth needed
         if not api_base:
             api_base = 'http://localhost:11434'
-        url = api_base + '/v1/chat/completions'
+        # Ollama uses /api/chat (not /v1/chat/completions)
+        url = api_base + '/api/chat'
     elif api_type == 'azure':
         if not api_base:
             raise Exception('Azure OpenAI: API base URL is required (e.g. https://xxx.openai.azure.com)')
@@ -1071,7 +1072,13 @@ def _get_llm_endpoint(llm_config, model=None):
         # openai / custom — OpenAI-compatible format
         if not api_base:
             api_base = 'https://api.openai.com/v1'
-        url = api_base + '/chat/completions'
+        # Ensure we use /v1/chat/completions/ (with trailing slash to avoid redirects)
+        # If api_base already ends with /v1, use /chat/completions/
+        # Otherwise, use /v1/chat/completions/
+        if api_base.endswith('/v1'):
+            url = api_base + '/chat/completions/'
+        else:
+            url = api_base + '/v1/chat/completions/'
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
 
