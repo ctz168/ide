@@ -145,9 +145,9 @@ def save_file():
 @bp.route('/api/files/create', methods=['POST'])
 @handle_error
 def create_file():
-    data = request.json
+    data = request.json or {}
     path = data.get('path', '')
-    is_dir = data.get('is_dir', False)
+    is_dir = data.get('is_dir', False) or data.get('type', '') == 'directory'
     config = load_config()
     base = config.get('workspace', WORKSPACE)
 

@@ -51,7 +51,7 @@ def load_config():
         'workspace': WORKSPACE,
         'venv_path': '',
         'compiler': 'python3',
-        'theme': 'dark',
+        'theme': 'claude',
         'font_size': 14,
         'tab_size': 4,
         'show_line_numbers': True,

@@ -522,10 +522,6 @@ const AppManager = (() => {
         document.getElementById('btn-redo').addEventListener('click', () => {
             if (window.EditorManager) EditorManager.redo();
         });
-        // Save
-        document.getElementById('btn-save').addEventListener('click', () => {
-            if (window.FileManager) FileManager.saveFile();
-        });
         // Run
         document.getElementById('btn-run').addEventListener('click', async () => {
             if (window.TerminalManager) {
@@ -609,8 +605,11 @@ const AppManager = (() => {
         if (newFileBtn) {
             bindTouchButton(newFileBtn, async () => {
                 try {
-                    if (window.FileManager) await FileManager.createFile();
-                    else showToast('FileManager 未就绪', 'error');
+                    if (window.FileManager && typeof window.FileManager.createFile === 'function') {
+                        await FileManager.createFile();
+                    } else {
+                        showToast('文件管理器尚未加载', 'error');
+                    }
                 } catch (err) {
                     showToast('新建文件失败: ' + err.message, 'error');
                 }
@@ -622,8 +621,11 @@ const AppManager = (() => {
         if (newFolderBtn) {
             bindTouchButton(newFolderBtn, async () => {
                 try {
-                    if (window.FileManager) await FileManager.createFolder();
-                    else showToast('FileManager 未就绪', 'error');
+                    if (window.FileManager && typeof window.FileManager.createFolder === 'function') {
+                        await FileManager.createFolder();
+                    } else {
+                        showToast('文件管理器尚未加载', 'error');
+                    }
                 } catch (err) {
                     showToast('新建文件夹失败: ' + err.message, 'error');
                 }
@@ -676,17 +678,17 @@ const AppManager = (() => {
         let saveTimer = null;
         document.addEventListener('editor:change', () => {
             clearTimeout(saveTimer);
-            saveTimer = setTimeout(() => {
+            saveTimer = setTimeout(async () => {
                 if (window.EditorManager && EditorManager.isDirty() && window.FileManager) {
-                    // Only auto-save if file was previously saved
                     const currentFile = EditorManager.getCurrentFile();
                     if (currentFile) {
-                        FileManager.saveFile().then(() => {
-                            showToast('已自动保存', 'success', 1000);
-                        }).catch(() => {});
+                        try {
+                            await FileManager.saveFile();
+                            // Subtle: no toast for auto-save
+                        } catch (e) {}
                     }
                 }
-            }, 5000);
+            }, 1500);
         });
     }
 
@@ -705,7 +707,7 @@ const AppManager = (() => {
     }
 
     // ── Theme Management ──
-    let currentTheme = 'dark';
+    let currentTheme = 'claude';
     const sunIcon = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
     const moonIcon = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
 
@@ -754,7 +756,7 @@ const AppManager = (() => {
     }
 
     function loadTheme() {
-        // Priority: localStorage > server config > default (dark)
+        // Priority: localStorage > server config > default (claude/light)
         let saved = null;
         try { saved = localStorage.getItem('theme'); } catch (e) {}
 
@@ -768,10 +770,10 @@ const AppManager = (() => {
                     if (config.theme && (config.theme === 'dark' || config.theme === 'claude')) {
                         setTheme(config.theme);
                     } else {
-                        setTheme('dark');
+                        setTheme('claude');
                     }
                 })
-                .catch(() => setTheme('dark'));
+                .catch(() => setTheme('claude'));
         }
     }
 

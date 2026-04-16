@@ -125,7 +125,7 @@ const FileManager = (() => {
             }
             return data;
         } catch (err) {
-            showToast(`Error loading files: ${err.message}`, 'error');
+            safeToast(`Error loading files: ${err.message}`, 'error');
             return [];
         }
     }
@@ -146,8 +146,11 @@ const FileManager = (() => {
             currentFileName = path.split('/').pop();
             fileCache[path] = { content, modified: false };
 
-            // Set content in editor
-            if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+            // Open in tab system
+            if (window.EditorManager && typeof window.EditorManager.openTab === 'function') {
+                window.EditorManager.openTab(path, content, path);
+            } else if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+                // Fallback for older versions
                 window.EditorManager.setContent(content, path);
             }
 
@@ -156,9 +159,9 @@ const FileManager = (() => {
             const activeEl = document.querySelector(`.file-item[data-path="${CSS.escape(path)}"]`);
             if (activeEl) activeEl.classList.add('active');
 
-            showToast(`Opened ${currentFileName}`, 'info');
+            safeToast(`Opened ${currentFileName}`, 'info');
         } catch (err) {
-            showToast(`Error opening file: ${err.message}`, 'error');
+            safeToast(`Error opening file: ${err.message}`, 'error');
         }
     }
 
@@ -175,7 +178,7 @@ const FileManager = (() => {
         if (window.EditorManager && typeof window.EditorManager.getContent === 'function') {
             content = window.EditorManager.getContent();
         } else {
-            showToast('Editor not available', 'error');
+            safeToast('Editor not available', 'error');
             return;
         }
 
@@ -193,10 +196,11 @@ const FileManager = (() => {
             const data = await resp.json();
 
             fileCache[currentFilePath] = { content, modified: false };
-            showToast(`Saved ${currentFileName}`, 'success');
+            safeToast(`Saved ${currentFileName}`, 'success');
             return data;
         } catch (err) {
-            showToast(`Error saving file: ${err.message}`, 'error');
+            safeToast(`Error saving file: ${err.message}`, 'error');
+            else console.warn('[FileManager] Error saving file:', err.message);
         }
     }
 
@@ -217,7 +221,7 @@ const FileManager = (() => {
         if (window.EditorManager && typeof window.EditorManager.getContent === 'function') {
             content = window.EditorManager.getContent();
         } else {
-            showToast('Editor not available', 'error');
+            safeToast('Editor not available', 'error');
             return;
         }
 
@@ -241,11 +245,11 @@ const FileManager = (() => {
                 window.EditorManager.setContent(content, newPath);
             }
 
-            showToast(`Saved as ${currentFileName}`, 'success');
+            safeToast(`Saved as ${currentFileName}`, 'success');
             await loadFileList(currentPath);
             return data;
         } catch (err) {
-            showToast(`Error saving file: ${err.message}`, 'error');
+            safeToast(`Error saving file: ${err.message}`, 'error');
         }
     }
 
@@ -270,13 +274,14 @@ const FileManager = (() => {
                 throw new Error(errData.error || `Failed to create file: ${resp.statusText}`);
             }
 
-            showToast(`Created ${name}`, 'success');
+            safeToast(`Created ${name}`, 'success');
             await loadFileList(currentPath);
 
             // Open the newly created file
             await openFile(path);
         } catch (err) {
-            showToast(`Error creating file: ${err.message}`, 'error');
+            safeToast(`Error creating file: ${err.message}`, 'error');
+            else console.warn('[FileManager] Error creating file:', err.message);
         }
     }
 
@@ -301,10 +306,10 @@ const FileManager = (() => {
                 throw new Error(errData.error || `Failed to create folder: ${resp.statusText}`);
             }
 
-            showToast(`Created folder ${name}`, 'success');
+            safeToast(`Created folder ${name}`, 'success');
             await loadFileList(currentPath);
         } catch (err) {
-            showToast(`Error creating folder: ${err.message}`, 'error');
+            safeToast(`Error creating folder: ${err.message}`, 'error');
         }
     }
 
@@ -328,19 +333,21 @@ const FileManager = (() => {
             // Clear from cache
             delete fileCache[path];
 
-            // If we deleted the currently open file, clear state
+            // If we deleted the currently open file, close the tab
             if (currentFilePath === path) {
                 currentFilePath = null;
                 currentFileName = null;
-                if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
+                if (window.EditorManager && typeof window.EditorManager.closeTab === 'function') {
+                    window.EditorManager.closeTab(path);
+                } else if (window.EditorManager && typeof window.EditorManager.setContent === 'function') {
                     window.EditorManager.setContent('', '');
                 }
             }
 
-            showToast(`Deleted ${name}`, 'success');
+            safeToast(`Deleted ${name}`, 'success');
             await loadFileList(currentPath);
         } catch (err) {
-            showToast(`Error deleting: ${err.message}`, 'error');
+            safeToast(`Error deleting: ${err.message}`, 'error');
         }
     }
 
@@ -350,7 +357,7 @@ const FileManager = (() => {
     async function renameFile(oldPath, newName) {
         if (!oldPath) {
             if (!currentFilePath) {
-                showToast('No file selected to rename', 'warning');
+                safeToast('No file selected to rename', 'warning');
                 return;
             }
             oldPath = currentFilePath;
@@ -391,10 +398,10 @@ const FileManager = (() => {
                 delete fileCache[oldPath];
             }
 
-            showToast(`Renamed to ${newName}`, 'success');
+            safeToast(`Renamed to ${newName}`, 'success');
             await loadFileList(currentPath);
         } catch (err) {
-            showToast(`Error renaming: ${err.message}`, 'error');
+            safeToast(`Error renaming: ${err.message}`, 'error');
         }
     }
 
@@ -655,6 +662,12 @@ const FileManager = (() => {
         document.querySelectorAll('.context-menu').forEach(m => m.remove());
     }
 
+    // ── Safe Toast Helper ──────────────────────────────────────────
+    function safeToast(msg, type) {
+        if (window.showToast) window.safeToast(msg, type);
+        else console.warn('[FileManager]', msg);
+    }
+
     /**
      * Create file in a specific directory (for context menu)
      */
@@ -674,10 +687,10 @@ const FileManager = (() => {
                 const errData = await resp.json().catch(() => ({}));
                 throw new Error(errData.error || `Failed to create file: ${resp.statusText}`);
             }
-            showToast(`Created ${name}`, 'success');
+            safeToast(`Created ${name}`, 'success');
             await loadFileList(currentPath);
         } catch (err) {
-            showToast(`Error creating file: ${err.message}`, 'error');
+            safeToast(`Error creating file: ${err.message}`, 'error');
         }
     }
 
@@ -700,10 +713,10 @@ const FileManager = (() => {
                 const errData = await resp.json().catch(() => ({}));
                 throw new Error(errData.error || `Failed to create folder: ${resp.statusText}`);
             }
-            showToast(`Created folder ${name}`, 'success');
+            safeToast(`Created folder ${name}`, 'success');
             await loadFileList(currentPath);
         } catch (err) {
-            showToast(`Error creating folder: ${err.message}`, 'error');
+            safeToast(`Error creating folder: ${err.message}`, 'error');
         }
     }
 
@@ -802,3 +815,6 @@ const FileManager = (() => {
         pushHistory
     };
 })();
+
+// Expose to window for cross-module access (const doesn't create window properties)
+window.FileManager = FileManager;

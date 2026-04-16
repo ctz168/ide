@@ -143,9 +143,6 @@ html, body {
 #btn-stop {
     color: var(--red);
 }
-#btn-save {
-    color: var(--accent);
-}
 #btn-chat {
     color: var(--mauve);
 }
@@ -717,10 +714,86 @@ html, body {
     padding: 4px 0;
 }
 
+/* ==================== Editor Tabs ==================== */
+.editor-tabs-bar {
+    display: flex;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-shrink: 0;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    position: fixed;
+    top: var(--toolbar-height);
+    left: 0;
+    right: 0;
+    height: 34px;
+    z-index: 99;
+}
+.editor-tabs-bar::-webkit-scrollbar {
+    height: 0;
+}
+.editor-tab {
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    height: 34px;
+    min-width: 0;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-right: 2px solid transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    max-width: 140px;
+    gap: 4px;
+}
+.editor-tab:hover {
+    background: var(--bg-hover);
+}
+.editor-tab.active {
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border-right-color: var(--accent);
+}
+.editor-tab .tab-close {
+    width: 16px;
+    height: 16px;
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    opacity: 0.6;
+}
+.editor-tab:hover .tab-close {
+    opacity: 1;
+    color: var(--red);
+}
+.editor-tab .tab-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.editor-tab .tab-modified {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+}
+
 /* ==================== Main Area ==================== */
 #main-area {
     position: fixed;
-    top: var(--toolbar-height);
+    top: calc(var(--toolbar-height) + 34px);
     left: 0;
     right: 0;
     bottom: 0;
@@ -1425,6 +1498,18 @@ button, .file-item, .search-result-item, .git-change-item {
         --toolbar-height: 38px;
         --bottom-panel-height: 120px;
     }
+    .editor-tabs-bar {
+        height: 28px;
+        top: var(--toolbar-height);
+    }
+    #main-area {
+        top: calc(var(--toolbar-height) + 28px);
+    }
+    .editor-tab {
+        height: 28px;
+        font-size: 11px;
+        padding: 0 8px;
+    }
     #chat-input-area {
         padding: 4px 8px;
         padding-bottom: calc(4px + var(--safe-bottom));
@@ -1805,4 +1890,157 @@ button, .file-item, .search-result-item, .git-change-item {
 }
 .CodeMirror-scroll {
     min-height: 100% !important;
+}
+
+/* ==================== Git Diff View ==================== */
+.diff-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 450;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    animation: fadeIn 0.2s ease;
+}
+
+.diff-container {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.diff-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.diff-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.diff-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.diff-close-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.diff-close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.diff-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+    -webkit-overflow-scrolling: touch;
+}
+
+.diff-line {
+    display: flex;
+    padding: 0 8px;
+    min-height: 18px;
+    white-space: pre;
+}
+
+.diff-line .diff-sign {
+    width: 20px;
+    flex-shrink: 0;
+    text-align: center;
+    color: var(--text-muted);
+    user-select: none;
+}
+
+.diff-line.diff-add {
+    background: rgba(46, 125, 70, 0.2);
+}
+
+.diff-line.diff-add .diff-sign {
+    color: #2D7D46;
+    font-weight: bold;
+}
+
+.diff-line.diff-del {
+    background: rgba(192, 57, 43, 0.2);
+    text-decoration: line-through;
+}
+
+.diff-line.diff-del .diff-sign {
+    color: #C0392B;
+    font-weight: bold;
+}
+
+.diff-line.diff-ctx {
+    color: var(--text-secondary);
+}
+
+.diff-line.diff-meta {
+    color: var(--accent);
+    font-weight: 600;
+    background: rgba(137, 180, 250, 0.1);
+}
+
+.diff-line.diff-hunk {
+    color: var(--blue);
+    font-weight: 600;
+    background: rgba(37, 99, 235, 0.1);
+}
+
+.diff-line.diff-empty {
+    min-height: 8px;
+    background: rgba(69, 71, 90, 0.1);
+}
+
+/* Claude theme diff adjustments */
+[data-theme="claude"] .diff-line.diff-add {
+    background: rgba(45, 125, 70, 0.15);
+}
+
+[data-theme="claude"] .diff-line.diff-del {
+    background: rgba(192, 57, 43, 0.15);
+}
+
+[data-theme="claude"] .diff-line.diff-hunk {
+    color: #2563EB;
+    background: rgba(37, 99, 235, 0.08);
+}
+
+[data-theme="claude"] .diff-line.diff-meta {
+    color: #C4621A;
+    background: rgba(196, 98, 26, 0.08);
 }

@@ -13,6 +13,12 @@ const EditorManager = (() => {
     let statusBar = null;            // cursor position status bar element
     let _historySize = 0;            // last known history size for dirty detection
 
+    // ── Tab State ─────────────────────────────────────────────────
+    let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
+    let tabOrder = [];               // ordered array of open tab paths
+    let activeTab = null;            // path of the currently active tab
+    const tabContainer = null;       // will resolve on init
+
     // ── Config ─────────────────────────────────────────────────────
     const config = {
         fontSize: 12,
@@ -235,6 +241,8 @@ const EditorManager = (() => {
             if (!dirty) {
                 markDirty();
             }
+            // Dispatch custom event for auto-save
+            document.dispatchEvent(new CustomEvent('editor:change'));
             // Live markdown preview update
             if (mdPreviewMode && isMarkdownFile()) {
                 clearTimeout(window._mdPreviewTimer);
@@ -349,6 +357,320 @@ const EditorManager = (() => {
         return labels[mode] || 'Plain Text';
     }
 
+    // ── Tab Management ─────────────────────────────────────────────
+
+    /**
+     * Get the DOM element for the tab bar
+     */
+    function getTabBar() {
+        return document.getElementById('editor-tabs');
+    }
+
+    /**
+     * Save current editor state into the active tab
+     */
+    function saveCurrentTabState() {
+        if (!editor || !activeTab) return;
+        const tab = tabs[activeTab];
+        if (!tab) return;
+
+        tab.content = editor.getValue();
+        tab.mode = currentMode;
+        tab.cursor = editor.getCursor();
+        tab.scroll = editor.getScrollInfo();
+        tab.history = editor.getHistory ? editor.getHistory() : null;
+        tab.dirty = dirty;
+    }
+
+    /**
+     * Render the tab bar UI
+     */
+    function renderTabs() {
+        const bar = getTabBar();
+        if (!bar) return;
+
+        bar.innerHTML = '';
+
+        // Hide tab bar when no tabs are open
+        if (tabOrder.length === 0) {
+            bar.style.display = 'none';
+            document.getElementById('main-area').style.top = 'var(--toolbar-height)';
+            updateFileName();
+            if (editor) editor.refresh();
+            return;
+        }
+
+        bar.style.display = '';
+        document.getElementById('main-area').style.top = 'calc(var(--toolbar-height) + 34px)';
+
+        for (const path of tabOrder) {
+            const tab = tabs[path];
+            if (!tab) continue;
+
+            const btn = document.createElement('button');
+            btn.className = 'editor-tab' + (path === activeTab ? ' active' : '');
+            btn.dataset.path = path;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'tab-name';
+            nameSpan.textContent = tab.name;
+            nameSpan.title = path;
+
+            // Modified indicator
+            if (tab.dirty) {
+                const dot = document.createElement('span');
+                dot.className = 'tab-modified';
+                btn.appendChild(dot);
+            }
+
+            btn.appendChild(nameSpan);
+
+            // Close button
+            const closeBtn = document.createElement('span');
+            closeBtn.className = 'tab-close';
+            closeBtn.textContent = '×';
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeTab(path);
+            });
+            btn.appendChild(closeBtn);
+
+            // Click to switch tab
+            btn.addEventListener('click', () => {
+                if (path !== activeTab) {
+                    switchTab(path);
+                }
+            });
+
+            bar.appendChild(btn);
+        }
+
+        // Update toolbar file name
+        updateFileName();
+    }
+
+    /**
+     * Update the #file-name span in the toolbar
+     */
+    function updateFileName() {
+        const el = document.getElementById('file-name');
+        if (!el) return;
+        if (activeTab && tabs[activeTab]) {
+            el.textContent = tabs[activeTab].name;
+        } else {
+            el.textContent = '未打开文件';
+        }
+    }
+
+    /**
+     * Open a new tab or switch to existing tab
+     * @param {string} path - file path
+     * @param {string} content - file content
+     * @param {object} [modeOrPath] - optional mode override, or path to detect from
+     */
+    function openTab(path, content, modeOrPath) {
+        if (!path) return;
+
+        const name = path.split('/').pop();
+
+        // If tab already exists, switch to it
+        if (tabs[path]) {
+            // Update content if provided (file was reloaded from disk)
+            if (content !== undefined) {
+                tabs[path].content = content;
+                if (path === activeTab) {
+                    // Tab is active, update editor content directly
+                    if (editor) {
+                        editor.setValue(content);
+                        editor.clearHistory();
+                        _historySize = 0;
+                        markClean();
+                    }
+                }
+            }
+            switchTab(path);
+            return;
+        }
+
+        // Save current tab state before opening new one
+        saveCurrentTabState();
+
+        // Determine mode
+        let mode = currentMode;
+        if (modeOrPath) {
+            if (typeof modeOrPath === 'string' && (modeOrPath.includes('/') || modeOrPath.includes('.'))) {
+                mode = getModeForFilename(modeOrPath.split('/').pop());
+            } else {
+                mode = modeOrPath;
+            }
+        } else {
+            mode = getModeForFilename(name);
+        }
+
+        // Create tab state
+        tabs[path] = {
+            name: name,
+            content: (content !== undefined && content !== null) ? String(content) : '',
+            mode: mode,
+            cursor: { line: 0, ch: 0 },
+            scroll: { left: 0, top: 0 },
+            history: null,
+            dirty: false
+        };
+
+        // Add to tab order (if switching from another tab, place after it)
+        if (activeTab && tabOrder.indexOf(activeTab) >= 0) {
+            const idx = tabOrder.indexOf(activeTab);
+            tabOrder.splice(idx + 1, 0, path);
+        } else {
+            tabOrder.push(path);
+        }
+
+        // Load content into editor
+        currentFilePath = path;
+        currentMode = mode;
+        activeTab = path;
+
+        if (editor) {
+            editor.setValue(tabs[path].content);
+            editor.clearHistory();
+            _historySize = 0;
+            setMode(mode);
+            markClean();
+            updateCursorPos();
+            updateMarkdownButton();
+            editor.focus();
+
+            if (mdPreviewMode && isMarkdownFile()) {
+                renderMarkdownPreview();
+            }
+        }
+
+        renderTabs();
+    }
+
+    /**
+     * Switch to an existing tab
+     * @param {string} path - file path of the tab to switch to
+     */
+    function switchTab(path) {
+        if (!path || !tabs[path] || path === activeTab) return;
+
+        // Save current tab state
+        saveCurrentTabState();
+
+        // Load new tab state
+        const tab = tabs[path];
+        activeTab = path;
+        currentFilePath = path;
+        currentMode = tab.mode;
+
+        if (editor) {
+            editor.setValue(tab.content);
+            if (tab.history) {
+                editor.setHistory(tab.history);
+            } else {
+                editor.clearHistory();
+                _historySize = 0;
+            }
+            setMode(tab.mode);
+            editor.setCursor(tab.cursor);
+            editor.scrollTo(tab.scroll.left, tab.scroll.top);
+            dirty = !!tab.dirty;
+            updateTitle();
+            updateCursorPos();
+            updateMarkdownButton();
+            editor.focus();
+
+            if (mdPreviewMode && isMarkdownFile()) {
+                renderMarkdownPreview();
+            }
+        }
+
+        renderTabs();
+    }
+
+    /**
+     * Close a tab
+     * @param {string} path - file path of the tab to close
+     */
+    function closeTab(path) {
+        if (!path || !tabs[path]) return;
+
+        // Remove from state
+        delete tabs[path];
+        const idx = tabOrder.indexOf(path);
+        if (idx >= 0) tabOrder.splice(idx, 1);
+
+        // If it was the active tab, switch to adjacent
+        if (path === activeTab) {
+            activeTab = null;
+            currentFilePath = null;
+
+            // Find adjacent tab
+            let nextPath = null;
+            if (tabOrder.length > 0) {
+                // Try tab at same index, or previous
+                nextPath = tabOrder[Math.min(idx, tabOrder.length - 1)];
+            }
+
+            if (nextPath) {
+                switchTab(nextPath);
+            } else {
+                // No more tabs - show empty editor
+                if (editor) {
+                    editor.setValue('');
+                    editor.clearHistory();
+                    _historySize = 0;
+                    currentMode = 'text/plain';
+                    setMode('text/plain');
+                    markClean();
+                    updateMarkdownButton();
+                }
+                renderTabs();
+            }
+        } else {
+            renderTabs();
+        }
+    }
+
+    /**
+     * Get list of all open tab paths
+     * @returns {string[]}
+     */
+    function getTabList() {
+        return [...tabOrder];
+    }
+
+    /**
+     * Check if a tab is open
+     * @param {string} path
+     * @returns {boolean}
+     */
+    function hasTab(path) {
+        return !!tabs[path];
+    }
+
+    /**
+     * Get the active tab path
+     * @returns {string|null}
+     */
+    function getActiveTab() {
+        return activeTab;
+    }
+
+    /**
+     * Update the dirty state of a specific tab
+     * @param {string} path
+     * @param {boolean} isDirty
+     */
+    function setTabDirty(path, isDirty) {
+        if (tabs[path]) {
+            tabs[path].dirty = isDirty;
+            renderTabs();
+        }
+    }
+
     // ── Content Management ─────────────────────────────────────────
 
     /**
@@ -458,6 +780,10 @@ const EditorManager = (() => {
     function markClean() {
         dirty = false;
         updateTitle();
+        if (activeTab && tabs[activeTab]) {
+            tabs[activeTab].dirty = false;
+            renderTabs();
+        }
     }
 
     /**
@@ -466,6 +792,10 @@ const EditorManager = (() => {
     function markDirty() {
         dirty = true;
         updateTitle();
+        if (activeTab && tabs[activeTab]) {
+            tabs[activeTab].dirty = true;
+            renderTabs();
+        }
     }
 
     /**
@@ -766,6 +1096,101 @@ const EditorManager = (() => {
         }
     }
 
+    // ── Git Diff View ────────────────────────────────────────────
+
+    /**
+     * Show a git diff view with red/green line highlighting
+     * @param {string} diffText - unified diff text
+     * @param {string} title - diff title (filename or 'All changes')
+     */
+    function showDiff(diffText, title) {
+        if (!diffText) {
+            showToast('No diff to display', 'info');
+            return;
+        }
+
+        title = title || 'Diff';
+
+        // Create diff overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'diff-overlay';
+        overlay.id = 'diff-overlay';
+
+        const container = document.createElement('div');
+        container.className = 'diff-container';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'diff-header';
+        header.innerHTML = `
+            <span class="diff-title">🔀 ${escapeHTML(title)}</span>
+            <div class="diff-actions">
+                <button class="diff-close-btn" title="Close">✕</button>
+            </div>
+        `;
+        container.appendChild(header);
+
+        // Diff content
+        const content = document.createElement('div');
+        content.className = 'diff-content';
+
+        const lines = diffText.split('\n');
+        let html = '';
+
+        for (const line of lines) {
+            let escaped = escapeHTML(line);
+            if (escaped === '') {
+                html += '<div class="diff-line diff-empty"></div>';
+            } else if (escaped.startsWith('@@')) {
+                html += `<div class="diff-line diff-hunk">${escaped}</div>`;
+            } else if (escaped.startsWith('---') || escaped.startsWith('+++')) {
+                html += `<div class="diff-line diff-meta">${escaped}</div>`;
+            } else if (escaped.startsWith('+')) {
+                // Remove the leading + and highlight
+                const code = escaped.substring(1);
+                html += `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
+            } else if (escaped.startsWith('-')) {
+                const code = escaped.substring(1);
+                html += `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
+            } else {
+                html += `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+            }
+        }
+
+        content.innerHTML = html;
+        container.appendChild(content);
+
+        overlay.appendChild(container);
+        document.body.appendChild(overlay);
+
+        // Close handler
+        const closeBtn = header.querySelector('.diff-close-btn');
+        closeBtn.addEventListener('click', () => {
+            overlay.remove();
+        });
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) overlay.remove();
+        });
+
+        // Escape key
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                overlay.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    /**
+     * Escape HTML for safe rendering
+     */
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+
     // ── Auto-init when DOM is ready ────────────────────────────────
 
     if (document.readyState === 'loading') {
@@ -823,7 +1248,19 @@ const EditorManager = (() => {
         // Markdown
         isMarkdownFile,
         toggleMarkdownPreview,
-        renderMarkdownPreview
+        renderMarkdownPreview,
+
+        // Tab management
+        openTab,
+        closeTab,
+        switchTab,
+        getTabList,
+        hasTab,
+        getActiveTab,
+        setTabDirty,
+
+        // Diff view
+        showDiff
     };
 })();
 

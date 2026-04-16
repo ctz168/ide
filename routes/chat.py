@@ -1074,7 +1074,11 @@ def _call_llm_api(messages, llm_config, stream=False):
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
 
     with urllib.request.urlopen(req, timeout=180) as resp:
-        result = json.loads(resp.read().decode())
+        resp_body = resp.read().decode()
+        try:
+            result = json.loads(resp_body)
+        except (json.JSONDecodeError, ValueError) as je:
+            raise Exception(f'Invalid JSON response from LLM API: {str(je)}')
     return result
 
 def _call_llm_stream_raw(messages, llm_config):
@@ -1578,3 +1582,63 @@ def update_llm_config():
     config = request.json
     save_llm_config(config)
     return jsonify({'ok': True})
+
+
+@bp.route('/api/llm/test', methods=['POST'])
+@handle_error
+def test_llm_config():
+    """Test the current LLM configuration by sending a simple request."""
+    try:
+        llm_config = load_llm_config()
+        api_key = llm_config.get('api_key', '')
+        if not api_key:
+            return jsonify({'ok': False, 'error': 'API key not configured'})
+
+        api_base = llm_config.get('api_base', 'https://api.openai.com/v1').rstrip('/') + '/'
+        model = llm_config.get('model', 'gpt-4o-mini')
+
+        url = api_base + 'chat/completions'
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}',
+        }
+        payload = {
+            'model': model,
+            'messages': [{'role': 'user', 'content': 'Hi, this is a test message. Reply with just "OK".'}],
+            'max_tokens': 10,
+        }
+
+        req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read().decode()
+            try:
+                result = json.loads(resp_body)
+            except (json.JSONDecodeError, ValueError) as je:
+                return jsonify({'ok': False, 'error': f'Invalid JSON response from API: {str(je)}', 'raw': resp_body[:500]})
+
+        model_used = model
+        try:
+            model_used = result.get('model', model)
+            usage = result.get('usage', {})
+            tokens = usage.get('total_tokens', 0)
+        except Exception:
+            tokens = 0
+
+        return jsonify({'ok': True, 'model': model_used, 'tokens': tokens})
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode()[:500]
+        except Exception:
+            pass
+        # Try to extract JSON error message from the body
+        try:
+            err_data = json.loads(body)
+            err_msg = err_data.get('error', {}).get('message', body[:300])
+        except Exception:
+            err_msg = body[:300]
+        return jsonify({'ok': False, 'error': f'HTTP {e.code}: {err_msg}'})
+    except urllib.error.URLError as e:
+        return jsonify({'ok': False, 'error': f'Connection failed: {str(e.reason)}'})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
