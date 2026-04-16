@@ -105,53 +105,17 @@ def _get_local_commit():
 @bp.route('/api/update/check', methods=['POST'])
 @handle_error
 def update_check():
-    """Check for updates: APK update from ctz168/phoneide, code update from ctz168/ide."""
+    """Check for code updates only from ctz168/ide repository.
+    
+    Note: APK updates are intentionally disabled to avoid requiring
+    app termination for installation (self-killing paradox).
+    """
     try:
         # Get current version
         current_version = _get_current_version()
-        current_ver = _parse_version(current_version)
 
         # Get local commit SHA
         local_sha = _get_local_commit()
-
-        # === APK Update Check (from ctz168/phoneide releases) ===
-        apk_url = ''
-        apk_size = 0
-        latest_tag = ''
-        release_name = ''
-        release_body = ''
-        release_date = ''
-        html_url = ''
-        apk_update = False
-
-        try:
-            release_data = _fetch_github_json(APK_RELEASES_URL)
-            latest_tag = release_data.get('tag_name', '')
-            release_name = release_data.get('name', latest_tag)
-            release_body = release_data.get('body', '')
-            release_date = release_data.get('published_at', '')
-            html_url = release_data.get('html_url', '')
-
-            # Find the release APK asset
-            for asset in release_data.get('assets', []):
-                if asset.get('name', '').endswith('.apk') and 'release' in asset.get('name', '').lower():
-                    apk_url = asset.get('browser_download_url', '')
-                    apk_size = asset.get('size', 0)
-                    break
-            if not apk_url:
-                for asset in release_data.get('assets', []):
-                    if asset.get('name', '').endswith('.apk'):
-                        apk_url = asset.get('browser_download_url', '')
-                        apk_size = asset.get('size', 0)
-                        break
-
-            latest_ver = _parse_version(latest_tag)
-            if apk_url and current_ver and latest_ver:
-                apk_update = latest_ver > current_ver
-            elif apk_url and not current_ver:
-                apk_update = True
-        except Exception:
-            pass
 
         # === Code Update Check (from ctz168/ide commits) ===
         remote_sha = ''
@@ -164,25 +128,25 @@ def update_check():
 
             if local_sha and remote_sha and local_sha != remote_sha:
                 code_update = True
-        except Exception:
+        except Exception as e:
+            # If GitHub API fails, assume no update
+            log_write(f'[UPDATE] GitHub check failed: {e}')
             pass
 
-        update_available = apk_update or code_update
-
         return jsonify({
-            'update_available': update_available,
-            'apk_update': apk_update,
-            'code_update': code_update and not apk_update,
+            'update_available': code_update,
+            'apk_update': False,  # Disabled
+            'code_update': code_update,
             'current_version': current_version,
-            'new_version': latest_tag.lstrip('v'),
-            'latest_tag': latest_tag,
-            'release_name': release_name,
-            'release_body': release_body,
-            'release_date': release_date,
-            'release_url': html_url,
-            'apk_url': apk_url,
-            'apk_size': apk_size,
-            'apk_size_human': f'{apk_size / 1024 / 1024:.1f}MB' if apk_size > 0 else 'Unknown',
+            'new_version': '',  # Not applicable for code updates
+            'latest_tag': '',
+            'release_name': '',
+            'release_body': '',
+            'release_date': '',
+            'release_url': '',
+            'apk_url': '',
+            'apk_size': 0,
+            'apk_size_human': '',
             'local_sha': local_sha[:8] if local_sha else 'unknown',
             'remote_sha': remote_sha[:8] if remote_sha else 'unknown',
             'remote_message': remote_message.split('\n')[0] if remote_message else '',

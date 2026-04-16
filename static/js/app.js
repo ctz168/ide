@@ -1135,19 +1135,7 @@ const AppManager = (() => {
             if (data.update_available) {
                 // Update available
                 let info = '';
-                if (data.apk_update) {
-                    info += 'APK Update Available!\n';
-                    info += 'New version: ' + (data.new_version || data.latest_tag || 'unknown') + '\n';
-                    info += 'APK size: ' + (data.apk_size_human || 'unknown') + '\n';
-                    if (data.release_body) info += '\n' + data.release_body + '\n';
-                    // Show "Update Now" button for APK install
-                    if (applyBtn) {
-                        applyBtn.textContent = '下载安装 APK';
-                        applyBtn.classList.remove('hidden');
-                        applyBtn.dataset.apkUrl = data.apk_url || '';
-                        applyBtn.dataset.version = data.new_version || data.latest_tag || '';
-                    }
-                } else if (data.code_update) {
+                if (data.code_update) {
                     info += 'Code Update Available\n';
                     info += 'Commits behind: ' + (data.commits_behind || '?') + '\n';
                     if (data.remote_message) info += 'Latest: ' + data.remote_message + '\n';
