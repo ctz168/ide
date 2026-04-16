@@ -10,31 +10,56 @@
 
 ### 一行命令安装（推荐）
 
-自动检测平台、安装 Python 依赖、克隆仓库，支持 Termux / Ubuntu / Debian / Fedora / CentOS / macOS / Alpine / Arch：
+自动检测平台、安装 Python 依赖、克隆仓库。一行搞定，复制粘贴即可：
 
+**Linux / macOS / Termux：**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+```
+
+**Windows（PowerShell）：**
+```powershell
+irm https://raw.githubusercontent.com/ctz168/ide/main/install.ps1 | iex
 ```
 
 安装完成后：
 
 ```bash
-cd ~/phoneide-ide && python3 server.py
+cd ~/phoneide-ide && python3 server.py      # Linux / macOS
+cd $env:USERPROFILE\phoneide-ide; python server.py  # Windows
 ```
 
 浏览器打开 `http://localhost:1239` 即可使用。
 
+> 支持平台：Termux、Ubuntu/Debian、Fedora、CentOS、macOS、Alpine、Arch、openSUSE、Windows 10/11
+
 **自定义安装目录：**
 ```bash
-PHONEIDE_INSTALL_DIR=~/my-ide curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+# Linux / macOS
+PHONEIDE_INSTALL_DIR=~/my-ide curl -fsSL ... | bash
+# Windows
+$env:PHONEIDE_INSTALL_DIR="C:\my-ide"; irm ... | iex
 ```
 
 **安装并自动启动：**
 ```bash
-PHONEIDE_AUTO_START=1 curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
+# Linux / macOS
+PHONEIDE_AUTO_START=1 curl -fsSL ... | bash
+# Windows
+$env:PHONEIDE_AUTO_START="1"; irm ... | iex
 ```
 
 ### 手动安装
+
+**Windows：**
+```powershell
+# 1. 安装 Python 3.8+（去 https://www.python.org/downloads/ 下载，安装时勾选 Add to PATH）
+# 2. 打开 PowerShell
+pip install flask flask-cors
+git clone https://github.com/ctz168/ide.git
+cd ide
+python server.py
+```
 
 **Termux：**
 ```bash
@@ -126,7 +151,8 @@ ctz168/ide/
 ├── server.py              # Flask 入口，注册 7 个 Blueprint
 ├── utils.py               # 共享工具函数、常量、配置管理
 ├── requirements.txt       # Python 依赖 (flask, flask-cors)
-├── install.sh             # 跨平台一键安装（Termux/Ubuntu/macOS/Fedora/Alpine/Arch）
+├── install.sh             # Linux/macOS 一键安装（Termux/Ubuntu/macOS/Fedora/Alpine/Arch）
+├── install.ps1            # Windows PowerShell 一键安装
 ├── start.sh               # 启动脚本（处理端口占用）
 ├── routes/
 │   ├── __init__.py
@@ -308,7 +334,9 @@ git pull
 |------|----------|
 | Python | 3.8+ |
 | 依赖包 | flask >= 3.0.0, flask-cors >= 4.0.0 |
-| 浏览器 | Chrome / Firefox / Safari（近两年版本） |
+| Git | 用于克隆仓库（安装脚本会自动安装） |
+| 操作系统 | Windows 10/11, macOS, Linux (Termux/Ubuntu/Debian/Fedora/CentOS/Alpine/Arch) |
+| 浏览器 | Chrome / Firefox / Safari / Edge（近两年版本） |
 
 ## 相关仓库
 
