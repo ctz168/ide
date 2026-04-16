@@ -1307,7 +1307,17 @@ const AppManager = (() => {
             // Wire up chat settings button - use ChatManager's full settings dialog (with Test button)
             const chatSettingsBtn = document.getElementById('chat-settings-btn');
             if (chatSettingsBtn && window.ChatManager && ChatManager.showSettingsDialog) {
-                chatSettingsBtn.addEventListener('click', () => ChatManager.showSettingsDialog());
+                const openSettings = () => {
+                    ChatManager.showSettingsDialog().catch(err => {
+                        console.error('[PhoneIDE] Settings dialog error:', err);
+                        showToast('设置对话框打开失败: ' + err.message, 'error');
+                    });
+                };
+                if (typeof bindTouchButton === 'function') {
+                    bindTouchButton(chatSettingsBtn, openSettings);
+                } else {
+                    chatSettingsBtn.addEventListener('click', openSettings);
+                }
             }
 
             showToast('PhoneIDE 就绪', 'success', 1500);

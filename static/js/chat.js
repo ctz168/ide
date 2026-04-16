@@ -1142,6 +1142,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     async function showSettingsDialog() {
+        try {
         removeSettingsDialog();
 
         const config = await loadLLMConfig() || {};
@@ -1284,6 +1285,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         const firstInput = overlay.querySelector('input, select, textarea');
         if (firstInput) setTimeout(() => firstInput.focus(), 100);
+        } catch (err) {
+            console.error('ChatManager: showSettingsDialog error:', err);
+            throw err;
+        }
     }
 
     function removeSettingsDialog() {
