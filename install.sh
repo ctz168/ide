@@ -113,7 +113,7 @@ fi
 
 # ── Step 2: Install pip + dependencies ────────────────
 echo ""
-echo -e "${BLUE}[2/3]${NC} Installing dependencies..."
+echo -e "${BLUE}[2/4]${NC} Installing dependencies..."
 
 # Ensure pip
 if ! $PYTHON -m pip --version &>/dev/null 2>&1; then
@@ -160,7 +160,7 @@ CLONE_URLS=(
 
 # ── Step 3: Clone & launch ────────────────────────────
 echo ""
-echo -e "${BLUE}[3/3]${NC} Setting up PhoneIDE IDE..."
+echo -e "${BLUE}[3/4]${NC} Setting up PhoneIDE IDE..."
 
 # Clone or update
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -211,6 +211,59 @@ else
         git remote set-url origin https://github.com/ctz168/ide.git 2>/dev/null || true
         info "Remote set to official GitHub URL"
     fi
+fi
+
+# ── Step 4: Final verification in target environment ──
+echo ""
+echo -e "${BLUE}[4/4]${NC} Verifying in target environment..."
+
+VERIFY_FAILED=false
+if ! python3 -c "import flask" 2>/dev/null; then
+    info "flask not found in current python3 — installing..."
+    if command -v pip3 &>/dev/null; then
+        pip3 install --break-system-packages flask flask-cors 2>&1 || \
+        pip3 install flask flask-cors 2>&1 || \
+        pip3 install --user flask flask-cors 2>&1 || VERIFY_FAILED=true
+    elif command -v pip &>/dev/null; then
+        pip install --break-system-packages flask flask-cors 2>&1 || \
+        pip install flask flask-cors 2>&1 || \
+        pip install --user flask flask-cors 2>&1 || VERIFY_FAILED=true
+    else
+        # Try via python3 -m pip
+        python3 -m pip install --break-system-packages flask flask-cors 2>&1 || \
+        python3 -m pip install flask flask-cors 2>&1 || \
+        python3 -m ensurepip 2>/dev/null && python3 -m pip install flask flask-cors 2>&1 || VERIFY_FAILED=true
+    fi
+    if $VERIFY_FAILED; then
+        # Last resort: apt-get (works in proot Ubuntu)
+        if command -v apt-get &>/dev/null; then
+            apt-get update -qq 2>/dev/null
+            apt-get install -y python3-flask 2>/dev/null || \
+            apt-get install -y python3-pip 2>/dev/null && pip3 install flask flask-cors 2>/dev/null || \
+                warn "Could not install flask automatically"
+        else
+            warn "Could not install flask automatically"
+        fi
+    else
+        ok "flask installed"
+    fi
+else
+    ok "flask $(python3 -c 'import flask; print(flask.__version__)' 2>/dev/null)"
+fi
+
+if ! python3 -c "import flask_cors" 2>/dev/null; then
+    info "flask-cors missing — installing..."
+    pip3 install --break-system-packages flask-cors 2>/dev/null || \
+    pip3 install flask-cors 2>/dev/null || \
+    python3 -m pip install flask-cors 2>/dev/null || true
+fi
+
+# Final smoke test
+if python3 -c "from flask import Flask; from flask_cors import CORS; print('OK')" 2>/dev/null; then
+    ok "All dependencies ready"
+else
+    warn "Flask import still fails — you may need to run:"
+    echo -e "  ${CYAN}pip3 install flask flask-cors${NC}"
 fi
 
 # Create workspace & config dirs
