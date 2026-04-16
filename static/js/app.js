@@ -1423,7 +1423,7 @@ const AppManager = (() => {
             }
 
             // Load compilers
-            if (window.TerminalManager) await TerminalManager.loadCompilers();
+            if (window.TerminalManager) await TerminalManager.init();
 
             // Load file tree (pass no path to use workspace root)
             if (window.FileManager) await FileManager.loadFileList();
@@ -1433,11 +1433,6 @@ const AppManager = (() => {
 
             // Load chat history
             if (window.ChatManager) await ChatManager.loadHistory();
-
-            // Load venv info (already called in TerminalManager.init, but ensure loaded)
-            if (window.TerminalManager && typeof TerminalManager.loadVenvInfo === 'function') {
-                await TerminalManager.loadVenvInfo();
-            }
 
             // Wire up chat settings button - use ChatManager's full settings dialog (with Test button)
             const chatSettingsBtn = document.getElementById('chat-settings-btn');
