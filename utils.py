@@ -44,9 +44,12 @@ def log_write(line):
 
 # ==================== Config Management ====================
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
     return {
         'workspace': WORKSPACE,
         'venv_path': '',

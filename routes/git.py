@@ -18,7 +18,10 @@ def resolve_cwd():
     This function joins it with the configured workspace to get an absolute path.
     If no path is provided, the workspace root is used.
     """
-    config = load_config()
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
     base = config.get('workspace', WORKSPACE)
 
     # Try query string first (GET requests)
@@ -40,7 +43,10 @@ def resolve_cwd():
 
 
 def git_cmd(args, cwd=None, timeout=60):
-    config = load_config()
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
     base = cwd or config.get('workspace', WORKSPACE)
     cmd = f'git -C {shlex_quote(base)} {args}'
     try:
@@ -53,13 +59,26 @@ def git_cmd(args, cwd=None, timeout=60):
 
 
 @bp.route('/api/git/init', methods=['POST'])
-@handle_error
 def git_init():
     """Initialize a new git repository in the current directory."""
-    cwd = resolve_cwd()
-    print(f'[git/init] cwd={cwd}')
+    # Step 1: resolve working directory
+    try:
+        cwd = resolve_cwd()
+        print(f'[git/init] cwd={cwd}')
+    except Exception as e:
+        print(f'[git/init] resolve_cwd error: {e}')
+        return jsonify({'error': f'路径解析失败: {str(e)}'}), 400
 
-    # Ensure target directory exists
+    # Step 2: verify git is available
+    try:
+        git_ver = subprocess.run('git --version', shell=True, capture_output=True, text=True, timeout=10)
+        if git_ver.returncode != 0:
+            return jsonify({'error': f'Git 未安装或不可用: {(git_ver.stderr or git_ver.stdout).strip()}'}), 500
+        print(f'[git/init] git version: {git_ver.stdout.strip()}')
+    except Exception as e:
+        return jsonify({'error': f'Git 检查失败: {str(e)}'}), 500
+
+    # Step 3: ensure target directory exists
     if not os.path.isdir(cwd):
         print(f'[git/init] directory does not exist, creating: {cwd}')
         try:
@@ -67,19 +86,30 @@ def git_init():
         except Exception as e:
             return jsonify({'error': f'无法创建目录 {cwd}: {str(e)}'}), 400
 
+    # Step 4: check write permission
+    test_file = os.path.join(cwd, '.git_write_test')
+    try:
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+    except Exception as e:
+        return jsonify({'error': f'目录没有写入权限: {str(e)}'}), 400
+
+    # Step 5: run git init
     r = git_cmd('init', cwd=cwd)
-    print(f'[git/init] result: ok={r["ok"]}, stderr={r["stderr"][:200]}')
+    print(f'[git/init] result: ok={r["ok"]}, code={r["code"]}, stderr={r["stderr"][:200]}')
+
     if not r['ok']:
-        # Friendly error message
         stderr = r['stderr'].strip()
         if 'already' in stderr.lower() or 'reinitialized' in stderr.lower():
             return jsonify({'ok': True, 'path': cwd, 'note': 'Git 仓库已存在'})
-        return jsonify({'error': f'git init 失败: {stderr or "未知错误"}'}), 500
+        return jsonify({'error': f'Git 初始化失败: {stderr or "未知错误"}'}), 500
 
-    # Set safe defaults for mobile/termux environments
+    # Step 6: set safe defaults for mobile/termux environments
     git_cmd('config user.name "PhoneIDE"', cwd=cwd)
     git_cmd('config user.email "phoneide@local"', cwd=cwd)
 
+    print(f'[git/init] success, cwd={cwd}')
     return jsonify({'ok': True, 'path': cwd})
 
 

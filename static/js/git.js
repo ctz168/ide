@@ -42,8 +42,14 @@ const GitManager = (() => {
                 body: JSON.stringify({ path: gitCwd })
             });
             if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.error || 'Init failed');
+                let errorMsg = '未知错误';
+                try {
+                    const err = await resp.json();
+                    errorMsg = err.error || err.message || '初始化失败';
+                } catch (e) {
+                    errorMsg = `服务器错误 (${resp.status})`;
+                }
+                throw new Error(errorMsg);
             }
             const data = await resp.json();
             showToast(data.note || 'Git 仓库已初始化', 'success');
