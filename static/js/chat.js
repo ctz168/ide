@@ -1039,6 +1039,37 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
     }
 
+    // ── API: New Chat ───────────────────────────────────────────────
+
+    async function newChat() {
+        if (isProcessing) {
+            showToast('Please wait for current generation to finish', 'warning');
+            return;
+        }
+        try {
+            // Clear backend history
+            const resp = await fetch('/api/chat/clear', { method: 'POST' });
+            if (!resp.ok) throw new Error(`Failed to clear: ${resp.statusText}`);
+            await resp.json();
+
+            // Clear local state
+            messages = [];
+            lastUserMessage = null;
+            renderMessages([]);
+
+            // Focus input
+            const input = document.getElementById('chat-input');
+            if (input) {
+                input.value = '';
+                input.focus();
+            }
+
+            showToast('New conversation started', 'success');
+        } catch (err) {
+            showToast('Error starting new chat: ' + err.message, 'error');
+        }
+    }
+
     // ── Re-Send Last Message ───────────────────────────────────────
 
     async function resendLastMessage() {
@@ -1885,6 +1916,15 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             input.addEventListener('input', autoResizeInput);
         }
 
+        // New chat button
+        const newChatBtn = document.getElementById('chat-new-chat');
+        if (newChatBtn) {
+            newChatBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                newChat();
+            });
+        }
+
         // Clear button
         const clearBtn = document.getElementById('chat-clear');
         if (clearBtn) {
@@ -1992,6 +2032,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         addMessage,
         sendMessage,
         clearHistory,
+        newChat,
         loadHistory,
         scrollToBottom: forceScrollToBottom,
         showSettingsDialog,
