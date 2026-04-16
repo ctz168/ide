@@ -66,17 +66,85 @@ def save_config(config):
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-def load_llm_config():
-    if os.path.exists(LLM_CONFIG_FILE):
-        with open(LLM_CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {
+DEFAULT_LLM_MODELS = [
+    {
+        'name': 'OpenAI',
         'provider': 'openai',
+        'api_type': 'openai',
         'api_key': '',
         'api_base': '',
         'model': 'gpt-4o-mini',
+        'enabled': True,
         'temperature': 0.7,
         'max_tokens': 4096,
+    },
+    {
+        'name': 'Anthropic',
+        'provider': 'anthropic',
+        'api_type': 'anthropic',
+        'api_key': '',
+        'api_base': 'https://api.anthropic.com/v1',
+        'model': 'claude-sonnet-4-20250514',
+        'enabled': False,
+        'temperature': 0.7,
+        'max_tokens': 4096,
+    },
+    {
+        'name': 'Ollama',
+        'provider': 'ollama',
+        'api_type': 'ollama',
+        'api_key': '',
+        'api_base': 'http://localhost:11434',
+        'model': 'llama3',
+        'enabled': False,
+        'temperature': 0.7,
+        'max_tokens': 4096,
+    },
+    {
+        'name': 'ModelScope',
+        'provider': 'modelscope',
+        'api_type': 'openai',
+        'api_key': 'ms-3eca52df-ea14-481b-9e72-73b988b612f7',
+        'api_base': 'https://api-inference.modelscope.cn/v1',
+        'model': 'stepfun-ai/Step-3.5-Flash',
+        'enabled': False,
+        'temperature': 0.7,
+        'max_tokens': 16384,
+    },
+]
+
+
+def load_llm_config():
+    """Load LLM config, migrating legacy single-model format to multi-model format."""
+    if os.path.exists(LLM_CONFIG_FILE):
+        with open(LLM_CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+        # Migrate legacy single-model config to multi-model format
+        if 'models' not in config:
+            legacy = {
+                'name': config.get('provider', 'openai').capitalize(),
+                'provider': config.get('provider', 'openai'),
+                'api_type': config.get('api_type', 'openai'),
+                'api_key': config.get('api_key', ''),
+                'api_base': config.get('api_base', ''),
+                'model': config.get('model', 'gpt-4o-mini'),
+                'enabled': True,
+                'temperature': config.get('temperature', 0.7),
+                'max_tokens': config.get('max_tokens', 4096),
+            }
+            config['models'] = [legacy]
+            del config['provider']
+            del config['api_key']
+            del config['api_base']
+            del config['model']
+            del config['temperature']
+            del config['max_tokens']
+            if 'api_type' in config:
+                del config['api_type']
+            save_llm_config(config)
+        return config
+    return {
+        'models': DEFAULT_LLM_MODELS,
         'system_prompt': 'You are a helpful coding assistant integrated in PhoneIDE.',
     }
 
@@ -84,6 +152,29 @@ def load_llm_config():
 def save_llm_config(config):
     with open(LLM_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def get_active_llm_config(config=None):
+    """Get the first enabled model config as a flat dict (compatible with existing code)."""
+    if config is None:
+        config = load_llm_config()
+    models = config.get('models', [])
+    system_prompt = config.get('system_prompt', '')
+    for m in models:
+        if m.get('enabled'):
+            flat = dict(m)
+            flat['system_prompt'] = flat.get('system_prompt') or system_prompt
+            return flat
+    # Fallback: return first model or default
+    if models:
+        flat = dict(models[0])
+        flat['system_prompt'] = flat.get('system_prompt') or system_prompt
+        return flat
+    return {
+        'provider': 'openai', 'api_type': 'openai', 'api_key': '',
+        'api_base': '', 'model': 'gpt-4o-mini', 'temperature': 0.7,
+        'max_tokens': 4096, 'system_prompt': system_prompt,
+    }
 
 
 def load_chat_history():

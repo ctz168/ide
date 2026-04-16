@@ -16,6 +16,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, Response
 from utils import (
     handle_error, load_config, load_llm_config, save_llm_config,
+    get_active_llm_config,
     load_chat_history, save_chat_history, WORKSPACE, SERVER_DIR,
     get_file_type, shlex_quote,
 )
@@ -1551,8 +1552,8 @@ def send_chat_message():
     if not message:
         return jsonify({'error': 'Message required'}), 400
 
-    llm_config = load_llm_config()
-    if not llm_config.get('api_key'):
+    llm_config = get_active_llm_config()
+    if not llm_config.get('api_key') and llm_config.get('api_type') != 'ollama':
         return jsonify({'error': 'Please configure LLM API key in settings'}), 400
 
     try:
@@ -1577,8 +1578,8 @@ def send_chat_stream():
     if not message:
         return jsonify({'error': 'Message required'}), 400
 
-    llm_config = load_llm_config()
-    if not llm_config.get('api_key'):
+    llm_config = get_active_llm_config()
+    if not llm_config.get('api_key') and llm_config.get('api_type') != 'ollama':
         return jsonify({'error': 'Please configure LLM API key'}), 400
 
     def generate():
@@ -1608,11 +1609,13 @@ def list_agent_tools():
 @handle_error
 def get_llm_config():
     cfg = load_llm_config()
-    # Mask API key
-    if cfg.get('api_key'):
-        cfg['api_key_masked'] = cfg['api_key'][:8] + '...' + cfg['api_key'][-4:] if len(cfg['api_key']) > 12 else '***'
-    else:
-        cfg['api_key_masked'] = ''
+    # Mask API keys in models
+    for m in cfg.get('models', []):
+        key = m.get('api_key', '')
+        if key:
+            m['api_key_masked'] = key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
+        else:
+            m['api_key_masked'] = ''
     return jsonify(cfg)
 
 @bp.route('/api/llm/config', methods=['POST'])
@@ -1625,9 +1628,22 @@ def update_llm_config():
 
 @bp.route('/api/llm/test', methods=['POST'])
 def test_llm_config():
-    """Test the current LLM configuration by sending a simple request."""
+    """Test a specific model configuration or the active one."""
     try:
-        llm_config = load_llm_config()
+        data = request.json or {}
+        # If a model index is provided, test that specific model
+        if data.get('model_index') is not None:
+            all_config = load_llm_config()
+            models = all_config.get('models', [])
+            idx = int(data['model_index'])
+            if 0 <= idx < len(models):
+                llm_config = dict(models[idx])
+                llm_config['system_prompt'] = all_config.get('system_prompt', '')
+            else:
+                return jsonify({'ok': False, 'error': f'Invalid model index: {idx}'})
+        else:
+            llm_config = get_active_llm_config()
+
         api_type = llm_config.get('api_type', 'openai')
         api_key = llm_config.get('api_key', '')
         api_base = (llm_config.get('api_base') or '').rstrip('/')

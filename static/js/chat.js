@@ -1146,65 +1146,36 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         removeSettingsDialog();
 
         const config = await loadLLMConfig() || {};
+        const models = config.models || [];
 
         const overlay = document.createElement('div');
         overlay.className = 'chat-settings-overlay';
         overlay.id = 'chat-settings-overlay';
 
+        // Store working models data
+        let workingModels = JSON.parse(JSON.stringify(models));
+        // Ensure api_key_masked is available from server response
+        for (const m of workingModels) {
+            const serverModel = models.find(sm => sm.name === m.name);
+            if (serverModel) m.api_key_masked = serverModel.api_key_masked || '';
+        }
+
         overlay.innerHTML = `
-            <div class="chat-settings-dialog">
+            <div class="chat-settings-dialog" style="max-width:520px">
                 <div class="chat-settings-header">
-                    <span>⚙️ LLM Settings</span>
+                    <span>⚙️ LLM 模型配置</span>
                     <button class="chat-settings-close" title="Close">✕</button>
                 </div>
-                <div class="chat-settings-body">
-                    <label>
-                        <span>Provider</span>
-                        <select id="llm-provider">
-                            <option value="openai"${config.provider === 'openai' ? ' selected' : ''}>OpenAI</option>
-                            <option value="anthropic"${config.provider === 'anthropic' ? ' selected' : ''}>Anthropic</option>
-                            <option value="ollama"${config.provider === 'ollama' ? ' selected' : ''}>Ollama</option>
-                            <option value="custom"${config.provider === 'custom' ? ' selected' : ''}>Custom</option>
-                        </select>
-                    </label>
-                    <label>
-                        <span>API Type</span>
-                        <select id="llm-api-type">
-                            <option value="openai"${(config.api_type || 'openai') === 'openai' ? ' selected' : ''}>OpenAI Compatible</option>
-                            <option value="azure"${config.api_type === 'azure' ? ' selected' : ''}>Azure OpenAI</option>
-                            <option value="ollama"${config.api_type === 'ollama' ? ' selected' : ''}>Ollama</option>
-                            <option value="custom"${config.api_type === 'custom' ? ' selected' : ''}>Custom</option>
-                        </select>
-                    </label>
-                    <label>
-                        <span>API Key</span>
-                        <input type="password" id="llm-api-key" placeholder="sk-..." value="${escapeAttr(config.api_key || '')}">
-                        ${config.api_key_masked ? `<span class="hint">Current: ${escapeHTML(config.api_key_masked)}</span>` : ''}
-                    </label>
-                    <label>
-                        <span>API Base URL</span>
-                        <input type="text" id="llm-api-base" placeholder="https://api.openai.com/v1" value="${escapeAttr(config.api_base || '')}">
-                    </label>
-                    <label>
-                        <span>Model</span>
-                        <input type="text" id="llm-model" placeholder="gpt-4o-mini" value="${escapeAttr(config.model || '')}">
-                    </label>
-                    <label>
-                        <span>Temperature</span>
-                        <input type="number" id="llm-temperature" min="0" max="2" step="0.1" value="${config.temperature !== undefined ? config.temperature : '0.7'}">
-                    </label>
-                    <label>
-                        <span>Max Tokens</span>
-                        <input type="number" id="llm-max-tokens" min="256" max="128000" step="256" value="${config.max_tokens || '4096'}">
-                    </label>
-                    <label class="full-width">
-                        <span>System Prompt</span>
-                        <textarea id="llm-system-prompt" rows="4" placeholder="You are a helpful coding assistant...">${escapeHTML(config.system_prompt || '')}</textarea>
+                <div class="chat-settings-body" id="llm-settings-body">
+                    <div class="llm-models-list" id="llm-models-list"></div>
+                    <button class="llm-add-model-btn" id="llm-add-model-btn">+ 添加模型</button>
+                    <label class="full-width" style="margin-top:4px">
+                        <span>全局 System Prompt</span>
+                        <textarea id="llm-system-prompt" rows="3" placeholder="You are a helpful coding assistant...">${escapeHTML(config.system_prompt || '')}</textarea>
                     </label>
                 </div>
                 <div class="chat-settings-footer">
                     <button class="btn-cancel" id="llm-settings-cancel">Cancel</button>
-                    <button class="btn-test" id="llm-settings-test" style="padding:8px 16px;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;font-weight:500;background:var(--bg-hover);color:var(--text-secondary);">Test</button>
                     <button class="btn-confirm" id="llm-settings-save">Save</button>
                 </div>
             </div>
@@ -1212,70 +1183,206 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         document.body.appendChild(overlay);
         settingsDialogEl = overlay;
-
         injectSettingsStyles();
 
+        // Render model cards
+        function renderModelList() {
+            const list = overlay.querySelector('#llm-models-list');
+            list.innerHTML = '';
+            workingModels.forEach((m, idx) => {
+                const card = document.createElement('div');
+                card.className = 'llm-model-card' + (m.enabled ? ' llm-model-enabled' : '');
+                card.innerHTML = `
+                    <div class="llm-model-card-header">
+                        <div class="llm-model-toggle-area">
+                            <button class="llm-enable-btn ${m.enabled ? 'active' : ''}" data-idx="${idx}" title="${m.enabled ? '点击禁用' : '点击启用'}">
+                                ${m.enabled ? '✅' : '⬜'}
+                            </button>
+                            <input class="llm-model-name" data-idx="${idx}" value="${escapeAttr(m.name || '')}" placeholder="模型名称">
+                        </div>
+                        <div class="llm-model-card-actions">
+                            <button class="llm-test-model-btn" data-idx="${idx}" title="测试此模型">🔗</button>
+                            <button class="llm-del-model-btn" data-idx="${idx}" title="删除此模型">🗑</button>
+                        </div>
+                    </div>
+                    <div class="llm-model-card-body" style="display:${m.enabled ? '' : 'none'}">
+                        <div class="llm-model-fields">
+                            <label><span>Provider</span>
+                                <select class="llm-provider" data-idx="${idx}">
+                                    <option value="openai"${m.provider === 'openai' ? ' selected' : ''}>OpenAI</option>
+                                    <option value="anthropic"${m.provider === 'anthropic' ? ' selected' : ''}>Anthropic</option>
+                                    <option value="ollama"${m.provider === 'ollama' ? ' selected' : ''}>Ollama</option>
+                                    <option value="modelscope"${m.provider === 'modelscope' ? ' selected' : ''}>ModelScope</option>
+                                    <option value="custom"${m.provider === 'custom' ? ' selected' : ''}>Custom</option>
+                                </select>
+                            </label>
+                            <label><span>API Type</span>
+                                <select class="llm-api-type" data-idx="${idx}">
+                                    <option value="openai"${(m.api_type || 'openai') === 'openai' ? ' selected' : ''}>OpenAI Compatible</option>
+                                    <option value="azure"${m.api_type === 'azure' ? ' selected' : ''}>Azure OpenAI</option>
+                                    <option value="ollama"${m.api_type === 'ollama' ? ' selected' : ''}>Ollama</option>
+                                    <option value="custom"${m.api_type === 'custom' ? ' selected' : ''}>Custom</option>
+                                </select>
+                            </label>
+                            <label><span>API Key</span>
+                                <input type="password" class="llm-api-key" data-idx="${idx}" placeholder="sk-..." value="${escapeAttr(m.api_key || '')}">
+                                ${m.api_key_masked ? `<span class="hint">Current: ${escapeHTML(m.api_key_masked)}</span>` : ''}
+                            </label>
+                            <label><span>API Base URL</span>
+                                <input type="text" class="llm-api-base" data-idx="${idx}" placeholder="https://api.openai.com/v1" value="${escapeAttr(m.api_base || '')}">
+                            </label>
+                            <label><span>Model</span>
+                                <input type="text" class="llm-model" data-idx="${idx}" placeholder="gpt-4o-mini" value="${escapeAttr(m.model || '')}">
+                            </label>
+                            <div class="llm-model-params">
+                                <label><span>Temperature</span>
+                                    <input type="number" class="llm-temperature" data-idx="${idx}" min="0" max="2" step="0.1" value="${m.temperature !== undefined ? m.temperature : '0.7'}">
+                                </label>
+                                <label><span>Max Tokens</span>
+                                    <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="128000" step="256" value="${m.max_tokens || '4096'}">
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+
+            // Bind events
+            list.querySelectorAll('.llm-enable-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const idx = parseInt(btn.dataset.idx);
+                    workingModels[idx].enabled = !workingModels[idx].enabled;
+                    renderModelList();
+                });
+            });
+            list.querySelectorAll('.llm-del-model-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const idx = parseInt(btn.dataset.idx);
+                    workingModels.splice(idx, 1);
+                    renderModelList();
+                });
+            });
+            list.querySelectorAll('.llm-test-model-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const idx = parseInt(btn.dataset.idx);
+                    btn.textContent = '⏳';
+                    btn.disabled = true;
+                    try {
+                        // Save current models first so test endpoint can read them
+                        const saveConfig = { models: workingModels, system_prompt: overlay.querySelector('#llm-system-prompt').value.trim() };
+                        await saveLLMConfig(saveConfig);
+                        const resp = await fetch('/api/llm/test', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model_index: idx })
+                        });
+                        let data;
+                        try { data = await resp.json(); } catch {
+                            const text = await resp.text().catch(() => '');
+                            throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response');
+                        }
+                        if (data.ok) {
+                            let msg = `✅ ${workingModels[idx].name} 连接成功: ${data.model || ''}`;
+                            if (data.tokens) msg += ` (${data.tokens} tokens)`;
+                            if (data.reply) msg += `\n💬 ${data.reply}`;
+                            if (data.warning) msg += `\n⚠️ ${data.warning}`;
+                            showToast(msg, data.warning ? 'warning' : 'success', 5000);
+                        } else {
+                            showToast(`❌ ${workingModels[idx].name} 连接失败: ${data.error || 'Unknown'}`, 'error', 5000);
+                        }
+                    } catch (err) {
+                        showToast('❌ ' + err.message, 'error');
+                    } finally {
+                        btn.textContent = '🔗';
+                        btn.disabled = false;
+                    }
+                });
+            });
+            // Bind field changes
+            list.querySelectorAll('.llm-model-name').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].name = input.value.trim(); });
+            });
+            list.querySelectorAll('.llm-provider').forEach(sel => {
+                sel.addEventListener('change', () => { workingModels[parseInt(sel.dataset.idx)].provider = sel.value; });
+            });
+            list.querySelectorAll('.llm-api-type').forEach(sel => {
+                sel.addEventListener('change', () => { workingModels[parseInt(sel.dataset.idx)].api_type = sel.value; });
+            });
+            list.querySelectorAll('.llm-api-key').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].api_key = input.value; });
+            });
+            list.querySelectorAll('.llm-api-base').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].api_base = input.value.trim(); });
+            });
+            list.querySelectorAll('.llm-model').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].model = input.value.trim(); });
+            });
+            list.querySelectorAll('.llm-temperature').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].temperature = parseFloat(input.value) || 0.7; });
+            });
+            list.querySelectorAll('.llm-max-tokens').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096; });
+            });
+        }
+
+        renderModelList();
+
+        // Add model button
+        overlay.querySelector('#llm-add-model-btn').addEventListener('click', () => {
+            workingModels.push({
+                name: '新模型',
+                provider: 'openai',
+                api_type: 'openai',
+                api_key: '',
+                api_base: '',
+                model: '',
+                enabled: false,
+                temperature: 0.7,
+                max_tokens: 4096,
+            });
+            renderModelList();
+        });
+
+        // Close / Cancel / Save
         overlay.querySelector('.chat-settings-close').addEventListener('click', removeSettingsDialog);
         overlay.querySelector('#llm-settings-cancel').addEventListener('click', removeSettingsDialog);
         overlay.querySelector('#llm-settings-save').addEventListener('click', async () => {
+            // Read latest field values
+            overlay.querySelectorAll('.llm-model-name').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].name = input.value.trim();
+            });
+            overlay.querySelectorAll('.llm-provider').forEach(sel => {
+                workingModels[parseInt(sel.dataset.idx)].provider = sel.value;
+            });
+            overlay.querySelectorAll('.llm-api-type').forEach(sel => {
+                workingModels[parseInt(sel.dataset.idx)].api_type = sel.value;
+            });
+            overlay.querySelectorAll('.llm-api-key').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].api_key = input.value;
+            });
+            overlay.querySelectorAll('.llm-api-base').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].api_base = input.value.trim();
+            });
+            overlay.querySelectorAll('.llm-model').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].model = input.value.trim();
+            });
+            overlay.querySelectorAll('.llm-temperature').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].temperature = parseFloat(input.value) || 0.7;
+            });
+            overlay.querySelectorAll('.llm-max-tokens').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096;
+            });
+
             const newConfig = {
-                provider:     overlay.querySelector('#llm-provider').value,
-                api_type:     overlay.querySelector('#llm-api-type').value,
-                api_key:      overlay.querySelector('#llm-api-key').value,
-                api_base:     overlay.querySelector('#llm-api-base').value.trim(),
-                model:        overlay.querySelector('#llm-model').value.trim(),
-                temperature:  parseFloat(overlay.querySelector('#llm-temperature').value) || 0.7,
-                max_tokens:   parseInt(overlay.querySelector('#llm-max-tokens').value, 10) || 4096,
+                models: workingModels,
                 system_prompt: overlay.querySelector('#llm-system-prompt').value.trim()
             };
-
             const result = await saveLLMConfig(newConfig);
             if (result) {
-                showToast('LLM settings saved', 'success');
+                const enabledCount = workingModels.filter(m => m.enabled).length;
+                showToast(`已保存 ${workingModels.length} 个模型配置 (${enabledCount} 个启用)`, 'success');
                 removeSettingsDialog();
-            }
-        });
-        // Test connection button
-        overlay.querySelector('#llm-settings-test').addEventListener('click', async () => {
-            const testBtn = overlay.querySelector('#llm-settings-test');
-            testBtn.disabled = true;
-            testBtn.textContent = 'Testing...';
-            try {
-                // Save current values first
-                const testConfig = {
-                    provider:     overlay.querySelector('#llm-provider').value,
-                    api_type:     overlay.querySelector('#llm-api-type').value,
-                    api_key:      overlay.querySelector('#llm-api-key').value,
-                    api_base:     overlay.querySelector('#llm-api-base').value.trim(),
-                    model:        overlay.querySelector('#llm-model').value.trim(),
-                    temperature:  parseFloat(overlay.querySelector('#llm-temperature').value) || 0.7,
-                    max_tokens:   parseInt(overlay.querySelector('#llm-max-tokens').value, 10) || 4096,
-                    system_prompt: overlay.querySelector('#llm-system-prompt').value.trim()
-                };
-                await saveLLMConfig(testConfig);
-
-                const resp = await fetch('/api/llm/test', { method: 'POST' });
-                let data;
-                try {
-                    data = await resp.json();
-                } catch {
-                    const text = await resp.text().catch(() => '');
-                    throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response (not JSON)');
-                }
-                if (data.ok) {
-                    let msg = `✅ 连接成功: ${data.model || ''}`;
-                    if (data.tokens) msg += ` (${data.tokens} tokens)`;
-                    if (data.reply) msg += `\n💬 ${data.reply}`;
-                    if (data.warning) msg += `\n⚠️ ${data.warning}`;
-                    showToast(msg, data.warning ? 'warning' : 'success', 5000);
-                } else {
-                    showToast(`❌ 连接失败: ${data.error || 'Unknown error'}`, 'error', 5000);
-                }
-            } catch (err) {
-                showToast('❌ ' + err.message, 'error');
-            } finally {
-                testBtn.disabled = false;
-                testBtn.textContent = 'Test';
             }
         });
 
@@ -1430,6 +1537,108 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 color: var(--bg-primary);
             }
             .chat-settings-footer .btn-confirm:active { background: var(--accent-hover); }
+
+            /* ── Multi-Model Card Styles ── */
+            .llm-models-list {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .llm-model-card {
+                border: 1px solid var(--border);
+                border-radius: var(--radius-sm);
+                background: var(--bg-tertiary);
+                overflow: hidden;
+                transition: border-color 0.15s;
+            }
+            .llm-model-enabled {
+                border-color: var(--accent);
+                border-width: 1.5px;
+            }
+            .llm-model-card-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 8px 10px;
+                gap: 8px;
+            }
+            .llm-model-toggle-area {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex: 1;
+                min-width: 0;
+            }
+            .llm-enable-btn {
+                border: none;
+                background: none;
+                cursor: pointer;
+                font-size: 16px;
+                padding: 0;
+                line-height: 1;
+                flex-shrink: 0;
+            }
+            .llm-model-name {
+                flex: 1;
+                min-width: 0;
+                border: none;
+                background: transparent;
+                color: var(--text-primary);
+                font-size: 13px;
+                font-weight: 600;
+                padding: 2px 4px;
+                border-bottom: 1px solid transparent;
+                font-family: var(--font-mono);
+            }
+            .llm-model-name:focus {
+                outline: none;
+                border-bottom-color: var(--accent);
+            }
+            .llm-model-card-actions {
+                display: flex;
+                gap: 4px;
+                flex-shrink: 0;
+            }
+            .llm-model-card-actions button {
+                border: none;
+                background: none;
+                cursor: pointer;
+                font-size: 14px;
+                padding: 2px 4px;
+                border-radius: var(--radius-sm);
+                opacity: 0.6;
+            }
+            .llm-model-card-actions button:hover { opacity: 1; }
+            .llm-model-card-actions button:active { background: var(--bg-hover); }
+            .llm-model-card-body {
+                padding: 0 10px 10px;
+            }
+            .llm-model-fields {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+            }
+            .llm-model-params {
+                display: flex;
+                gap: 8px;
+            }
+            .llm-model-params label {
+                flex: 1;
+            }
+            .llm-add-model-btn {
+                width: 100%;
+                padding: 8px;
+                border: 1px dashed var(--border);
+                border-radius: var(--radius-sm);
+                background: none;
+                color: var(--text-secondary);
+                font-size: 12px;
+                cursor: pointer;
+                font-family: var(--font-mono);
+            }
+            .llm-add-model-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+            .llm-add-model-btn:active { background: var(--bg-active); }
+            .llm-test-model-btn:disabled { opacity: 0.4; }
 
             /* ── Code Block Wrapper ── */
             .code-block-wrapper {
