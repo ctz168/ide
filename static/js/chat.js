@@ -1233,9 +1233,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response (not JSON)');
                 }
                 if (data.ok) {
-                    showToast(`✅ 连接成功: ${data.model || ''}`, 'success');
+                    let msg = `✅ 连接成功: ${data.model || ''}`;
+                    if (data.tokens) msg += ` (${data.tokens} tokens)`;
+                    if (data.reply) msg += `\n💬 ${data.reply}`;
+                    if (data.warning) msg += `\n⚠️ ${data.warning}`;
+                    showToast(msg, data.warning ? 'warning' : 'success', 5000);
                 } else {
-                    showToast(`❌ 连接失败: ${data.error || 'Unknown error'}`, 'error');
+                    showToast(`❌ 连接失败: ${data.error || 'Unknown error'}`, 'error', 5000);
                 }
             } catch (err) {
                 showToast('❌ ' + err.message, 'error');

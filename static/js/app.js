@@ -1495,7 +1495,7 @@ const AppManager = (() => {
 
     // ── LLM Test Connection ──
     async function testLLMConnection() {
-        showToast('正在测试 LLM 连接...', 'info', 2000);
+        showToast('正在测试 LLM 连接...', 'info', 3000);
         try {
             const resp = await fetch('/api/llm/test', { method: 'POST' });
             let data;
@@ -1506,12 +1506,16 @@ const AppManager = (() => {
                 throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response');
             }
             if (resp.ok && data.ok) {
-                showToast('LLM 连接成功 ✓', 'success');
+                let msg = `LLM 连接成功 ✓  ${data.model || ''}`;
+                if (data.tokens) msg += ` (${data.tokens} tokens)`;
+                if (data.reply) msg += `  Reply: ${data.reply}`;
+                if (data.warning) msg += `  [!] ${data.warning}`;
+                showToast(msg, data.warning ? 'warning' : 'success', 5000);
             } else {
-                showToast('LLM 连接失败: ' + (data.error || 'Unknown error'), 'error');
+                showToast('LLM 连接失败: ' + (data.error || 'Unknown error'), 'error', 5000);
             }
         } catch (e) {
-            showToast('连接失败: ' + e.message, 'error');
+            showToast('连接失败: ' + e.message, 'error', 5000);
         }
     }
 

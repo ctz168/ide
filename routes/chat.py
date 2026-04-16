@@ -1640,12 +1640,12 @@ def test_llm_config():
         payload = {
             'model': model,
             'messages': [{'role': 'user', 'content': 'Hi, reply with just "OK".'}],
-            'max_tokens': 10,
+            'max_tokens': 500,
             'stream': False,
         }
 
         req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             resp_body = resp.read().decode()
             try:
                 result = json.loads(resp_body)
@@ -1653,14 +1653,30 @@ def test_llm_config():
                 return jsonify({'ok': False, 'error': f'API returned non-JSON response (api_type={api_type}): {str(je)}'})
 
         model_used = model
+        reply_content = ''
         try:
             model_used = result.get('model', model)
             usage = result.get('usage', {})
             tokens = usage.get('total_tokens', 0)
+            # Extract actual reply content from the response
+            choices = result.get('choices', [])
+            if choices:
+                msg = choices[0].get('message', {})
+                reply_content = msg.get('content', '') or ''
         except Exception:
             tokens = 0
 
-        return jsonify({'ok': True, 'model': model_used, 'tokens': tokens})
+        # Warn if model returned empty content (may happen with reasoning models if max_tokens too low)
+        if not reply_content:
+            return jsonify({
+                'ok': True,
+                'model': model_used,
+                'tokens': tokens,
+                'reply': '',
+                'warning': 'Model returned empty content. If using a reasoning model, the max_tokens setting may be too low.'
+            })
+
+        return jsonify({'ok': True, 'model': model_used, 'tokens': tokens, 'reply': reply_content[:200]})
     except urllib.error.HTTPError as e:
         body = ''
         try:
