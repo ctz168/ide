@@ -576,7 +576,7 @@ const AppManager = (() => {
         if (openFolderBtn) {
             bindTouchButton(openFolderBtn, async () => {
                 try {
-                    const result = await showPromptDialog('打开文件夹', '输入文件夹路径:', FileManager ? FileManager.currentPath : '/workspace');
+                    const result = await showPromptDialog('打开文件夹', '输入文件夹路径:', FileManager && FileManager.currentPath ? '/' + FileManager.currentPath : '');
                     if (result) {
                         const resp = await fetch('/api/files/open_folder', {
                             method: 'POST',

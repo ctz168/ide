@@ -18,11 +18,10 @@ const GitManager = (() => {
     function getGitCwd() {
         if (window.FileManager) {
             const cp = window.FileManager.currentPath;
-            // Return path relative to workspace for the server API
-            // currentPath is like '/workspace/myrepo' — server needs 'myrepo'
-            if (cp && cp !== '/workspace' && cp !== '/' && cp !== '') {
-                // Strip leading /workspace prefix if present
-                return cp.replace(/^\/workspace\/?/, '');
+            // currentPath '' = workspace root → return '' (server uses workspace)
+            // currentPath 'myrepo' or 'myrepo/sub' = subdirectory → return as-is
+            if (cp && cp !== '') {
+                return cp;
             }
         }
         return '';

@@ -1617,7 +1617,6 @@ def update_llm_config():
 
 
 @bp.route('/api/llm/test', methods=['POST'])
-@handle_error
 def test_llm_config():
     """Test the current LLM configuration by sending a simple request."""
     try:

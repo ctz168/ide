@@ -6,7 +6,7 @@ const FileManager = (() => {
     'use strict';
 
     // ── State ──────────────────────────────────────────────────────
-    let currentPath = '/workspace';
+    let currentPath = '';  // '' = workspace root
     let currentFilePath = null;
     let currentFileName = null;
     let fileCache = {};           // path -> { content, modified }
@@ -21,8 +21,13 @@ const FileManager = (() => {
      * Normalize a path — strip trailing slash unless root
      */
     function normalizePath(p) {
-        p = p || '/workspace';
-        if (p !== '/' && p.endsWith('/')) p = p.slice(0, -1);
+        // '' means workspace root
+        if (!p || p === '/workspace' || p === '/') return '';
+        if (p.endsWith('/')) p = p.slice(0, -1);
+        // Strip /workspace prefix if present
+        p = p.replace(/^\/workspace\/?/, '');
+        // Strip any remaining leading slash (e.g. breadcrumb sends '/myrepo')
+        if (p.startsWith('/')) p = p.substring(1);
         return p;
     }
 
@@ -30,16 +35,16 @@ const FileManager = (() => {
      * Get parent directory of a path
      */
     function parentPath(p) {
-        if (p === '/' || p === '/workspace') return p;
+        if (!p || p === '/') return '';  // already at root
         const idx = p.lastIndexOf('/');
-        return idx <= 0 ? '/' : p.substring(0, idx);
+        return idx <= 0 ? '' : p.substring(0, idx);
     }
 
     /**
      * Join path segments
      */
     function joinPath(base, name) {
-        if (base === '/') return '/' + name;
+        if (!base) return name;
         return base + '/' + name;
     }
 
@@ -99,16 +104,13 @@ const FileManager = (() => {
      * Fetch the file list for a given directory path
      */
     async function loadFileList(path) {
-        // currentPath like '/workspace' = root (server needs no path param)
-        // currentPath like '/workspace/myrepo' = subdirectory (server needs 'myrepo')
+        // '' = workspace root (server needs no path param)
+        // 'myrepo' = subdirectory (server needs 'myrepo')
         let param = '';
-        if (path && path !== '/workspace' && path !== '/') {
-            const rel = path.replace(/^\/workspace\/?/, '');
-            if (rel) param = `?path=${encodeURIComponent(rel)}`;
-        }
-        path = normalizePath(path);
-        currentPath = path;
-        updateBreadcrumb(path);
+        const rel = normalizePath(path);
+        if (rel) param = `?path=${encodeURIComponent(rel)}`;
+        currentPath = rel;
+        updateBreadcrumb(rel);
 
         try {
             const resp = await fetch(`/api/files/list${param}`);
@@ -118,11 +120,7 @@ const FileManager = (() => {
             }
             const data = await resp.json();
             renderFileTree(data.items || data || [], path);
-            // Update currentPath to match server's base if we loaded root
-            if (data.base && !param) {
-                currentPath = '';
-                updateBreadcrumb('');
-            }
+            // Server confirmed root load — currentPath already set correctly above
             return data;
         } catch (err) {
             safeToast(`Error loading files: ${err.message}`, 'error');
@@ -371,7 +369,7 @@ const FileManager = (() => {
 
         const oldRel = oldPath.replace(/^\/workspace\/?/, '');
         const parentDir = parentPath(oldPath);
-        const newRel = parentDir !== '/workspace' && parentDir !== '/'
+        const newRel = parentDir
             ? parentDir.replace(/^\/workspace\/?/, '') + '/' + newName
             : newName;
 
@@ -467,7 +465,7 @@ const FileManager = (() => {
         let html = '';
 
         // Add "go up" button if not at workspace root
-        if (currentPath !== '/workspace' && currentPath !== '/') {
+        if (currentPath && currentPath !== '') {
             html += `
                 <div class="file-item directory" data-path="${escapeAttr(parentPath(currentPath))}" data-action="go-up">
                     <span class="arrow">&#9664;</span>
@@ -776,7 +774,7 @@ const FileManager = (() => {
     // ── Initialize ─────────────────────────────────────────────────
 
     function init() {
-        // Initial load
+        // Initial load (currentPath starts as '' = workspace root)
         loadFileList(currentPath);
         pushHistory(currentPath);
     }

@@ -17,6 +17,14 @@ from utils import SERVER_DIR, WORKSPACE, PORT, HOST, CONFIG_DIR, CHAT_HISTORY_FI
 app = Flask(__name__, static_folder=os.path.join(SERVER_DIR, 'static'), static_url_path='')
 CORS(app)
 
+# Ensure all API errors return JSON, not HTML
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    """Global error handler — always return JSON for API routes."""
+    import traceback as _tb
+    _tb.print_exc()
+    return jsonify({'error': str(e)}), 500
+
 # Ensure directories exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(WORKSPACE, exist_ok=True)
