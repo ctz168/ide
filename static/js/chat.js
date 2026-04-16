@@ -991,6 +991,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         const errMsg = parsed.content || parsed.message || parsed.error || rawData;
                         addMessage('error', errMsg, { retryable: true });
                         showToast('Chat error: ' + errMsg, 'error');
+                        // Also log to console error tab
+                        if (window.DebugManager && window.DebugManager.addError) {
+                            window.DebugManager.addError('LLM Error: ' + errMsg, 'chat');
+                        }
                     } else if (eventType === 'done') {
                         // Generation complete
                         hideTyping();
