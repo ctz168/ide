@@ -1044,10 +1044,42 @@ def _build_api_messages(messages, llm_config):
             api_messages.append({'role': role, 'content': msg.get('content', '')})
     return api_messages
 
+def _get_llm_endpoint(llm_config, model=None):
+    """Build URL and headers for an LLM API call based on api_type.
+
+    Returns (url, headers) tuple.
+    """
+    api_key = llm_config.get('api_key', '')
+    api_type = llm_config.get('api_type', 'openai')
+    api_base = (llm_config.get('api_base') or '').rstrip('/')
+    model = model or llm_config.get('model', 'gpt-4o-mini')
+
+    headers = {'Content-Type': 'application/json'}
+
+    if api_type == 'ollama':
+        # Ollama local server — no auth needed
+        if not api_base:
+            api_base = 'http://localhost:11434'
+        url = api_base + '/v1/chat/completions'
+    elif api_type == 'azure':
+        if not api_base:
+            raise Exception('Azure OpenAI: API base URL is required (e.g. https://xxx.openai.azure.com)')
+        url = api_base + f'/openai/deployments/{model}/chat/completions?api-version=2024-02-01'
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+    else:
+        # openai / custom — OpenAI-compatible format
+        if not api_base:
+            api_base = 'https://api.openai.com/v1'
+        url = api_base + '/chat/completions'
+        if api_key:
+            headers['Authorization'] = f'Bearer {api_key}'
+
+    return url, headers
+
+
 def _call_llm_api(messages, llm_config, stream=False):
     """Make a non-streaming LLM API call. Returns parsed response dict."""
-    api_key = llm_config.get('api_key', '')
-    api_base = llm_config.get('api_base', 'https://api.openai.com/v1').rstrip('/') + '/'
     model = llm_config.get('model', 'gpt-4o-mini')
     temperature = llm_config.get('temperature', 0.7)
     max_tokens = llm_config.get('max_tokens', 4096)
@@ -1065,11 +1097,12 @@ def _call_llm_api(messages, llm_config, stream=False):
     if stream:
         payload['stream'] = True
 
-    url = api_base + 'chat/completions'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}',
-    }
+    try:
+        url, headers = _get_llm_endpoint(llm_config, model)
+    except Exception as e:
+        raise Exception(f'LLM config error: {e}')
+
+    headers = headers or {'Content-Type': 'application/json'}
 
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
 
@@ -1085,8 +1118,6 @@ def _call_llm_stream_raw(messages, llm_config):
     """Stream LLM response as raw SSE data chunks. Yields parsed delta objects."""
     import urllib.request
 
-    api_key = llm_config.get('api_key', '')
-    api_base = llm_config.get('api_base', 'https://api.openai.com/v1').rstrip('/') + '/'
     model = llm_config.get('model', 'gpt-4o-mini')
     temperature = llm_config.get('temperature', 0.7)
     max_tokens = llm_config.get('max_tokens', 4096)
@@ -1103,11 +1134,12 @@ def _call_llm_stream_raw(messages, llm_config):
         'stream': True,
     }
 
-    url = api_base + 'chat/completions'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}',
-    }
+    try:
+        url, headers = _get_llm_endpoint(llm_config, model)
+    except Exception as e:
+        raise Exception(f'LLM config error: {e}')
+
+    headers = headers or {'Content-Type': 'application/json'}
 
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
 
@@ -1590,22 +1622,26 @@ def test_llm_config():
     """Test the current LLM configuration by sending a simple request."""
     try:
         llm_config = load_llm_config()
+        api_type = llm_config.get('api_type', 'openai')
         api_key = llm_config.get('api_key', '')
-        if not api_key:
-            return jsonify({'ok': False, 'error': 'API key not configured'})
-
-        api_base = llm_config.get('api_base', 'https://api.openai.com/v1').rstrip('/') + '/'
+        api_base = (llm_config.get('api_base') or '').rstrip('/')
         model = llm_config.get('model', 'gpt-4o-mini')
 
-        url = api_base + 'chat/completions'
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}',
-        }
+        # Ollama local mode does not require an API key
+        if not api_key and api_type != 'ollama':
+            return jsonify({'ok': False, 'error': 'API key not configured'})
+
+        # Build endpoint URL and headers based on api_type
+        try:
+            url, headers = _get_llm_endpoint(llm_config, model)
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)})
+
         payload = {
             'model': model,
-            'messages': [{'role': 'user', 'content': 'Hi, this is a test message. Reply with just "OK".'}],
+            'messages': [{'role': 'user', 'content': 'Hi, reply with just "OK".'}],
             'max_tokens': 10,
+            'stream': False,
         }
 
         req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
@@ -1614,7 +1650,7 @@ def test_llm_config():
             try:
                 result = json.loads(resp_body)
             except (json.JSONDecodeError, ValueError) as je:
-                return jsonify({'ok': False, 'error': f'Invalid JSON response from API: {str(je)}', 'raw': resp_body[:500]})
+                return jsonify({'ok': False, 'error': f'API returned non-JSON response (api_type={api_type}): {str(je)}'})
 
         model_used = model
         try:
@@ -1634,11 +1670,22 @@ def test_llm_config():
         # Try to extract JSON error message from the body
         try:
             err_data = json.loads(body)
-            err_msg = err_data.get('error', {}).get('message', body[:300])
+            err_msg = err_data.get('error', {})
+            if isinstance(err_msg, dict):
+                err_msg = err_msg.get('message', body[:300])
+            else:
+                err_msg = str(err_msg) or body[:300]
         except Exception:
             err_msg = body[:300]
         return jsonify({'ok': False, 'error': f'HTTP {e.code}: {err_msg}'})
     except urllib.error.URLError as e:
-        return jsonify({'ok': False, 'error': f'Connection failed: {str(e.reason)}'})
+        reason = str(e.reason)
+        if 'refused' in reason.lower():
+            hint = '. Check if the API server is running.'
+        elif 'name or service not known' in reason.lower():
+            hint = '. Check the API base URL.'
+        else:
+            hint = ''
+        return jsonify({'ok': False, 'error': f'Connection failed: {reason}{hint}'})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})

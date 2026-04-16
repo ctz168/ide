@@ -1498,7 +1498,13 @@ const AppManager = (() => {
         showToast('正在测试 LLM 连接...', 'info', 2000);
         try {
             const resp = await fetch('/api/llm/test', { method: 'POST' });
-            const data = await resp.json();
+            let data;
+            try {
+                data = await resp.json();
+            } catch {
+                const text = await resp.text().catch(() => '');
+                throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response');
+            }
             if (resp.ok && data.ok) {
                 showToast('LLM 连接成功 ✓', 'success');
             } else {

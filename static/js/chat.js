@@ -1225,14 +1225,20 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 await saveLLMConfig(testConfig);
 
                 const resp = await fetch('/api/llm/test', { method: 'POST' });
-                const data = await resp.json();
+                let data;
+                try {
+                    data = await resp.json();
+                } catch {
+                    const text = await resp.text().catch(() => '');
+                    throw new Error(text ? `Server error: ${text.substring(0, 200)}` : 'Invalid server response (not JSON)');
+                }
                 if (data.ok) {
-                    showToast(`Connection OK: ${data.model || ''}`, 'success');
+                    showToast(`✅ 连接成功: ${data.model || ''}`, 'success');
                 } else {
-                    showToast(`Connection failed: ${data.error || 'Unknown error'}`, 'error');
+                    showToast(`❌ 连接失败: ${data.error || 'Unknown error'}`, 'error');
                 }
             } catch (err) {
-                showToast('Test error: ' + err.message, 'error');
+                showToast('❌ ' + err.message, 'error');
             } finally {
                 testBtn.disabled = false;
                 testBtn.textContent = 'Test';
