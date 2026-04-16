@@ -1608,8 +1608,6 @@ def send_chat_message():
         return jsonify({'error': 'Message required'}), 400
 
     llm_config = get_active_llm_config()
-    if not llm_config.get('api_key') and llm_config.get('api_type') != 'ollama':
-        return jsonify({'error': 'Please configure LLM API key in settings'}), 400
 
     try:
         events = []
@@ -1635,9 +1633,6 @@ def send_chat_stream():
         return jsonify({'error': 'Message required'}), 400
 
     llm_config = get_active_llm_config()
-    print(f'[LLM DEBUG] send_chat_stream: api_key={"yes("+llm_config.get("api_key","")[:8]+"...)" if llm_config.get("api_key") else "EMPTY"}, api_type={llm_config.get("api_type")}, model={llm_config.get("model")}')
-    if not llm_config.get('api_key') and llm_config.get('api_type') != 'ollama':
-        return jsonify({'error': 'Please configure LLM API key'}), 400
 
     def generate():
         try:
@@ -1679,53 +1674,8 @@ def get_llm_config():
 @handle_error
 def update_llm_config():
     config = request.json
-    print(f'[LLM DEBUG] Saving config, api_keys present: {[bool(m.get("api_key")) for m in config.get("models", [])]}')
     save_llm_config(config)
-    # Verify the save
-    from utils import LLM_CONFIG_FILE
-    print(f'[LLM DEBUG] Saved to: {LLM_CONFIG_FILE}, file exists: {os.path.exists(LLM_CONFIG_FILE)}')
-    active = get_active_llm_config()
-    print(f'[LLM DEBUG] Active config after save: api_key={active.get("api_key","")[:8]}..., api_type={active.get("api_type")}, model={active.get("model")}')
     return jsonify({'ok': True})
-
-
-@bp.route('/api/llm/debug', methods=['GET'])
-def debug_llm_config():
-    """Debug endpoint to check LLM config loading."""
-    from utils import LLM_CONFIG_FILE, CONFIG_DIR
-    debug = {
-        'config_dir': CONFIG_DIR,
-        'config_dir_exists': os.path.exists(CONFIG_DIR),
-        'llm_config_file': LLM_CONFIG_FILE,
-        'file_exists': os.path.exists(LLM_CONFIG_FILE),
-    }
-    if os.path.exists(LLM_CONFIG_FILE):
-        try:
-            with open(LLM_CONFIG_FILE, 'r') as f:
-                raw = f.read()
-            debug['file_content'] = raw[:500]
-            parsed = json.loads(raw)
-            debug['parsed_models'] = []
-            for m in parsed.get('models', []):
-                debug['parsed_models'].append({
-                    'name': m.get('name'),
-                    'enabled': m.get('enabled'),
-                    'has_api_key': bool(m.get('api_key')),
-                    'api_key_preview': (m.get('api_key') or '')[:10] + '...' if m.get('api_key') else '(empty)',
-                    'api_type': m.get('api_type'),
-                    'model': m.get('model'),
-                })
-        except Exception as e:
-            debug['parse_error'] = str(e)
-    active = get_active_llm_config()
-    debug['active_config'] = {
-        'has_api_key': bool(active.get('api_key')),
-        'api_key_preview': (active.get('api_key') or '')[:10] + '...' if active.get('api_key') else '(empty)',
-        'api_type': active.get('api_type'),
-        'model': active.get('model'),
-        'name': active.get('name'),
-    }
-    return jsonify(debug)
 
 
 @bp.route('/api/llm/test', methods=['POST'])
