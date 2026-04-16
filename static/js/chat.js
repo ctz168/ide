@@ -903,7 +903,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         try {
             const reqUrl = '/api/chat/send/stream';
+            const modelSelect = document.getElementById('chat-model-select');
             const reqBody = { message: actualMessage, conv_id: currentConvId };
+            if (modelSelect && modelSelect.value !== '') {
+                reqBody.model_index = parseInt(modelSelect.value);
+            }
 
             const resp = await fetch(reqUrl, {
                 method: 'POST',
@@ -1136,6 +1140,34 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         } catch (err) {
             console.warn('ChatManager: loadLLMConfig error:', err.message);
             return null;
+        }
+    }
+
+    // ── Model Selector ─────────────────────────────────────────────
+
+    async function refreshModelSelector() {
+        const select = document.getElementById('chat-model-select');
+        if (!select) return;
+        const config = await loadLLMConfig();
+        if (!config) return;
+        const models = config.models || [];
+        const currentVal = select.value;
+        select.innerHTML = '';
+        for (let i = 0; i < models.length; i++) {
+            const m = models[i];
+            const opt = document.createElement('option');
+            opt.value = i;
+            opt.textContent = m.name || m.model || ('Model ' + (i + 1));
+            opt.disabled = !m.enabled;
+            if (opt.disabled) opt.textContent += ' (disabled)';
+            select.appendChild(opt);
+        }
+        // Restore previous selection or pick first enabled
+        if (currentVal !== '' && select.querySelector(`option[value="${currentVal}"]`)) {
+            select.value = currentVal;
+        } else {
+            const firstEnabled = select.querySelector('option:not([disabled])');
+            if (firstEnabled) select.value = firstEnabled.value;
         }
     }
 
@@ -1403,6 +1435,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 const enabledCount = workingModels.filter(m => m.enabled).length;
                 showToast(`已保存 ${workingModels.length} 个模型配置 (${enabledCount} 个启用)`, 'success');
                 removeSettingsDialog();
+                refreshModelSelector();
             }
         });
 
@@ -2380,6 +2413,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         // Mode toggle
         wireModeToggle();
+
+        // Model selector — init on load and refresh after settings save
+        refreshModelSelector();
 
         // Delegate click events on chat messages
         const msgContainer = document.getElementById('chat-messages');

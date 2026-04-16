@@ -1240,8 +1240,7 @@ html, body {
 }
 
 #chat-send {
-    width: 100%;
-    margin-top: 6px;
+    flex: 1;
     padding: 10px;
     border: none;
     background: var(--mauve);
@@ -1250,6 +1249,28 @@ html, body {
     border-radius: var(--radius);
     cursor: pointer;
     font-size: 14px;
+}
+
+.chat-send-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+    align-items: center;
+}
+
+#chat-model-select {
+    width: auto;
+    min-width: 100px;
+    max-width: 40%;
+    padding: 10px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    appearance: auto;
+    flex-shrink: 1;
 }
 #chat-send:active {
     background: var(--accent);

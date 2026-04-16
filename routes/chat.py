@@ -1629,7 +1629,19 @@ def send_chat_message():
     if not message:
         return jsonify({'error': 'Message required'}), 400
 
-    llm_config = get_active_llm_config()
+    # Allow frontend to specify which model to use by index
+    model_index = data.get('model_index')
+    if model_index is not None:
+        all_config = load_llm_config()
+        models = all_config.get('models', [])
+        idx = int(model_index)
+        if 0 <= idx < len(models):
+            llm_config = dict(models[idx])
+            llm_config['system_prompt'] = llm_config.get('system_prompt') or all_config.get('system_prompt', '')
+        else:
+            return jsonify({'error': f'Invalid model index: {idx}'}), 400
+    else:
+        llm_config = get_active_llm_config()
 
     try:
         events = []
@@ -1654,7 +1666,20 @@ def send_chat_stream():
     if not message:
         return jsonify({'error': 'Message required'}), 400
 
-    llm_config = get_active_llm_config()
+    # Allow frontend to specify which model to use by index
+    model_index = data.get('model_index')
+    if model_index is not None:
+        all_config = load_llm_config()
+        models = all_config.get('models', [])
+        idx = int(model_index)
+        if 0 <= idx < len(models):
+            llm_config = dict(models[idx])
+            llm_config['system_prompt'] = llm_config.get('system_prompt') or all_config.get('system_prompt', '')
+        else:
+            return jsonify({'error': f'Invalid model index: {idx}'}), 400
+    else:
+        llm_config = get_active_llm_config()
+
     print(f'[CHAT] send_chat_stream called')
     print(f'[CHAT] LLM config: name={llm_config.get("name")}, api_type={llm_config.get("api_type")}, model={llm_config.get("model")}, api_base={llm_config.get("api_base")}, api_key={"***"+llm_config.get("api_key","")[-6:] if llm_config.get("api_key") else "EMPTY"}')
 
