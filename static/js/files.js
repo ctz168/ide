@@ -200,7 +200,7 @@ const FileManager = (() => {
             return data;
         } catch (err) {
             safeToast(`Error saving file: ${err.message}`, 'error');
-            else console.warn('[FileManager] Error saving file:', err.message);
+            console.warn('[FileManager] Error saving file:', err.message);
         }
     }
 
@@ -281,7 +281,7 @@ const FileManager = (() => {
             await openFile(path);
         } catch (err) {
             safeToast(`Error creating file: ${err.message}`, 'error');
-            else console.warn('[FileManager] Error creating file:', err.message);
+            console.warn('[FileManager] Error creating file:', err.message);
         }
     }
 
