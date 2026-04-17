@@ -48,3 +48,45 @@ Stage Summary:
 - "打开项目" folder picker now shows "设为项目" button next to each folder entry
 - Setting a project: git init, lock folder, jump to files tab, refresh tree, AI assistant auto-notified
 - All changes pushed to https://github.com/ctz168/ide.git (commit 7fcfd4c)
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix currentPath getter error and add project tab hiding + close project logic
+
+Work Log:
+- Fixed "Cannot set property currentPath of #<Object> which has only a getter" error by removing direct assignment in project.js line 80 (loadFileList already sets currentPath internally)
+- Committed fix as 4fe9e68
+
+Stage Summary:
+- Fixed the currentPath getter-only property crash
+- Pushed to GitHub (commit 4fe9e68)
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: 隐藏项目设定前的Git/调试选项卡 + 完善关闭项目逻辑
+
+Work Log:
+- Added `tab-project-only` class to Git and Debug tab buttons in index.html, with `style="display:none;"` initially
+- Added `showProjectTabs(show)` function in project.js to toggle visibility of project-only tabs
+- Added `switchToProjectTab()` function for reverse navigation
+- Added `switchAwayFromProjectTabs()` to auto-switch from hidden tabs when project closes
+- Modified `onProjectOpened()` to call `showProjectTabs(true)` - show Git/Debug tabs
+- Modified `onProjectClosed()` to call `showProjectTabs(false)` and `switchAwayFromProjectTabs()`
+- Complete rewrite of `closeProject()` as full reverse of `openProject()`:
+  1. Clear search results (scope changes)
+  2. Close all open editor tabs (clean slate)
+  3. Update UI (title, close btn, project info, hide tabs) - dispatches project:closed event
+  4. Return FileManager to workspace root
+  5. Reset git status
+  6. Switch to project tab
+- On startup with no project, loadProjectInfo calls onProjectClosed which hides the tabs
+- On startup with existing project, loadProjectInfo calls onProjectOpened which shows the tabs
+- Search scope limiting to project directory already works (backend routes/files.py lines 371-375)
+- Committed and pushed to GitHub (commit b7bd547)
+
+Stage Summary:
+- Git and Debug tabs are now hidden when no project is open
+- Close project performs full reverse operation of open project
+- All changes pushed to https://github.com/ctz168/ide.git (commit b7bd547)
