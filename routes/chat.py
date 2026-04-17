@@ -1256,7 +1256,7 @@ def _compress_context(messages, max_tokens=None):
 
 # ==================== Agent Loop ====================
 MAX_AGENT_ITERATIONS = 100  # Increased from 15 for complex tasks
-MAX_ITERATION_RETRIES = 3
+MAX_ITERATION_RETRIES = 10
 
 def run_agent_loop(user_message, llm_config, history=None, stream_callback=None):
     """Run the full agent loop: LLM -> tools -> LLM -> ... until final answer.
