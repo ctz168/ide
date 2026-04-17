@@ -363,12 +363,24 @@ def search_files():
     case_sensitive = data.get('case_sensitive', False)
     use_regex = data.get('use_regex', False)
     max_results = data.get('max_results', 500)
+    search_path = data.get('path', '')  # optional: limit search to a subdirectory (e.g. project dir)
     config = load_config()
     base = config.get('workspace', WORKSPACE)
 
-    # Validate base
+    # Determine the search root: if a project is open, default to project dir
+    project = config.get('project', None)
+    if search_path:
+        search_root = os.path.realpath(os.path.join(base, search_path))
+    elif project:
+        search_root = os.path.realpath(os.path.join(base, project))
+    else:
+        search_root = os.path.realpath(base)
+
+    # Security: must be under workspace
     real_base = os.path.realpath(base)
-    if not os.path.isdir(real_base):
+    if not search_root.startswith(real_base):
+        search_root = real_base
+    if not os.path.isdir(search_root):
         return jsonify({'results': [], 'total': 0})
 
     results = []
@@ -381,7 +393,7 @@ def search_files():
         else:
             regex = re.compile(re.escape(search_text), flags)
 
-        for root, dirs, files in os.walk(real_base):
+        for root, dirs, files in os.walk(search_root):
             # Skip common ignore dirs
             dirs[:] = [d for d in dirs if d not in {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode'}]
             if len(results) >= max_results:

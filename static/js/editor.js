@@ -874,48 +874,263 @@ const EditorManager = (() => {
         }
     }
 
-    // ── Search & Replace ───────────────────────────────────────────
+    // ── Search & Replace (Custom Mobile-Friendly) ───────────────
+
+    let searchState = {
+        query: '',
+        caseSensitive: false,
+        regex: false,
+        cursor: null,
+        matches: 0,
+        currentMatch: 0,
+        overlay: null,
+        isVisible: false,
+    };
 
     /**
-     * Open the CodeMirror search dialog
+     * Toggle the inline search bar
      * @param {string} [query] - initial search query
      */
     function search(query) {
         if (!editor) return;
-        if (typeof editor.execCommand === 'function') {
-            if (query) {
-                // Set search query then open dialog
-                editor.execCommand('find');
-                const searchInput = editor.getWrapperElement().querySelector('.CodeMirror-search-field');
-                if (searchInput) {
-                    searchInput.value = query;
-                    searchInput.focus();
-                }
-            } else {
+
+        const searchInput = document.getElementById('editor-search');
+        const replaceInput = document.getElementById('editor-replace');
+
+        if (!searchInput) {
+            // Fallback to CodeMirror built-in search dialog
+            if (typeof editor.execCommand === 'function') {
                 editor.execCommand('find');
             }
+            return;
+        }
+
+        // Toggle search bar visibility
+        if (searchState.isVisible && !query) {
+            closeSearchBar();
+            return;
+        }
+
+        searchInput.style.display = '';
+        searchState.isVisible = true;
+
+        if (query) {
+            searchInput.value = query;
+            doSearch(query);
+        } else {
+            searchInput.focus();
+            // Select all text for easy replacement
+            searchInput.select();
         }
     }
 
     /**
-     * Open the CodeMirror replace dialog
-     * @param {string} [query] - search query
-     * @param {string} [replacement] - replacement text
+     * Close the search bar and clear highlights
      */
-    function replace(query, replacement) {
-        if (!editor) return;
-        if (typeof editor.execCommand === 'function') {
-            editor.execCommand('replace');
-            if (query) {
-                const inputs = editor.getWrapperElement().querySelectorAll('.CodeMirror-dialog input');
-                if (inputs.length >= 1) {
-                    inputs[0].value = query;
+    function closeSearchBar() {
+        const searchInput = document.getElementById('editor-search');
+        const replaceInput = document.getElementById('editor-replace');
+
+        if (searchInput) {
+            searchInput.style.display = 'none';
+            searchInput.value = '';
+        }
+        if (replaceInput) {
+            replaceInput.style.display = 'none';
+            replaceInput.value = '';
+        }
+
+        // Clear search highlights
+        if (editor && searchState.overlay) {
+            editor.removeOverlay(searchState.overlay);
+            searchState.overlay = null;
+        }
+        searchState.query = '';
+        searchState.cursor = null;
+        searchState.matches = 0;
+        searchState.currentMatch = 0;
+        searchState.isVisible = false;
+
+        if (editor) editor.focus();
+    }
+
+    /**
+     * Perform a search and highlight all matches
+     */
+    function doSearch(query) {
+        if (!editor || !query) return;
+
+        // Clear previous overlay
+        if (searchState.overlay) {
+            editor.removeOverlay(searchState.overlay);
+            searchState.overlay = null;
+        }
+
+        searchState.query = query;
+
+        // Build regex for highlighting
+        let flags = searchState.caseSensitive ? 'g' : 'gi';
+        let pattern;
+        try {
+            if (searchState.regex) {
+                pattern = new RegExp(query, flags);
+            } else {
+                const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                pattern = new RegExp(escaped, flags);
+            }
+        } catch (e) {
+            return;
+        }
+
+        // Count matches
+        const content = editor.getValue();
+        const allMatches = content.match(pattern);
+        searchState.matches = allMatches ? allMatches.length : 0;
+        searchState.currentMatch = 0;
+
+        // Add highlight overlay
+        if (searchState.matches > 0) {
+            searchState.overlay = {
+                token: function(stream) {
+                    pattern.lastIndex = stream.pos;
+                    const match = pattern.exec(stream.string);
+                    if (match && match.index === stream.pos) {
+                        stream.pos += match[0].length;
+                        return 'searching match'; // 'searching' class + 'match' class
+                    } else if (match) {
+                        stream.pos = match.index;
+                    } else {
+                        stream.skipToEnd();
+                    }
                 }
-                if (inputs.length >= 2 && replacement) {
-                    inputs[1].value = replacement;
-                }
+            };
+            editor.addOverlay(searchState.overlay);
+        }
+
+        // Jump to first match
+        findNext();
+
+        // Update search input placeholder with count
+        const searchInput = document.getElementById('editor-search');
+        if (searchInput) {
+            searchInput.placeholder = `${searchState.matches > 0 ? searchState.currentMatch + '/' + searchState.matches : '无匹配'} | ${query}`;
+        }
+    }
+
+    /**
+     * Find the next match and jump to it
+     */
+    function findNext() {
+        if (!editor || !searchState.query) return;
+
+        const cmCursor = editor.getSearchCursor(
+            searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
+            editor.getCursor('from'),
+            { caseFold: !searchState.caseSensitive }
+        );
+
+        if (cmCursor.findNext()) {
+            editor.setSelection(cmCursor.from(), cmCursor.to());
+            editor.scrollIntoView({ from: cmCursor.from(), to: cmCursor.to() }, 50);
+            searchState.currentMatch++;
+        } else {
+            // Wrap around to beginning
+            const wrapCursor = editor.getSearchCursor(
+                searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
+                { line: 0, ch: 0 },
+                { caseFold: !searchState.caseSensitive }
+            );
+            if (wrapCursor.findNext()) {
+                editor.setSelection(wrapCursor.from(), wrapCursor.to());
+                editor.scrollIntoView({ from: wrapCursor.from(), to: wrapCursor.to() }, 50);
+                searchState.currentMatch = 1;
             }
         }
+
+        // Update placeholder
+        const searchInput = document.getElementById('editor-search');
+        if (searchInput) {
+            searchInput.placeholder = `${searchState.matches > 0 ? searchState.currentMatch + '/' + searchState.matches : '无匹配'} | ${searchState.query}`;
+        }
+    }
+
+    /**
+     * Find the previous match and jump to it
+     */
+    function findPrev() {
+        if (!editor || !searchState.query) return;
+
+        const cmCursor = editor.getSearchCursor(
+            searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
+            editor.getCursor('to'),
+            { caseFold: !searchState.caseSensitive }
+        );
+
+        if (cmCursor.findPrevious()) {
+            editor.setSelection(cmCursor.from(), cmCursor.to());
+            editor.scrollIntoView({ from: cmCursor.from(), to: cmCursor.to() }, 50);
+            if (searchState.currentMatch > 1) searchState.currentMatch--;
+        } else {
+            // Wrap around to end
+            const wrapCursor = editor.getSearchCursor(
+                searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
+                { line: editor.lastLine(), ch: editor.getLine(editor.lastLine()).length },
+                { caseFold: !searchState.caseSensitive }
+            );
+            if (wrapCursor.findPrevious()) {
+                editor.setSelection(wrapCursor.from(), wrapCursor.to());
+                editor.scrollIntoView({ from: wrapCursor.from(), to: wrapCursor.to() }, 50);
+                searchState.currentMatch = searchState.matches;
+            }
+        }
+
+        // Update placeholder
+        const searchInput = document.getElementById('editor-search');
+        if (searchInput) {
+            searchInput.placeholder = `${searchState.matches > 0 ? searchState.currentMatch + '/' + searchState.matches : '无匹配'} | ${searchState.query}`;
+        }
+    }
+
+    /**
+     * Replace current match and advance to next
+     */
+    function replaceCurrent(replaceText) {
+        if (!editor || !searchState.query) return;
+
+        const sel = editor.getSelection();
+        if (sel && sel.length > 0) {
+            editor.replaceSelection(replaceText);
+            searchState.matches--;
+            findNext();
+        }
+    }
+
+    /**
+     * Replace all matches
+     */
+    function replaceAll(replaceText) {
+        if (!editor || !searchState.query) return;
+
+        const cmCursor = editor.getSearchCursor(
+            searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? 'g' : 'gi') : searchState.query,
+            { line: 0, ch: 0 },
+            { caseFold: !searchState.caseSensitive }
+        );
+
+        let count = 0;
+        editor.operation(function() {
+            while (cmCursor.findNext()) {
+                cmCursor.replace(replaceText);
+                count++;
+            }
+        });
+
+        // Re-run search to update highlights
+        if (searchState.query) {
+            doSearch(searchState.query);
+        }
+
+        return count;
     }
 
     // ── Navigation ─────────────────────────────────────────────────
@@ -1275,7 +1490,11 @@ const EditorManager = (() => {
 
         // Search
         search,
-        replace,
+        closeSearchBar,
+        findNext,
+        findPrev,
+        replaceCurrent,
+        replaceAll,
 
         // Navigation
         goToLine,

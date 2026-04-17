@@ -472,17 +472,51 @@ const AppManager = (() => {
         const searchBtn = document.getElementById('editor-search-btn');
         const searchInput = document.getElementById('editor-search');
         const replaceInput = document.getElementById('editor-replace');
+        const searchPrevBtn = document.getElementById('editor-search-prev-btn');
+        const searchNextBtn = document.getElementById('editor-search-next-btn');
+        const searchCloseBtn = document.getElementById('editor-search-close-btn');
+
+        function showSearchButtons() {
+            if (searchPrevBtn) searchPrevBtn.style.display = '';
+            if (searchNextBtn) searchNextBtn.style.display = '';
+            if (searchCloseBtn) searchCloseBtn.style.display = '';
+        }
+
+        function hideSearchButtons() {
+            if (searchPrevBtn) searchPrevBtn.style.display = 'none';
+            if (searchNextBtn) searchNextBtn.style.display = 'none';
+            if (searchCloseBtn) searchCloseBtn.style.display = 'none';
+        }
 
         if (searchBtn) {
-            searchBtn.addEventListener('click', () => {
+            bindTouchButton(searchBtn, () => {
                 if (window.EditorManager) {
-                    // Directly open CodeMirror's built-in find dialog
                     EditorManager.search();
+                    showSearchButtons();
                 }
             });
         }
 
-        // Keyboard shortcut in search input - trigger CodeMirror find
+        if (searchPrevBtn) {
+            bindTouchButton(searchPrevBtn, () => {
+                if (window.EditorManager) EditorManager.findPrev();
+            });
+        }
+
+        if (searchNextBtn) {
+            bindTouchButton(searchNextBtn, () => {
+                if (window.EditorManager) EditorManager.findNext();
+            });
+        }
+
+        if (searchCloseBtn) {
+            bindTouchButton(searchCloseBtn, () => {
+                if (window.EditorManager) EditorManager.closeSearchBar();
+                hideSearchButtons();
+            });
+        }
+
+        // Search input events
         if (searchInput) {
             searchInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
@@ -493,21 +527,75 @@ const AppManager = (() => {
                     }
                 }
                 if (e.key === 'Escape') {
+                    if (window.EditorManager) EditorManager.closeSearchBar();
+                    hideSearchButtons();
+                }
+            });
+
+            // Clear search when input is emptied
+            searchInput.addEventListener('input', () => {
+                if (!searchInput.value.trim()) {
+                    if (window.EditorManager) EditorManager.closeSearchBar();
+                    hideSearchButtons();
                     searchInput.style.display = 'none';
-                    searchInput.value = '';
+                    // Reset so search button can re-open
+                    setTimeout(() => { searchInput.style.display = ''; }, 50);
+                }
+            });
+        }
+
+        // Replace input events
+        if (replaceInput) {
+            replaceInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const replaceText = replaceInput.value;
+                    if (window.EditorManager && replaceText !== undefined) {
+                        if (e.ctrlKey || e.metaKey) {
+                            // Ctrl+Enter = Replace All
+                            const count = EditorManager.replaceAll(replaceText);
+                            if (window.showToast) window.showToast(`已替换 ${count} 处`, 'success');
+                        } else {
+                            // Enter = Replace current
+                            EditorManager.replaceCurrent(replaceText);
+                        }
+                    }
+                }
+                if (e.key === 'Escape') {
                     replaceInput.style.display = 'none';
                     replaceInput.value = '';
                 }
             });
         }
 
-        // Ctrl+F shortcut - focus custom search input or open CM dialog
+        // Ctrl+F shortcut
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
                 e.preventDefault();
                 if (window.EditorManager) {
                     EditorManager.search();
+                    showSearchButtons();
                 }
+            }
+            // Ctrl+H shortcut - open replace
+            if ((e.ctrlKey || e.metaKey) && e.key === 'h') {
+                e.preventDefault();
+                if (window.EditorManager) {
+                    EditorManager.search();
+                    showSearchButtons();
+                    if (replaceInput) replaceInput.style.display = '';
+                    if (replaceInput) replaceInput.focus();
+                }
+            }
+            // F3 or Ctrl+G - find next
+            if (e.key === 'F3' || ((e.ctrlKey || e.metaKey) && e.key === 'g')) {
+                e.preventDefault();
+                if (window.EditorManager) EditorManager.findNext();
+            }
+            // Shift+F3 or Ctrl+Shift+G - find previous
+            if ((e.shiftKey && e.key === 'F3') || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G')) {
+                e.preventDefault();
+                if (window.EditorManager) EditorManager.findPrev();
             }
         });
     }

@@ -106,7 +106,9 @@ const SearchManager = (() => {
         // Show loading state
         const resultsEl = document.getElementById('search-results');
         if (resultsEl) {
-            resultsEl.innerHTML = '<div class="search-summary">Searching...</div>';
+            // Show search scope info
+            const scopeLabel = getScopeLabel();
+            resultsEl.innerHTML = `<div class="search-summary">Searching${scopeLabel}...</div>`;
         }
 
         try {
@@ -230,6 +232,12 @@ const SearchManager = (() => {
             html += ` (searched ${filesSearched} files)`;
         }
         html += '</div>';
+
+        // Show search scope if in a project
+        const scopeLabel = getScopeLabel();
+        if (scopeLabel) {
+            html += `<div class="search-summary" style="font-size:11px;color:var(--text-muted);">搜索范围: ${scopeLabel}</div>`;
+        }
 
         // Render each file group
         for (const [filePath, matches] of Object.entries(grouped)) {
@@ -435,6 +443,19 @@ const SearchManager = (() => {
     function getQueryFromUI() {
         const input = document.getElementById('search-input');
         return input ? input.value : '';
+    }
+
+    /**
+     * Get a human-readable label for the current search scope
+     */
+    function getScopeLabel() {
+        if (window.ProjectManager) {
+            const proj = window.ProjectManager.getCurrentProject();
+            if (proj && proj.name) {
+                return proj.name;
+            }
+        }
+        return '';
     }
 
     /**

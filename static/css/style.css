@@ -906,6 +906,14 @@ html, body {
     font-family: var(--font-mono) !important;
 }
 
+/* Search match highlighting */
+.CodeMirror-searching {
+    background: rgba(255, 213, 0, 0.4) !important;
+}
+.CodeMirror-searching.match {
+    background: rgba(255, 150, 0, 0.5) !important;
+}
+
 /* Multi-Select Styles */
 .CodeMirror-multi-select-cursor {
     border-left: 2px solid #ff6b6b !important;
