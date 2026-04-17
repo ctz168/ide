@@ -1573,6 +1573,89 @@ button, .file-item, .search-result-item, .git-change-item {
 }
 
 /* ==================== Theme: Claude (Warm Cream) ==================== */
+#project-title {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 6px;
+}
+#project-title.hidden {
+    display: none;
+}
+
+#project-folder-picker {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+#project-folder-picker.hidden {
+    display: none;
+}
+
+#project-picker-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+#project-picker-header button {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 16px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.project-folder-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+    gap: 8px;
+    border-left: 3px solid transparent;
+}
+.project-folder-item:active {
+    background: var(--bg-hover);
+}
+.project-folder-item .icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+.project-folder-item .name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+.project-folder-item .git-badge {
+    font-size: 12px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.project-no-project, .project-active {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
 [data-theme="claude"] {
     --bg-primary: #FAF9F6;
     --bg-secondary: #F5F0E8;

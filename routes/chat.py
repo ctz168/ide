@@ -711,10 +711,27 @@ def _tool_search_files(args):
     header = f'Search results for "{pattern}" ({len(results)} matches):'
     return header + '\n' + '\n'.join(results)
 
+def _get_effective_cwd():
+    """Get the effective working directory for tool execution.
+    When a project is open, returns the project directory.
+    Otherwise returns WORKSPACE."""
+    try:
+        config = load_config()
+        ws = config.get('workspace', WORKSPACE)
+        project = config.get('project', None)
+        if project:
+            project_dir = os.path.join(ws, project)
+            if os.path.isdir(project_dir):
+                return project_dir
+        return ws
+    except Exception:
+        return WORKSPACE
+
+
 def _tool_run_command(args):
     command = args['command']
     timeout = args.get('timeout', 120)
-    cwd = args.get('cwd', WORKSPACE)
+    cwd = args.get('cwd', None) or _get_effective_cwd()
     try:
         cwd = _validate_path(cwd)
     except ValueError:
@@ -745,14 +762,14 @@ def _tool_run_command(args):
         return f'Error executing command: {str(e)}'
 
 def _tool_git_status(args):
-    repo_path = args.get('repo_path', WORKSPACE)
+    repo_path = args.get('repo_path', None) or _get_effective_cwd()
     r = git_cmd('status --porcelain -b', cwd=repo_path)
     if not r['ok']:
         return f'Error: {r["stderr"]}'
     return r['stdout'] or 'Clean working tree (no changes)'
 
 def _tool_git_diff(args):
-    repo_path = args.get('repo_path', WORKSPACE)
+    repo_path = args.get('repo_path', None) or _get_effective_cwd()
     staged = args.get('staged', False)
     file_path = args.get('file_path', '')
     cmd = 'diff --cached' if staged else 'diff'
@@ -763,7 +780,7 @@ def _tool_git_diff(args):
 
 def _tool_git_commit(args):
     message = args['message']
-    repo_path = args.get('repo_path', WORKSPACE)
+    repo_path = args.get('repo_path', None) or _get_effective_cwd()
     add_all = args.get('add_all', True)
     if add_all:
         git_cmd('add -A', cwd=repo_path)
@@ -951,7 +968,7 @@ def _tool_web_fetch(args):
 
 def _tool_git_log(args):
     count = args.get('count', 10)
-    repo_path = args.get('repo_path', WORKSPACE)
+    repo_path = args.get('repo_path', None) or _get_effective_cwd()
     r = git_cmd(f'log --oneline -n {count}', cwd=repo_path)
     if not r['ok']:
         return f'Error: {r["stderr"]}'
@@ -959,7 +976,7 @@ def _tool_git_log(args):
 
 def _tool_git_checkout(args):
     branch = args.get('branch', '')
-    repo_path = args.get('repo_path', WORKSPACE)
+    repo_path = args.get('repo_path', None) or _get_effective_cwd()
     if not branch:
         return 'Error: branch name is required'
     r = git_cmd(f'checkout {shlex_quote(branch)}', cwd=repo_path)
@@ -1035,8 +1052,33 @@ def _build_api_messages(messages, llm_config):
     sys_prompt = llm_config.get('system_prompt', '')
     if not sys_prompt:
         sys_prompt = DEFAULT_SYSTEM_PROMPT
-    elif WORKSPACE not in sys_prompt:
-        sys_prompt += f'\n\nCurrent workspace: {WORKSPACE}\nServer directory: {SERVER_DIR}\n'
+
+    # Inject project-aware workspace info
+    try:
+        from utils import load_config
+        config = load_config()
+        project = config.get('project', None)
+        ws = config.get('workspace', WORKSPACE)
+        if project:
+            project_dir = os.path.join(ws, project)
+            if os.path.isdir(project_dir):
+                workspace_info = f'Current project: {project}\nProject directory: {project_dir}\nWorkspace root: {ws}\nServer directory: {SERVER_DIR}'
+            else:
+                workspace_info = f'Current workspace: {ws}\nServer directory: {SERVER_DIR}'
+        else:
+            workspace_info = f'Current workspace: {ws}\nServer directory: {SERVER_DIR}'
+    except Exception:
+        workspace_info = f'Current workspace: {WORKSPACE}\nServer directory: {SERVER_DIR}'
+
+    # Replace or append workspace info
+    if 'Current workspace:' in sys_prompt or 'Current project:' in sys_prompt:
+        # Remove old workspace lines
+        import re as _re
+        sys_prompt = _re.sub(r'Current (workspace|project):[^\n]*\n(Project directory|Workspace root|Server directory):[^\n]*\n?', '', sys_prompt)
+        sys_prompt += f'\n\n{workspace_info}\n'
+    else:
+        sys_prompt += f'\n\n{workspace_info}\n'
+
     api_messages = [{'role': 'system', 'content': sys_prompt}]
     for msg in messages:
         role = msg.get('role', '')

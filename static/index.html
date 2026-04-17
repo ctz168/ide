@@ -30,11 +30,12 @@
     <!-- Left Sidebar -->
     <div id="sidebar-left" class="sidebar left">
         <div id="sidebar-left-header">
-            <h3>PhoneIDE</h3>
+            <h3><span id="app-title">PhoneIDE</span><span id="project-title" class="hidden"></span></h3>
             <button id="close-left">✕</button>
         </div>
         <!-- Tabs -->
         <div id="left-tabs">
+            <button class="tab" data-tab="project">📁 项目</button>
             <button class="tab active" data-tab="files">📂 文件</button>
             <button class="tab" data-tab="git">🔀 Git</button>
             <button class="tab" data-tab="search">🔍 搜索</button>
@@ -42,6 +43,31 @@
         </div>
         <!-- Tab Panels -->
         <div id="left-panels">
+            <!-- Project Panel -->
+            <div id="panel-project" class="panel">
+                <div class="panel-toolbar">
+                    <button id="btn-open-project" title="打开项目">📂 打开项目</button>
+                    <button id="btn-clone-project" title="克隆项目">📥 克隆项目</button>
+                    <button id="btn-close-project" title="关闭项目" style="display:none;">✕ 关闭项目</button>
+                </div>
+                <div id="project-info">
+                    <div id="project-current" class="project-no-project">
+                        <div style="text-align:center;padding:30px 12px;">
+                            <div style="font-size:36px;margin-bottom:10px;">📁</div>
+                            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px;">未打开项目</div>
+                            <div style="font-size:11px;color:var(--text-muted);">点击「打开项目」选择一个文件夹，或点击「克隆项目」从远程克隆</div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Project folder picker dialog content -->
+                <div id="project-folder-picker" class="hidden">
+                    <div id="project-picker-header">
+                        <button id="project-picker-back" title="返回上级" style="display:none;">⬆</button>
+                        <span id="project-picker-path">/</span>
+                    </div>
+                    <div id="project-picker-list"></div>
+                </div>
+            </div>
             <!-- Files Panel -->
             <div id="panel-files" class="panel active">
                 <div class="panel-toolbar">
@@ -440,6 +466,7 @@
     <script src="/vendor/marked/marked.min.js"></script>
 
     <!-- App Scripts -->
+    <script src="/js/project.js"></script>
     <script src="/js/files.js"></script>
     <script src="/js/git.js"></script>
     <script src="/js/search.js"></script>

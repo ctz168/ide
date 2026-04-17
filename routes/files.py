@@ -63,7 +63,9 @@ def list_files():
             'icon': get_icon_for_file(os.path.basename(target)),
         })
 
-    return jsonify({'items': items, 'path': path, 'base': base})
+    # Include project info in response so frontend can enforce boundary
+    project = config.get('project', None)
+    return jsonify({'items': items, 'path': path, 'base': base, 'project': project})
 
 
 @bp.route('/api/files/read', methods=['GET'])
@@ -227,6 +229,128 @@ def open_folder():
         save_config(config)
         return jsonify({'ok': True, 'workspace': path})
     return jsonify({'error': 'Invalid folder path'}), 400
+
+
+# ==================== Project Management ====================
+
+def get_project_path():
+    """Get the current project path (relative to workspace) or None."""
+    config = load_config()
+    return config.get('project', None)
+
+
+def get_effective_base():
+    """Get the effective base directory for file operations.
+    When a project is open, returns the project directory.
+    Otherwise returns the workspace root."""
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            return project_dir
+    return base
+
+
+@bp.route('/api/project/info', methods=['GET'])
+@handle_error
+def project_info():
+    """Get current project information."""
+    config = load_config()
+    project = config.get('project', None)
+    base = config.get('workspace', WORKSPACE)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            return jsonify({
+                'project': project,
+                'name': os.path.basename(project),
+                'path': project_dir,
+                'has_git': os.path.exists(os.path.join(project_dir, '.git')),
+            })
+    return jsonify({'project': None, 'name': None, 'path': None})
+
+
+@bp.route('/api/project/open', methods=['POST'])
+@handle_error
+def project_open():
+    """Open a project by setting its directory as the project root."""
+    data = request.json
+    project_rel = data.get('project', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    if not project_rel:
+        return jsonify({'error': 'Project path required'}), 400
+
+    # Security: must be under workspace
+    target = os.path.realpath(os.path.join(base, project_rel))
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isdir(target):
+        return jsonify({'error': 'Directory not found'}), 404
+
+    config['project'] = project_rel
+    save_config(config)
+
+    return jsonify({
+        'ok': True,
+        'project': project_rel,
+        'name': os.path.basename(project_rel),
+    })
+
+
+@bp.route('/api/project/close', methods=['POST'])
+@handle_error
+def project_close():
+    """Close the current project, returning to workspace view."""
+    config = load_config()
+    config['project'] = None
+    save_config(config)
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/project/list_folders', methods=['GET'])
+@handle_error
+def project_list_folders():
+    """List folders in the workspace root for the project picker."""
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    path = request.args.get('path', '')
+
+    if path:
+        target = os.path.realpath(os.path.join(base, path))
+    else:
+        target = os.path.realpath(base)
+
+    # Security: must be under workspace
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isdir(target):
+        return jsonify({'folders': []})
+
+    folders = []
+    try:
+        for entry in sorted(os.listdir(target)):
+            full = os.path.join(target, entry)
+            if os.path.isdir(full) and not entry.startswith('.'):
+                rel = os.path.relpath(full, base)
+                has_git = os.path.exists(os.path.join(full, '.git'))
+                folders.append({
+                    'name': entry,
+                    'path': rel,
+                    'has_git': has_git,
+                })
+    except PermissionError:
+        pass
+
+    return jsonify({
+        'folders': folders,
+        'current_path': os.path.relpath(target, base),
+    })
 
 
 @bp.route('/api/search', methods=['POST'])

@@ -69,6 +69,15 @@ def git_init():
         print(f'[git/init] resolve_cwd error: {e}')
         return jsonify({'error': f'路径解析失败: {str(e)}'}), 400
 
+    # Prevent git init on workspace root
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
+    base = config.get('workspace', WORKSPACE)
+    if os.path.realpath(cwd) == os.path.realpath(base):
+        return jsonify({'error': '禁止在工作区根目录初始化 Git 仓库，请先打开一个项目'}), 400
+
     # Step 2: verify git is available
     try:
         git_ver = subprocess.run('git --version', shell=True, capture_output=True, text=True, timeout=10)

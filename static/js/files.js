@@ -14,6 +14,7 @@ const FileManager = (() => {
     let navigationHistory = [];
     let historyIndex = -1;
     let isNavigating = false;
+    let projectRoot = null;      // project root path (relative to workspace), null = no project
 
     // ── Helpers ────────────────────────────────────────────────────
 
@@ -119,8 +120,13 @@ const FileManager = (() => {
                 throw new Error(errData.error || `Failed to list files: ${resp.statusText}`);
             }
             const data = await resp.json();
+
+            // Update project root from server response
+            if (data.project !== undefined) {
+                projectRoot = data.project || null;
+            }
+
             renderFileTree(data.items || data || [], path);
-            // Server confirmed root load — currentPath already set correctly above
             return data;
         } catch (err) {
             safeToast(`Error loading files: ${err.message}`, 'error');
@@ -464,15 +470,20 @@ const FileManager = (() => {
         // Build HTML
         let html = '';
 
-        // Add "go up" button if not at workspace root
-        if (currentPath && currentPath !== '') {
-            html += `
-                <div class="file-item directory" data-path="${escapeAttr(parentPath(currentPath))}" data-action="go-up">
-                    <span class="arrow">&#9664;</span>
-                    <span class="icon">📁</span>
-                    <span class="name">..</span>
-                    <span class="size"></span>
-                </div>`;
+        // Add "go up" button if not at project root (or workspace root if no project)
+        const rootBoundary = projectRoot || '';
+        if (currentPath && currentPath !== '' && currentPath !== rootBoundary) {
+            // Check if we can go up (must not go above project root)
+            const parent = parentPath(currentPath);
+            if (!projectRoot || !parent || parent.startsWith(projectRoot)) {
+                html += `
+                    <div class="file-item directory" data-path="${escapeAttr(parent)}" data-action="go-up">
+                        <span class="arrow">&#9664;</span>
+                        <span class="icon">📁</span>
+                        <span class="name">..</span>
+                        <span class="size"></span>
+                    </div>`;
+            }
         }
 
         for (const item of items) {
@@ -513,25 +524,54 @@ const FileManager = (() => {
         const parts = path.split('/').filter(Boolean);
         let html = '';
 
-        // Build breadcrumb segments
-        let accumulated = '';
-        for (let i = 0; i < parts.length; i++) {
-            accumulated += '/' + parts[i];
-            const segPath = accumulated;
-            const isLast = i === parts.length - 1;
+        // If a project is open, add project root as first breadcrumb
+        let startIndex = 0;
+        if (projectRoot) {
+            const projectParts = projectRoot.split('/').filter(Boolean);
+            // Only show parts that are within the project
+            const relativeParts = parts.slice(projectParts.length);
+            if (relativeParts.length >= 0) {
+                // Build breadcrumb starting from project-relative path
+                let accumulated = projectRoot;
+                for (let i = 0; i <= relativeParts.length; i++) {
+                    const segPath = accumulated;
+                    const name = i === 0 ? projectParts[projectParts.length - 1] : relativeParts[i - 1];
+                    const isLast = i === relativeParts.length;
+                    html += `<span class="breadcrumb-segment${isLast ? ' current' : ''}" data-path="${escapeAttr(segPath)}">${escapeHTML(name)}</span>`;
+                    if (!isLast) {
+                        html += '<span class="breadcrumb-separator"> / </span>';
+                    }
+                    if (i < relativeParts.length) {
+                        accumulated += '/' + relativeParts[i];
+                    }
+                }
+            }
+        } else {
+            // No project - show full path
+            let accumulated = '';
+            for (let i = 0; i < parts.length; i++) {
+                accumulated += '/' + parts[i];
+                const segPath = accumulated;
+                const isLast = i === parts.length - 1;
 
-            html += `<span class="breadcrumb-segment${isLast ? ' current' : ''}" data-path="${escapeAttr(segPath)}">${escapeHTML(parts[i])}</span>`;
-            if (!isLast) {
-                html += '<span class="breadcrumb-separator"> / </span>';
+                html += `<span class="breadcrumb-segment${isLast ? ' current' : ''}" data-path="${escapeAttr(segPath)}">${escapeHTML(parts[i])}</span>`;
+                if (!isLast) {
+                    html += '<span class="breadcrumb-separator"> / </span>';
+                }
             }
         }
 
         wsEl.innerHTML = html;
 
-        // Bind breadcrumb clicks
+        // Bind breadcrumb clicks - enforce project boundary
         wsEl.querySelectorAll('.breadcrumb-segment:not(.current)').forEach(seg => {
             seg.addEventListener('click', () => {
-                openFolder(seg.dataset.path);
+                const targetPath = seg.dataset.path;
+                // If project is open, don't navigate above project root
+                if (projectRoot && !targetPath.startsWith(projectRoot)) {
+                    return;
+                }
+                openFolder(targetPath);
             });
         });
     }
@@ -785,6 +825,14 @@ const FileManager = (() => {
     } else {
         init();
     }
+
+    // Listen for project events
+    document.addEventListener('project:opened', (e) => {
+        projectRoot = e.detail.project || null;
+    });
+    document.addEventListener('project:closed', () => {
+        projectRoot = null;
+    });
 
     // ── Public API ─────────────────────────────────────────────────
     return {

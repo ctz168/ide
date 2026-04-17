@@ -132,20 +132,8 @@ if __name__ == '__main__':
     ╚══════════════════════════════════╝
     """)
 
-    # Initialize git if needed
-    import subprocess
-    config = load_config()
-    ws = config.get('workspace', WORKSPACE)
-    if not os.path.exists(os.path.join(ws, '.git')):
-        try:
-            subprocess.run(f'git init {shlex_quote(ws)}', shell=True, capture_output=True, timeout=5)
-            # Set safe defaults for first-time users
-            subprocess.run(f'git -C {shlex_quote(ws)} config user.name "PhoneIDE"', shell=True, capture_output=True, timeout=5)
-            subprocess.run(f'git -C {shlex_quote(ws)} config user.email "phoneide@local"', shell=True, capture_output=True, timeout=5)
-            print(f"[INFO] Initialized git repo in {ws}")
-        except Exception:
-            pass
-
+    # Initialize git if needed (only for non-workspace dirs, skip workspace git init)
+    # Git init is now handled per-project via the Project panel
     log_write(f'[SERVER] Starting on {HOST}:{PORT}, workspace: {WORKSPACE}')
 
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
