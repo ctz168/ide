@@ -244,7 +244,7 @@ const SearchManager = (() => {
             html += `<div class="search-result-file" data-file="${escapeAttr(filePath)}">`;
             html += `<span class="search-result-file-icon">📄</span>`;
             html += `<span class="search-result-file-name">${escapeHTML(shortName(filePath))}</span>`;
-            html += `<span class="search-result-file-path">${escapeHTML(filePath)}</span>`;
+            html += `<span class="search-result-file-path"> ${escapeHTML(filePath)}</span>`;
             html += `<span class="search-result-file-count">${matches.length}</span>`;
             html += '</div>';
 
