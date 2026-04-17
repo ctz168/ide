@@ -38,6 +38,8 @@ const ProjectManager = (() => {
             if (data.project) {
                 currentProject = data;
                 onProjectOpened(data);
+                // If project is open on startup, switch to files tab
+                switchToFilesTab();
             } else {
                 currentProject = null;
                 onProjectClosed();
@@ -48,7 +50,7 @@ const ProjectManager = (() => {
     }
 
     /**
-     * Open a project
+     * Open a project, git init it, and switch to files tab
      */
     async function openProject(projectPath) {
         try {
@@ -66,9 +68,17 @@ const ProjectManager = (() => {
             safeToast(`项目已打开: ${data.name}`, 'success');
             onProjectOpened(data);
 
-            // Notify FileManager to navigate into project
+            // Git init the project (safe to call even if already a git repo)
+            try {
+                await gitInitProject(projectPath);
+            } catch (e) {
+                console.warn('[ProjectManager] Git init skipped:', e.message);
+            }
+
+            // Navigate FileManager into the project directory
             if (window.FileManager) {
-                await window.FileManager.openFolder(projectPath);
+                window.FileManager.currentPath = projectPath;
+                await window.FileManager.loadFileList(projectPath);
             }
 
             // Refresh git status
@@ -82,6 +92,31 @@ const ProjectManager = (() => {
             return data;
         } catch (err) {
             safeToast('打开项目失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
+     * Git init a project directory
+     */
+    async function gitInitProject(projectPath) {
+        try {
+            const resp = await fetch('/api/git/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: projectPath })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                // It's ok if git init fails (already a git repo)
+                console.warn('[ProjectManager] Git init result:', err.error || 'non-ok');
+                return;
+            }
+            const data = await resp.json();
+            if (data.note) {
+                safeToast(data.note, 'success');
+            }
+        } catch (err) {
+            console.warn('[ProjectManager] Git init error:', err.message);
         }
     }
 
@@ -118,7 +153,7 @@ const ProjectManager = (() => {
     }
 
     /**
-     * Clone a project (clone in workspace, then open it)
+     * Clone a project (clone in workspace, then open it as project with git init)
      */
     async function cloneProject() {
         // Use GitManager's clone dialog for URL input, then open as project
@@ -166,7 +201,7 @@ const ProjectManager = (() => {
             const data = await resp.json();
             const clonePath = data.path;
 
-            // Open as project
+            // Open as project (will git init and switch to files tab)
             safeToast('克隆成功，正在打开项目...', 'success');
             await openProject(clonePath);
 
@@ -205,7 +240,7 @@ const ProjectManager = (() => {
             if (!resp.ok) throw new Error('Failed to list folders');
             const data = await resp.json();
 
-            // Update header
+            // Update header path display
             const pathEl = document.getElementById('project-picker-path');
             if (pathEl) {
                 pathEl.textContent = '/' + (data.current_path || '');
@@ -217,7 +252,7 @@ const ProjectManager = (() => {
                 backBtn.style.display = pickerPath ? '' : 'none';
             }
 
-            // Render folder list
+            // Render folder list with "设为项目" button per entry
             const listEl = document.getElementById('project-picker-list');
             if (!listEl) return;
 
@@ -231,25 +266,41 @@ const ProjectManager = (() => {
                 const gitIcon = folder.has_git ? ' 🔀' : '';
                 html += `
                     <div class="project-folder-item" data-path="${escapeAttr(folder.path)}">
-                        <span class="icon">📁</span>
-                        <span class="name">${escapeHTML(folder.name)}</span>
-                        <span class="git-badge">${gitIcon}</span>
+                        <div class="project-folder-info" data-path="${escapeAttr(folder.path)}">
+                            <span class="icon">📁</span>
+                            <span class="name">${escapeHTML(folder.name)}</span>
+                            <span class="git-badge">${gitIcon}</span>
+                        </div>
+                        <button class="project-folder-set-btn" data-path="${escapeAttr(folder.path)}" title="设为项目">设为项目</button>
                     </div>`;
             }
 
             listEl.innerHTML = html;
 
-            // Bind click events
-            listEl.querySelectorAll('.project-folder-item').forEach(item => {
+            // Bind click events for folder navigation (clicking the folder info area navigates in)
+            listEl.querySelectorAll('.project-folder-info').forEach(item => {
                 const handler = async () => {
                     const itemPath = item.dataset.path;
-                    // Load subfolders
                     await loadPickerFolders(itemPath);
                 };
                 if (window.bindTouchButton) {
                     window.bindTouchButton(item, handler);
                 } else {
                     item.addEventListener('click', handler);
+                }
+            });
+
+            // Bind click events for "设为项目" buttons
+            listEl.querySelectorAll('.project-folder-set-btn').forEach(btn => {
+                const handler = async (e) => {
+                    e.stopPropagation();
+                    const itemPath = btn.dataset.path;
+                    await openProject(itemPath);
+                };
+                if (window.bindTouchButton) {
+                    window.bindTouchButton(btn, handler);
+                } else {
+                    btn.addEventListener('click', handler);
                 }
             });
         } catch (err) {
@@ -263,17 +314,6 @@ const ProjectManager = (() => {
         parts.pop();
         const parentPath = parts.join('/');
         await loadPickerFolders(parentPath);
-    }
-
-    /**
-     * Select the current folder in the picker as the project directory
-     */
-    async function selectCurrentFolder() {
-        if (!pickerPath) {
-            safeToast('请先导航到一个文件夹', 'warning');
-            return;
-        }
-        await openProject(pickerPath);
     }
 
     // ── Clone Dialog ──────────────────────────────────────────────
@@ -344,7 +384,7 @@ const ProjectManager = (() => {
                 </div>`;
         }
 
-        // Dispatch event for other modules
+        // Dispatch event for other modules (AI assistant, etc.)
         document.dispatchEvent(new CustomEvent('project:opened', { detail: data }));
 
         // Hide folder picker if open
@@ -436,15 +476,7 @@ const ProjectManager = (() => {
             }
         }
 
-        const selectBtn = document.getElementById('project-picker-select');
-        if (selectBtn) {
-            const handler = () => selectCurrentFolder();
-            if (window.bindTouchButton) {
-                window.bindTouchButton(selectBtn, handler);
-            } else {
-                selectBtn.addEventListener('click', handler);
-            }
-        }
+        // "select" button removed - each folder now has its own "设为项目" button
     }
 
     // ── Initialize ─────────────────────────────────────────────────

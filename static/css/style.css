@@ -1638,7 +1638,6 @@ button, .file-item, .search-result-item, .git-change-item {
     display: flex;
     align-items: center;
     padding: 10px 12px;
-    cursor: pointer;
     font-size: 13px;
     transition: background 0.15s;
     gap: 8px;
@@ -1647,11 +1646,22 @@ button, .file-item, .search-result-item, .git-change-item {
 .project-folder-item:active {
     background: var(--bg-hover);
 }
-.project-folder-item .icon {
+.project-folder-info {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    gap: 8px;
+    cursor: pointer;
+    min-width: 0;
+}
+.project-folder-info:active {
+    opacity: 0.7;
+}
+.project-folder-info .icon {
     font-size: 16px;
     flex-shrink: 0;
 }
-.project-folder-item .name {
+.project-folder-info .name {
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
@@ -1659,10 +1669,27 @@ button, .file-item, .search-result-item, .git-change-item {
     font-family: var(--font-mono);
     font-size: 12px;
 }
-.project-folder-item .git-badge {
+.project-folder-info .git-badge {
     font-size: 12px;
     color: var(--text-muted);
     flex-shrink: 0;
+}
+.project-folder-set-btn {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.15s, transform 0.1s;
+}
+.project-folder-set-btn:active {
+    filter: brightness(0.85);
+    transform: scale(0.95);
 }
 
 .project-no-project, .project-active {
