@@ -105,17 +105,28 @@ def stream_output():
 
     def generate():
         idx = 0
+        # Wait briefly for processOutputs to be populated
+        time.sleep(0.15)
         while True:
             if proc_id and proc_id in process_outputs:
                 outputs = process_outputs[proc_id]
                 if idx < len(outputs):
                     for item in outputs[idx:]:
-                        yield f"data: {json.dumps(item)}\n\n"
+                        evt_type = item.get('type', 'stdout')
+                        # Send as named SSE event so frontend addEventListener works
+                        yield f"event: {evt_type}\ndata: {json.dumps(item)}\n\n"
                     idx = len(outputs)
 
                 is_running = running_processes.get(proc_id, {}).get('running', False)
-                if not is_running and idx > 0:
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                if not is_running:
+                    yield f"event: exit\ndata: {json.dumps({'exit_code': 0})}\n\n"
+                    break
+            else:
+                # proc_id not found — process may have finished before we started
+                # Check one more time after a brief delay
+                time.sleep(0.2)
+                if proc_id and proc_id not in process_outputs:
+                    yield f"event: done\ndata: \"Process not found\"\n\n"
                     break
 
             time.sleep(0.1)
