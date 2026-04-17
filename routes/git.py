@@ -16,7 +16,8 @@ def resolve_cwd():
 
     The frontend sends the *relative* path inside the workspace (e.g. 'myrepo').
     This function joins it with the configured workspace to get an absolute path.
-    If no path is provided, the workspace root is used.
+    If no path is provided, the project directory is used (if a project is open).
+    Falls back to workspace root only if no project is set.
     """
     try:
         config = load_config()
@@ -39,6 +40,14 @@ def resolve_cwd():
         # Security: must stay under workspace
         if target.startswith(os.path.realpath(base)):
             return target
+
+    # No explicit path: use project directory if a project is open
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.realpath(os.path.join(base, project))
+        if os.path.isdir(project_dir) and project_dir.startswith(os.path.realpath(base)):
+            return project_dir
+
     return base
 
 

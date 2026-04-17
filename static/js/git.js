@@ -12,14 +12,21 @@ const GitManager = (() => {
     let branchData = [];
 
     /**
-     * Get the current git working directory from the file manager.
-     * Returns empty string if at workspace root (server will use default).
+     * Get the current git working directory.
+     * Prefers the project path from ProjectManager (always correct),
+     * falls back to FileManager.currentPath.
      */
     function getGitCwd() {
+        // Prefer project path from ProjectManager — this is the authoritative source
+        if (window.ProjectManager) {
+            const proj = window.ProjectManager.getCurrentProject();
+            if (proj && proj.project) {
+                return proj.project;
+            }
+        }
+        // Fallback: use FileManager's current navigation path
         if (window.FileManager) {
             const cp = window.FileManager.currentPath;
-            // currentPath '' = workspace root → return '' (server uses workspace)
-            // currentPath 'myrepo' or 'myrepo/sub' = subdirectory → return as-is
             if (cp && cp !== '') {
                 return cp;
             }

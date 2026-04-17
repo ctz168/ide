@@ -823,8 +823,28 @@ const FileManager = (() => {
 
     // ── Initialize ─────────────────────────────────────────────────
 
-    function init() {
-        // Initial load (currentPath starts as '' = workspace root)
+    async function init() {
+        // On startup, check if there's an active project before loading.
+        // This prevents the race condition where workspace root briefly shows
+        // before ProjectManager.loadProjectInfo() navigates to the project.
+        try {
+            const resp = await fetch('/api/project/info');
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.project) {
+                    // Project exists — load project directory directly
+                    projectRoot = data.project || null;
+                    currentPath = data.project;
+                    await loadFileList(data.project);
+                    pushHistory(data.project);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('[FileManager] Failed to check project on init:', e);
+        }
+
+        // No project — load workspace root
         loadFileList(currentPath);
         pushHistory(currentPath);
     }
