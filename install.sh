@@ -290,10 +290,21 @@ if [ -z "$LOCAL_IP" ]; then
     LOCAL_IP="localhost"
 fi
 
-IDE_URL="http://${LOCAL_IP}:1239"
-IDE_LOCAL="http://localhost:1239"
+# Dynamically detect the server port from utils.py
+# Respects PHONEIDE_PORT env var if set by the user
+IDE_PORT=$(cd "$INSTALL_DIR" && python3 -c "
+import os, sys
+sys.path.insert(0, '.')
+from utils import PORT
+print(PORT)
+" 2>/dev/null) || IDE_PORT=${PHONEIDE_PORT:-12345}
 
-# Start server in background
+info "Detected server port: $IDE_PORT"
+
+IDE_URL="http://${LOCAL_IP}:${IDE_PORT}"
+IDE_LOCAL="http://localhost:${IDE_PORT}"
+
+# Start server in background (inherits PHONEIDE_PORT env if set)
 nohup python3 server.py > /dev/null 2>&1 &
 SERVER_PID=$!
 
@@ -308,14 +319,14 @@ for i in $(seq 1 16); do
 done
 
 if $READY; then
-    ok "Server is running (PID: $SERVER_PID)"
+    ok "Server is running on port $IDE_PORT (PID: $SERVER_PID)"
 else
     # Server might still be starting, give it one more chance
     sleep 2
     if curl -sf "$IDE_LOCAL" >/dev/null 2>&1; then
-        ok "Server is running (PID: $SERVER_PID)"
+        ok "Server is running on port $IDE_PORT (PID: $SERVER_PID)"
     else
-        warn "Server may still be starting up..."
+        warn "Server may still be starting up on port $IDE_PORT..."
         warn "If it doesn't load, check: cd $INSTALL_DIR && python3 server.py"
     fi
 fi

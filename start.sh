@@ -34,6 +34,7 @@ echo "Starting PhoneIDE on http://localhost:$PORT ..."
 
 # Start server
 cd "$SCRIPT_DIR"
+export PHONEIDE_PORT=$PORT
 python3 server.py &
 SERVER_PID=$!
 

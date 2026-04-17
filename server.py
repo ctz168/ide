@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PhoneIDE - Mobile-Optimized Web IDE for Termux/Ubuntu
-Lightweight Python server on port 1239
+Lightweight Python server (default port: 12345, configurable via PHONEIDE_PORT env)
 
 Refactored: routes split into routes/ directory, shared utilities in utils.py.
 """
