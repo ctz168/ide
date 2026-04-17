@@ -38,6 +38,17 @@ const ProjectManager = (() => {
             if (data.project) {
                 currentProject = data;
                 onProjectOpened(data);
+
+                // Navigate FileManager into the project directory
+                if (window.FileManager) {
+                    await window.FileManager.loadFileList(data.project);
+                }
+
+                // Refresh git status in the project directory
+                if (window.GitManager) {
+                    await window.GitManager.refresh();
+                }
+
                 // If project is open on startup, switch to files tab
                 switchToFilesTab();
             } else {

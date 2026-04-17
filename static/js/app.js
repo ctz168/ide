@@ -470,6 +470,8 @@ const AppManager = (() => {
     // ── Editor Toolbar ──
     function initEditorToolbar() {
         const searchBtn = document.getElementById('editor-search-btn');
+        const searchGoBtn = document.getElementById('editor-search-go-btn');
+        const searchCountEl = document.getElementById('editor-search-count');
         const searchInput = document.getElementById('editor-search');
         const replaceInput = document.getElementById('editor-replace');
         const searchPrevBtn = document.getElementById('editor-search-prev-btn');
@@ -477,35 +479,74 @@ const AppManager = (() => {
         const searchCloseBtn = document.getElementById('editor-search-close-btn');
 
         function showSearchButtons() {
+            if (searchBtn) searchBtn.style.display = 'none';
+            if (searchGoBtn) searchGoBtn.style.display = '';
+            if (searchCountEl) searchCountEl.style.display = '';
             if (searchPrevBtn) searchPrevBtn.style.display = '';
             if (searchNextBtn) searchNextBtn.style.display = '';
             if (searchCloseBtn) searchCloseBtn.style.display = '';
         }
 
         function hideSearchButtons() {
+            if (searchBtn) searchBtn.style.display = '';
+            if (searchGoBtn) searchGoBtn.style.display = 'none';
+            if (searchCountEl) { searchCountEl.style.display = 'none'; searchCountEl.textContent = ''; }
             if (searchPrevBtn) searchPrevBtn.style.display = 'none';
             if (searchNextBtn) searchNextBtn.style.display = 'none';
             if (searchCloseBtn) searchCloseBtn.style.display = 'none';
+        }
+
+        function triggerSearch() {
+            const q = searchInput ? searchInput.value.trim() : '';
+            if (q && window.EditorManager) {
+                EditorManager.search(q);
+                showSearchButtons();
+            }
+        }
+
+        function updateSearchCount() {
+            if (!searchCountEl || !window.EditorManager) return;
+            // Read match info from EditorManager searchState via a public getter
+            const info = EditorManager.getSearchInfo ? EditorManager.getSearchInfo() : null;
+            if (info && info.matches > 0) {
+                searchCountEl.textContent = info.currentMatch + '/' + info.matches;
+            } else if (info && info.query) {
+                searchCountEl.textContent = '0';
+            } else {
+                searchCountEl.textContent = '';
+            }
         }
 
         if (searchBtn) {
             bindTouchButton(searchBtn, () => {
                 if (window.EditorManager) {
                     EditorManager.search();
-                    showSearchButtons();
+                    // showSearchButtons called after doSearch via updateSearchCount
                 }
+            });
+        }
+
+        if (searchGoBtn) {
+            bindTouchButton(searchGoBtn, () => {
+                triggerSearch();
             });
         }
 
         if (searchPrevBtn) {
             bindTouchButton(searchPrevBtn, () => {
-                if (window.EditorManager) EditorManager.findPrev();
+                if (window.EditorManager) {
+                    EditorManager.findPrev();
+                    updateSearchCount();
+                }
             });
         }
 
         if (searchNextBtn) {
             bindTouchButton(searchNextBtn, () => {
-                if (window.EditorManager) EditorManager.findNext();
+                if (window.EditorManager) {
+                    EditorManager.findNext();
+                    updateSearchCount();
+                }
             });
         }
 
@@ -521,10 +562,7 @@ const AppManager = (() => {
             searchInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    const q = searchInput.value.trim();
-                    if (q && window.EditorManager) {
-                        EditorManager.search(q);
-                    }
+                    triggerSearch();
                 }
                 if (e.key === 'Escape') {
                     if (window.EditorManager) EditorManager.closeSearchBar();
@@ -543,6 +581,27 @@ const AppManager = (() => {
                 }
             });
         }
+
+        // Listen for search events from EditorManager to update count display
+        document.addEventListener('editor:search', (e) => {
+            const { matches, currentMatch, query } = e.detail || {};
+            if (searchCountEl) {
+                if (matches > 0) {
+                    searchCountEl.textContent = currentMatch + '/' + matches;
+                } else if (query) {
+                    searchCountEl.textContent = '0';
+                } else {
+                    searchCountEl.textContent = '';
+                }
+            }
+            // Show search buttons when a search is performed
+            showSearchButtons();
+        });
+
+        // Listen for search bar close to restore search icon
+        document.addEventListener('editor:searchClose', () => {
+            hideSearchButtons();
+        });
 
         // Replace input events
         if (replaceInput) {
@@ -574,7 +633,6 @@ const AppManager = (() => {
                 e.preventDefault();
                 if (window.EditorManager) {
                     EditorManager.search();
-                    showSearchButtons();
                 }
             }
             // Ctrl+H shortcut - open replace
@@ -582,7 +640,6 @@ const AppManager = (() => {
                 e.preventDefault();
                 if (window.EditorManager) {
                     EditorManager.search();
-                    showSearchButtons();
                     if (replaceInput) replaceInput.style.display = '';
                     if (replaceInput) replaceInput.focus();
                 }

@@ -951,6 +951,9 @@ const EditorManager = (() => {
         searchState.currentMatch = 0;
         searchState.isVisible = false;
 
+        // Dispatch for external UI (restore search icon)
+        document.dispatchEvent(new CustomEvent('editor:searchClose'));
+
         if (editor) editor.focus();
     }
 
@@ -1010,6 +1013,11 @@ const EditorManager = (() => {
         // Jump to first match
         findNext();
 
+        // Dispatch event for external UI (app.js toolbar buttons)
+        document.dispatchEvent(new CustomEvent('editor:search', {
+            detail: { query, matches: searchState.matches, currentMatch: searchState.currentMatch }
+        }));
+
         // Update search input placeholder with count
         const searchInput = document.getElementById('editor-search');
         if (searchInput) {
@@ -1052,6 +1060,11 @@ const EditorManager = (() => {
         if (searchInput) {
             searchInput.placeholder = `${searchState.matches > 0 ? searchState.currentMatch + '/' + searchState.matches : '无匹配'} | ${searchState.query}`;
         }
+
+        // Dispatch for external count display
+        document.dispatchEvent(new CustomEvent('editor:search', {
+            detail: { query: searchState.query, matches: searchState.matches, currentMatch: searchState.currentMatch }
+        }));
     }
 
     /**
@@ -1089,6 +1102,23 @@ const EditorManager = (() => {
         if (searchInput) {
             searchInput.placeholder = `${searchState.matches > 0 ? searchState.currentMatch + '/' + searchState.matches : '无匹配'} | ${searchState.query}`;
         }
+
+        // Dispatch for external count display
+        document.dispatchEvent(new CustomEvent('editor:search', {
+            detail: { query: searchState.query, matches: searchState.matches, currentMatch: searchState.currentMatch }
+        }));
+    }
+
+    /**
+     * Get current search state info (for external UI updates)
+     * @returns {{query: string, matches: number, currentMatch: number}}
+     */
+    function getSearchInfo() {
+        return {
+            query: searchState.query,
+            matches: searchState.matches,
+            currentMatch: searchState.currentMatch,
+        };
     }
 
     /**
@@ -1493,6 +1523,7 @@ const EditorManager = (() => {
         closeSearchBar,
         findNext,
         findPrev,
+        getSearchInfo,
         replaceCurrent,
         replaceAll,
 
