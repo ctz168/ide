@@ -1617,6 +1617,21 @@ button, .file-item, .search-result-item, .git-change-item {
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
+}
+
+#project-picker-select {
+    width: auto !important;
+    padding: 4px 10px !important;
+    font-size: 12px !important;
+    background: var(--accent) !important;
+    color: var(--bg-primary) !important;
+    border-color: var(--accent) !important;
+    font-weight: 600;
+    white-space: nowrap;
+}
+#project-picker-select:active {
+    filter: brightness(0.9);
 }
 
 .project-folder-item {

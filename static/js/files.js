@@ -704,7 +704,7 @@ const FileManager = (() => {
 
     // ── Safe Toast Helper ──────────────────────────────────────────
     function safeToast(msg, type) {
-        if (window.showToast) window.safeToast(msg, type);
+        if (window.showToast) window.showToast(msg, type);
         else console.warn('[FileManager]', msg);
     }
 
@@ -728,7 +728,12 @@ const FileManager = (() => {
                 throw new Error(errData.error || `Failed to create file: ${resp.statusText}`);
             }
             safeToast(`Created ${name}`, 'success');
-            await loadFileList(currentPath);
+            // Refresh the directory where the file was created
+            if (currentPath === dirPath) {
+                await loadFileList(currentPath);
+            } else {
+                await loadFileList(dirPath);
+            }
         } catch (err) {
             safeToast(`Error creating file: ${err.message}`, 'error');
         }
@@ -754,7 +759,12 @@ const FileManager = (() => {
                 throw new Error(errData.error || `Failed to create folder: ${resp.statusText}`);
             }
             safeToast(`Created folder ${name}`, 'success');
-            await loadFileList(currentPath);
+            // Refresh the directory where the folder was created
+            if (currentPath === dirPath) {
+                await loadFileList(currentPath);
+            } else {
+                await loadFileList(dirPath);
+            }
         } catch (err) {
             safeToast(`Error creating folder: ${err.message}`, 'error');
         }

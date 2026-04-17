@@ -265,6 +265,17 @@ const ProjectManager = (() => {
         await loadPickerFolders(parentPath);
     }
 
+    /**
+     * Select the current folder in the picker as the project directory
+     */
+    async function selectCurrentFolder() {
+        if (!pickerPath) {
+            safeToast('请先导航到一个文件夹', 'warning');
+            return;
+        }
+        await openProject(pickerPath);
+    }
+
     // ── Clone Dialog ──────────────────────────────────────────────
 
     function showCloneDialog(savedToken, tokenHint) {
@@ -422,6 +433,16 @@ const ProjectManager = (() => {
                 window.bindTouchButton(backBtn, handler);
             } else {
                 backBtn.addEventListener('click', handler);
+            }
+        }
+
+        const selectBtn = document.getElementById('project-picker-select');
+        if (selectBtn) {
+            const handler = () => selectCurrentFolder();
+            if (window.bindTouchButton) {
+                window.bindTouchButton(selectBtn, handler);
+            } else {
+                selectBtn.addEventListener('click', handler);
             }
         }
     }
