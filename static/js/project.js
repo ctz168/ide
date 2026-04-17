@@ -77,7 +77,6 @@ const ProjectManager = (() => {
 
             // Navigate FileManager into the project directory
             if (window.FileManager) {
-                window.FileManager.currentPath = projectPath;
                 await window.FileManager.loadFileList(projectPath);
             }
 
