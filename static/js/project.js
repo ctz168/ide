@@ -134,18 +134,40 @@ const ProjectManager = (() => {
 
             const projectName = currentProject.name;
             currentProject = null;
-            safeToast(`项目已关闭: ${projectName}`, 'success');
+
+            // ── Reverse of openProject: full cleanup ──
+
+            // 1. Clear editor search state (search scope changes)
+            if (window.SearchManager) {
+                window.SearchManager.clearResults();
+            }
+
+            // 2. Clear all open editor tabs (clean slate for workspace)
+            if (window.EditorManager) {
+                const tabList = window.EditorManager.getTabList();
+                for (const tabPath of [...tabList]) {  // copy array since closeTab mutates it
+                    window.EditorManager.closeTab(tabPath);
+                }
+            }
+
+            // 3. Update UI: title, close button, project info panel, hide tabs
+            //    This also dispatches project:closed event → FileManager resets projectRoot
             onProjectClosed();
 
-            // Notify FileManager to return to workspace root
+            safeToast(`项目已关闭: ${projectName}`, 'success');
+
+            // 4. Return FileManager to workspace root (undo navigation into project)
             if (window.FileManager) {
                 await window.FileManager.loadFileList('');
             }
 
-            // Refresh git status
+            // 5. Reset git status (workspace level, no git context)
             if (window.GitManager) {
                 await window.GitManager.refresh();
             }
+
+            // 6. Switch to project tab (reverse of switchToFilesTab in openProject)
+            switchToProjectTab();
         } catch (err) {
             safeToast('关闭项目失败: ' + err.message, 'error');
         }
@@ -383,6 +405,9 @@ const ProjectManager = (() => {
                 </div>`;
         }
 
+        // Show project-only tabs (Git, Debug)
+        showProjectTabs(true);
+
         // Dispatch event for other modules (AI assistant, etc.)
         document.dispatchEvent(new CustomEvent('project:opened', { detail: data }));
 
@@ -414,6 +439,12 @@ const ProjectManager = (() => {
                 </div>`;
         }
 
+        // Hide project-only tabs (Git, Debug) - reverse of onProjectOpened
+        showProjectTabs(false);
+
+        // Switch away from hidden tabs if currently active
+        switchAwayFromProjectTabs();
+
         // Dispatch event for other modules
         document.dispatchEvent(new CustomEvent('project:closed'));
     }
@@ -422,6 +453,34 @@ const ProjectManager = (() => {
         // Click the files tab
         const filesTab = document.querySelector('#left-tabs .tab[data-tab="files"]');
         if (filesTab) filesTab.click();
+    }
+
+    function switchToProjectTab() {
+        // Switch to project tab (reverse of switchToFilesTab)
+        const projectTab = document.querySelector('#left-tabs .tab[data-tab="project"]');
+        if (projectTab) projectTab.click();
+    }
+
+    /**
+     * Show/hide project-only tabs (Git, Debug)
+     * @param {boolean} show - true to show, false to hide
+     */
+    function showProjectTabs(show) {
+        document.querySelectorAll('#left-tabs .tab-project-only').forEach(tab => {
+            tab.style.display = show ? '' : 'none';
+        });
+    }
+
+    /**
+     * If currently active tab is a project-only tab (git/debug),
+     * switch to the project tab instead.
+     */
+    function switchAwayFromProjectTabs() {
+        const activeTab = document.querySelector('#left-tabs .tab.active');
+        if (activeTab && activeTab.classList.contains('tab-project-only')) {
+            // Switch to project tab
+            switchToProjectTab();
+        }
     }
 
     // ── Wire Up Buttons ────────────────────────────────────────────
