@@ -1025,6 +1025,37 @@ html, body {
 .output-line:last-child {
     border-bottom: none;
 }
+
+/* Command block wrapper */
+.cmd-block {
+    position: relative;
+    border-left: 3px solid var(--surface0);
+    padding-left: 4px;
+    margin-bottom: 4px;
+}
+.cmd-block-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 0 2px;
+}
+.cmd-forward-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.cmd-forward-btn:hover {
+    background: var(--mauve);
+    color: var(--bg-primary);
+    border-color: var(--mauve);
+}
+.cmd-forward-btn:active {
+    transform: scale(0.96);
+}
 .output-line.stdout {
     color: var(--text-primary);
 }

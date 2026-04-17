@@ -661,6 +661,9 @@ const GitManager = (() => {
         if (data.staged && Array.isArray(data.staged)) {
             changes.push(...data.staged.map(f => ({ ...f, category: 'staged' })));
         }
+        if (data.changed && Array.isArray(data.changed)) {
+            changes.push(...data.changed.map(f => ({ ...f, category: 'modified' })));
+        }
         if (data.modified && Array.isArray(data.modified)) {
             changes.push(...data.modified.map(f => ({ ...f, category: 'modified' })));
         }
@@ -785,6 +788,7 @@ const GitManager = (() => {
 
         let count = 0;
         if (data.staged) count += data.staged.length;
+        if (data.changed) count += data.changed.length;
         if (data.modified) count += data.modified.length;
         if (data.untracked) count += data.untracked.length;
         if (data.deleted) count += data.deleted.length;

@@ -895,6 +895,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         streamingStartTime = Date.now();
         iterationCount = 0;
         let currentToolEl = null;
+        let lastToolName = null;
         let hasError = false;
 
         // Create abort controller
@@ -977,6 +978,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             parsed.tool || parsed.name || 'unknown',
                             parsed.args
                         );
+                        lastToolName = parsed.tool || parsed.name || null;
                         setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
                     } else if (eventType === 'tool_result') {
                         // Tool execution completed
@@ -990,6 +992,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
                         setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
                         currentToolEl = null;
+                        // Refresh file tree after file-related tool calls
+                        if (window.FileManager && lastToolName) {
+                            const fileTools = ['write_file', 'edit_file', 'create_directory', 'delete_path', 'install_package'];
+                            if (fileTools.includes(lastToolName)) {
+                                window.FileManager.refresh();
+                            }
+                        }
+                        lastToolName = null;
                         forceScrollToBottom();
                     } else if (eventType === 'thinking') {
                         // Status / thinking message

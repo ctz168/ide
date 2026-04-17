@@ -14,6 +14,7 @@ const TerminalManager = (() => {
     let compilers = [];             // cached compiler list
     let panelHeight = 250;          // current panel height in px
     let isDragging = false;         // resize drag state
+    let currentCmdBlock = null;     // current command block container
     let dragStartY = 0;            // touch/mouse Y at drag start
     let dragStartHeight = 0;        // panel height at drag start
 
@@ -310,35 +311,52 @@ const TerminalManager = (() => {
                 // SSE connection established
             };
 
+            function parseSSEData(raw) {
+                try { return JSON.parse(raw); } catch { return null; }
+            }
+
             eventSource.addEventListener('stdout', (e) => {
-                appendOutput(e.data, 'stdout');
+                const d = parseSSEData(e.data);
+                appendOutput(d ? d.text : e.data, 'stdout');
             });
 
             eventSource.addEventListener('stderr', (e) => {
-                appendOutput(e.data, 'stderr');
+                const d = parseSSEData(e.data);
+                appendOutput(d ? d.text : e.data, 'stderr');
             });
 
             eventSource.addEventListener('error', (e) => {
-                if (e.data) {
+                const d = parseSSEData(e.data);
+                if (d) {
+                    appendOutput(d.text || d.message || JSON.stringify(d), 'error');
+                } else if (e.data) {
                     appendOutput(e.data, 'error');
                 }
             });
 
             eventSource.addEventListener('status', (e) => {
-                appendOutput(e.data, 'status');
+                const d = parseSSEData(e.data);
+                if (d) {
+                    appendOutput(d.text || JSON.stringify(d), 'status');
+                } else {
+                    appendOutput(e.data, 'status');
+                }
             });
 
             eventSource.addEventListener('exit', (e) => {
-                const exitCode = e.data;
-                const type = parseInt(exitCode, 10) === 0 ? 'success' : 'error';
-                const statusText = parseInt(exitCode, 10) === 0 ? 'completed successfully' : 'failed';
+                const d = parseSSEData(e.data);
+                const exitCode = d ? d.exit_code : parseInt(e.data, 10);
+                const code = typeof exitCode === 'number' ? exitCode : 0;
+                const type = code === 0 ? 'success' : 'error';
+                const statusText = code === 0 ? 'completed successfully' : 'failed';
                 appendOutput(`─────────────────────────────────────────`, 'status');
-                appendOutput(`[exit] Process ${statusText} (code: ${exitCode})`, type);
+                appendOutput(`[exit] Process ${statusText} (code: ${code})`, type);
                 cleanupProcess();
             });
 
             eventSource.addEventListener('done', (e) => {
-                appendOutput(e.data || 'Done.', 'success');
+                const d = parseSSEData(e.data);
+                appendOutput(d ? (d.text || 'Done.') : (e.data || 'Done.'), 'success');
                 appendOutput(`─────────────────────────────────────────`, 'status');
                 cleanupProcess();
             });
@@ -405,7 +423,7 @@ const TerminalManager = (() => {
             const data = await resp.json();
 
             // Process output lines
-            const lines = data.lines || data.output || [];
+            const lines = data.outputs || data.lines || data.output || [];
             if (Array.isArray(lines)) {
                 for (const line of lines) {
                     const text = typeof line === 'string' ? line : (line.text || line.content || '');
@@ -415,15 +433,15 @@ const TerminalManager = (() => {
                                 rawType === 'status' ? 'system' :
                                 rawType === 'stderr' ? 'stderr' : 'stdout';
                     appendOutput(text, type);
-                    pollSince++;
                 }
+                pollSince = data.since !== undefined ? data.since : pollSince + lines.length;
             } else if (typeof lines === 'string' && lines.trim()) {
                 appendOutput(lines, 'stdout');
                 pollSince++;
             }
 
             // Check if process has exited
-            if (data.exited || data.done || data.finished) {
+            if (data.exited || data.done || data.finished || !data.running) {
                 const exitCode = data.exit_code !== undefined ? data.exit_code : 0;
                 const type = parseInt(exitCode, 10) === 0 ? 'info' : 'error';
                 appendOutput(`Process exited with code ${exitCode}`, type);
@@ -481,6 +499,7 @@ const TerminalManager = (() => {
     function cleanupProcess() {
         closeEventSource();
         stopPolling();
+        finishCmdBlock();
         currentProcId = null;
         pollSince = 0;
         setRunningState(false);
@@ -582,13 +601,80 @@ const TerminalManager = (() => {
 
         const textSpan = document.createTextNode(text || '');
         line.appendChild(textSpan);
-        container.appendChild(line);
+
+        // Append to current command block if exists, otherwise directly to container
+        const target = currentCmdBlock || container;
+        target.appendChild(line);
 
         // Trim if too many lines
         trimOutput();
 
         // Auto-scroll to bottom
         container.scrollTop = container.scrollHeight;
+    }
+
+    /**
+     * Start a new command block. Returns the block container.
+     */
+    function startCmdBlock(cmd) {
+        const container = document.getElementById('output-content');
+        if (!container) return null;
+
+        // Finish previous block if any
+        finishCmdBlock();
+
+        const block = document.createElement('div');
+        block.className = 'cmd-block';
+        block.dataset.cmd = cmd;
+
+        container.appendChild(block);
+        currentCmdBlock = block;
+        return block;
+    }
+
+    /**
+     * Finish the current command block and add the forward-to-AI button.
+     */
+    function finishCmdBlock() {
+        if (!currentCmdBlock) return;
+
+        const block = currentCmdBlock;
+        const cmd = block.dataset.cmd || '';
+        currentCmdBlock = null;
+
+        // Collect all output text from this block
+        const lines = block.querySelectorAll('.output-line');
+        let outputText = '';
+        lines.forEach(line => {
+            // Get the text content of the last child (the text node)
+            const spans = line.querySelectorAll('span');
+            const textNode = spans.length > 0 ? spans[spans.length - 1] : line;
+            const txt = textNode.textContent || '';
+            if (txt) outputText += txt + '\n';
+        });
+        outputText = outputText.trim();
+
+        // Add forward button
+        const actions = document.createElement('div');
+        actions.className = 'cmd-block-actions';
+
+        const fwdBtn = document.createElement('button');
+        fwdBtn.className = 'cmd-forward-btn';
+        fwdBtn.title = '发送给AI助手';
+        fwdBtn.textContent = '🤖 发送给AI';
+        fwdBtn.addEventListener('click', () => {
+            const msg = `命令: ${cmd}\n输出:\n${outputText}`;
+            if (window.ChatManager) {
+                window.ChatManager.sendMessage(msg);
+                // Open chat sidebar if closed
+                const sidebar = document.getElementById('sidebar-right');
+                if (sidebar && sidebar.classList.contains('hidden')) {
+                    document.getElementById('toggle-right')?.click();
+                }
+            }
+        });
+        actions.appendChild(fwdBtn);
+        block.appendChild(actions);
     }
 
     /**
@@ -792,6 +878,9 @@ const TerminalManager = (() => {
             // Add to history
             shellHistory.push(cmd);
             shellHistoryIndex = shellHistory.length;
+
+            // Start a new command block
+            startCmdBlock(cmd);
 
             // Show the command in output
             appendOutput(`─────────────────────────────────────────`, 'status');
