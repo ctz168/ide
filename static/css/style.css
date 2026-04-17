@@ -906,6 +906,38 @@ html, body {
     font-family: var(--font-mono) !important;
 }
 
+/* Multi-Select Styles */
+.CodeMirror-multi-select-cursor {
+    border-left: 2px solid #ff6b6b !important;
+    opacity: 0.7 !important;
+}
+
+.CodeMirror-multi-select-active {
+    border-left: 2px solid var(--accent) !important;
+    opacity: 1.0 !important;
+}
+
+.multi-select-notification {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Multi-select cursor indicators in status bar */
+.editor-status-bar .multi-select-indicator {
+    color: #ff6b6b;
+    font-weight: bold;
+}
+
 /* ==================== Bottom Panel (Output) ==================== */
 #bottom-panel {
     background: var(--bg-secondary);

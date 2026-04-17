@@ -12,6 +12,11 @@ const EditorManager = (() => {
     let dirty = false;               // unsaved changes flag
     let statusBar = null;            // cursor position status bar element
     let _historySize = 0;            // last known history size for dirty detection
+    
+    // ── Multi-Select State ──────────────────────────────────────────
+    let multiSelectMode = false;     // whether multi-select is active
+    let multiCursors = [];            // array of cursor positions {line, ch}
+    let selectionRanges = [];        // array of selection ranges {anchor, head}
 
     // ── Tab State ─────────────────────────────────────────────────
     let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
@@ -26,7 +31,14 @@ const EditorManager = (() => {
         indentUnit: 4,
         indentWithTabs: false,
         lineWrapping: false,
-        theme: 'dracula'
+        theme: 'dracula',
+        // Multi-Select config
+        multiSelect: {
+            enabled: true,
+            modifierKey: 'Alt',           // 'Alt' for desktop, 'Ctrl' for mobile
+            rectangular: true,            // enable rectangular selection
+            maxCursors: 50                // maximum number of cursors
+        }
     };
 
     // ── Language Mode Mapping ──────────────────────────────────────
@@ -163,6 +175,9 @@ const EditorManager = (() => {
             styleActiveLine: true,
             foldGutter: true,
 
+            // Multi-Select support
+            cursorBlinkRate: 530,
+
             // Gutters: line numbers + code folding
             gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
 
@@ -219,6 +234,39 @@ const EditorManager = (() => {
                 },
                 'Cmd-/': (cm) => {
                     cm.toggleComment();
+                },
+                // Multi-Select key bindings
+                'Alt-Click': (cm, event) => {
+                    if (config.multiSelect.enabled) {
+                        event.preventDefault();
+                        handleMultiSelectClick(event);
+                    }
+                },
+                'Ctrl-Click': (cm, event) => {
+                    if (config.multiSelect.enabled && isMobile()) {
+                        event.preventDefault();
+                        handleMultiSelectClick(event);
+                    }
+                },
+                'Alt-A': (cm) => {
+                    if (config.multiSelect.enabled) {
+                        selectAllOccurrences();
+                    }
+                },
+                'Escape': (cm) => {
+                    if (multiSelectMode) {
+                        exitMultiSelect();
+                    }
+                },
+                'Shift-Alt-Up': (cm) => {
+                    if (config.multiSelect.enabled && multiSelectMode) {
+                        addCursorAbove();
+                    }
+                },
+                'Shift-Alt-Down': (cm) => {
+                    if (config.multiSelect.enabled && multiSelectMode) {
+                        addCursorBelow();
+                    }
                 }
             }
         });
@@ -1260,9 +1308,281 @@ const EditorManager = (() => {
         setTabDirty,
 
         // Diff view
-        showDiff
+        showDiff,
+        
+        // Multi-Select API
+        isMultiSelectMode,
+        enterMultiSelect,
+        exitMultiSelect,
+        addCursorAt,
+        selectAllOccurrences,
+        getMultiCursors
     };
 })();
+
+// ── Multi-Select Implementation ──────────────────────────────────────
+
+/**
+ * Check if running on mobile device
+ */
+function isMobile() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+/**
+ * Handle multi-select click events
+ */
+function handleMultiSelectClick(event) {
+    if (!editor) return;
+    
+    const pos = editor.coordsChar({
+        left: event.clientX,
+        top: event.clientY
+    });
+    
+    if (multiSelectMode) {
+        // Add new cursor
+        addCursorAt(pos.line, pos.ch);
+    } else {
+        // Start multi-select mode
+        enterMultiSelect(pos.line, pos.ch);
+    }
+}
+
+/**
+ * Enter multi-select mode with initial cursor
+ */
+function enterMultiSelect(line, ch) {
+    if (!editor) return;
+    
+    multiSelectMode = true;
+    multiCursors = [{line, ch}];
+    selectionRanges = [];
+    
+    // Update cursor display
+    updateMultiCursorDisplay();
+    
+    // Update status bar
+    updateMultiSelectStatus();
+    
+    // Dispatch event
+    document.dispatchEvent(new CustomEvent('editor:multiselect:enter'));
+}
+
+/**
+ * Exit multi-select mode
+ */
+function exitMultiSelect() {
+    if (!editor) return;
+    
+    multiSelectMode = false;
+    multiCursors = [];
+    selectionRanges = [];
+    
+    // Clear multi-cursor display
+    editor.refresh();
+    
+    // Update status bar
+    updateCursorPos();
+    
+    // Dispatch event
+    document.dispatchEvent(new CustomEvent('editor:multiselect:exit'));
+}
+
+/**
+ * Add cursor at specific position
+ */
+function addCursorAt(line, ch) {
+    if (!editor || !multiSelectMode) return;
+    
+    // Check if cursor limit reached
+    if (multiCursors.length >= config.multiSelect.maxCursors) {
+        showNotification(`Maximum ${config.multiSelect.maxCursors} cursors allowed`);
+        return;
+    }
+    
+    // Check if cursor already exists at this position
+    const exists = multiCursors.some(cursor => cursor.line === line && cursor.ch === ch);
+    if (exists) return;
+    
+    // Add new cursor
+    multiCursors.push({line, ch});
+    
+    // Update display
+    updateMultiCursorDisplay();
+    updateMultiSelectStatus();
+}
+
+/**
+ * Add cursor above current active cursor
+ */
+function addCursorAbove() {
+    if (!editor || !multiSelectMode || multiCursors.length === 0) return;
+    
+    const activeCursor = multiCursors[multiCursors.length - 1];
+    const newLine = Math.max(0, activeCursor.line - 1);
+    
+    addCursorAt(newLine, activeCursor.ch);
+}
+
+/**
+ * Add cursor below current active cursor
+ */
+function addCursorBelow() {
+    if (!editor || !multiSelectMode || multiCursors.length === 0) return;
+    
+    const activeCursor = multiCursors[multiCursors.length - 1];
+    const newLine = Math.min(editor.lineCount() - 1, activeCursor.line + 1);
+    
+    addCursorAt(newLine, activeCursor.ch);
+}
+
+/**
+ * Select all occurrences of current word/selection
+ */
+function selectAllOccurrences() {
+    if (!editor) return;
+    
+    // Get current selection or word under cursor
+    let selection = editor.getSelection();
+    let search_term = selection;
+    
+    if (!selection) {
+        // Get word under cursor
+        const cursor = editor.getCursor();
+        const line = editor.getLine(cursor.line);
+        const word = getWordAt(line, cursor.ch);
+        search_term = word;
+    }
+    
+    if (!search_term) return;
+    
+    // Find all occurrences
+    const occurrences = [];
+    const doc = editor.getDoc();
+    
+    for (let i = 0; i < doc.lineCount(); i++) {
+        const line = doc.getLine(i);
+        let pos = 0;
+        
+        while (pos < line.length) {
+            const index = line.indexOf(search_term, pos);
+            if (index === -1) break;
+            
+            occurrences.push({line: i, ch: index});
+            pos = index + 1;
+        }
+    }
+    
+    // Start multi-select with all occurrences
+    if (occurrences.length > 0) {
+        multiSelectMode = true;
+        multiCursors = occurrences;
+        selectionRanges = occurrences.map(cursor => ({
+            anchor: cursor,
+            head: {line: cursor.line, ch: cursor.ch + search_term.length}
+        }));
+        
+        updateMultiCursorDisplay();
+        updateMultiSelectStatus();
+        
+        document.dispatchEvent(new CustomEvent('editor:multiselect:enter'));
+    }
+}
+
+/**
+ * Get word at position in line
+ */
+function getWordAt(line, pos) {
+    const left = line.slice(0, pos);
+    const right = line.slice(pos);
+    
+    const leftMatch = left.match(/\w*$/);
+    const rightMatch = right.match(/^\w*/);
+    
+    if (leftMatch && rightMatch) {
+        return leftMatch[0] + rightMatch[0];
+    }
+    
+    return '';
+}
+
+/**
+ * Update multi-cursor display
+ */
+function updateMultiCursorDisplay() {
+    if (!editor) return;
+    
+    // Clear existing cursors (CodeMirror will handle this)
+    editor.refresh();
+    
+    // Note: CodeMirror 5 doesn't support true multiple cursors
+    // This is a simulation - we'll show the last cursor as active
+    // In a real implementation, you'd need to extend CodeMirror or use overlays
+}
+
+/**
+ * Update multi-select status bar
+ */
+function updateMultiSelectStatus() {
+    if (!statusBar) return;
+    
+    const posEl = statusBar.querySelector('.status-pos');
+    const modeEl = statusBar.querySelector('.status-mode');
+    
+    if (posEl) {
+        posEl.textContent = `多选: ${multiCursors.length} 个光标`;
+    }
+    
+    if (modeEl) {
+        modeEl.textContent = multiSelectMode ? '多选模式' : getModeLabel(currentMode);
+    }
+}
+
+/**
+ * Check if currently in multi-select mode
+ */
+function isMultiSelectMode() {
+    return multiSelectMode;
+}
+
+/**
+ * Get current multi-cursor positions
+ */
+function getMultiCursors() {
+    return [...multiCursors];
+}
+
+/**
+ * Show notification to user
+ */
+function showNotification(message) {
+    // Create a simple notification element
+    const notification = document.createElement('div');
+    notification.className = 'multi-select-notification';
+    notification.textContent = message;
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #333;
+        color: white;
+        padding: 10px 15px;
+        border-radius: 5px;
+        font-size: 14px;
+        z-index: 10000;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Auto-remove after 3 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+        }
+    }, 3000);
+}
 
 // Also expose as window.EditorManager for external access
 window.EditorManager = EditorManager;
