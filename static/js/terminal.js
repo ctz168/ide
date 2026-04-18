@@ -12,7 +12,7 @@ const TerminalManager = (() => {
     let pollTimer = null;           // polling fallback timer
     let pollSince = 0;              // last line index seen
     let compilers = [];             // cached compiler list
-    let panelHeight = 250;          // current panel height in px
+    let panelHeight = Math.floor(window.innerHeight * 0.6);  // default 60% of screen height
     let isDragging = false;         // resize drag state
     let currentCmdBlock = null;     // current command block container
     let dragStartY = 0;            // touch/mouse Y at drag start
@@ -20,7 +20,7 @@ const TerminalManager = (() => {
     let onProcessComplete = null;   // callback after streamed process finishes
 
     // ── Constants ──────────────────────────────────────────────────
-    const MIN_PANEL_HEIGHT = 100;
+    const MIN_PANEL_HEIGHT = 120;
     const MAX_PANEL_HEIGHT = window.innerHeight ? Math.floor(window.innerHeight * 0.8) : 500;
     const POLL_INTERVAL = 500;      // ms between poll requests
     const MAX_OUTPUT_LINES = 5000;  // max lines before trimming

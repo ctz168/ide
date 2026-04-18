@@ -853,6 +853,11 @@ const FileManager = (() => {
         // On startup, check if there's an active project before loading.
         // This prevents the race condition where workspace root briefly shows
         // before ProjectManager.loadProjectInfo() navigates to the project.
+
+        // IMPORTANT: Load saved state FIRST, before any loadFileList() call
+        // (which would overwrite saved state via saveState())
+        const saved = loadSavedState();
+
         try {
             const resp = await fetch('/api/project/info');
             if (resp.ok) {
@@ -860,22 +865,22 @@ const FileManager = (() => {
                 if (data.project) {
                     // Project exists — load project directory directly
                     projectRoot = data.project || null;
-                    currentPath = data.project;
-                    await loadFileList(data.project);
-                    pushHistory(data.project);
 
-                    // Restore saved sub-path within project if persisted
-                    const saved = loadSavedState();
+                    // Determine what sub-path to show
+                    let targetPath = data.project;
                     if (saved && saved.currentPath && saved.projectRoot === projectRoot
-                        && saved.currentPath !== projectRoot) {
-                        // Navigate to previously viewed sub-directory
-                        openFolder(saved.currentPath);
+                        && saved.currentPath.startsWith(projectRoot)) {
+                        // Restore previously viewed sub-directory within project
+                        targetPath = saved.currentPath;
                     }
+
+                    currentPath = targetPath;
+                    await loadFileList(targetPath);
+                    pushHistory(targetPath);
 
                     // Re-open previously open file
                     if (saved && saved.currentFilePath) {
                         const filePath = saved.currentFilePath;
-                        // Verify file still exists before opening
                         try {
                             const checkResp = await fetch(`/api/files/read?path=${encodeURIComponent(filePath.replace(/^\/workspace\/?/, ''))}`);
                             if (checkResp.ok) {
@@ -891,7 +896,6 @@ const FileManager = (() => {
         }
 
         // No project — try to restore saved state
-        const saved = loadSavedState();
         const restoredPath = saved ? (saved.currentPath || '') : currentPath;
         loadFileList(restoredPath);
         pushHistory(restoredPath);

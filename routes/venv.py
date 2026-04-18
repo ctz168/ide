@@ -67,9 +67,14 @@ def create_venv():
     effective_base = _get_effective_base(config)
 
     if not path:
-        path = os.path.join(effective_base, '.venv')
+        path = '.venv'
 
-    target = os.path.realpath(path)
+    # Resolve path relative to the effective base (project dir), not CWD
+    if not os.path.isabs(path):
+        target = os.path.realpath(os.path.join(effective_base, path))
+    else:
+        target = os.path.realpath(path)
+
     proc_id = run_process(f'python3 -m venv {shlex_quote(target)}', cwd=effective_base)
     if proc_id:
         config['venv_path'] = target
@@ -104,17 +109,25 @@ def list_venvs():
                 'name': os.path.basename(root),
             })
 
-    # If the current venv_path is outside the project, clear it (stale)
+    # If the current venv_path doesn't exist, clear it (stale)
     current_venv = config.get('venv_path', '')
     project = config.get('project', None)
     cleared_stale = False
-    if project and current_venv:
-        project_dir = os.path.realpath(os.path.join(base, project))
-        if not current_venv.startswith(project_dir):
+    if current_venv:
+        if not os.path.isdir(current_venv) or not os.path.exists(os.path.join(current_venv, 'pyvenv.cfg')):
+            # venv directory no longer exists — clear it
             config['venv_path'] = ''
             save_config(config)
             current_venv = ''
             cleared_stale = True
+        elif project:
+            # If a project is open and the venv is outside the project, it's stale
+            project_dir = os.path.realpath(os.path.join(base, project))
+            if not current_venv.startswith(project_dir):
+                config['venv_path'] = ''
+                save_config(config)
+                current_venv = ''
+                cleared_stale = True
 
     return jsonify({
         'venvs': venvs,
@@ -132,7 +145,15 @@ def activate_venv():
     config = load_config()
     base = config.get('workspace', WORKSPACE)
 
-    target = os.path.realpath(os.path.join(base, path))
+    if not path:
+        return jsonify({'error': 'Path required'}), 400
+
+    # Resolve relative paths from workspace root (matching list_venvs output format)
+    if not os.path.isabs(path):
+        target = os.path.realpath(os.path.join(base, path))
+    else:
+        target = os.path.realpath(path)
+
     if os.path.exists(os.path.join(target, 'pyvenv.cfg')):
         config['venv_path'] = target
         save_config(config)
