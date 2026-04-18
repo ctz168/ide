@@ -25,20 +25,34 @@ def execute_code():
     config = load_config()
     base = config.get('workspace', WORKSPACE)
 
+    # When a project is open, run code in the project directory
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # Warn if no venv is configured (helpful for Python projects)
+    no_venv = False
+    if compiler in ('python3', 'python') and not config.get('venv_path'):
+        no_venv = True
+
     if file_path:
-        target = os.path.realpath(os.path.join(base, file_path))
-        if not target.startswith(os.path.realpath(base)):
+        # file_path can be relative to workspace or project
+        target = os.path.realpath(os.path.join(config.get('workspace', WORKSPACE), file_path))
+        ws = os.path.realpath(config.get('workspace', WORKSPACE))
+        if not target.startswith(ws):
             return jsonify({'error': 'Access denied'}), 403
         cmd = f'{compiler} {shlex_quote(target)} {args}'
     else:
-        # Write temp file
+        # Write temp file in the effective base (project dir or workspace)
         tmp_file = os.path.join(base, '.phoneide_tmp.py')
         with open(tmp_file, 'w') as f:
             f.write(code)
         cmd = f'{compiler} {shlex_quote(tmp_file)} {args}'
 
     proc_id = run_process(cmd, cwd=base)
-    return jsonify({'ok': True, 'proc_id': proc_id})
+    return jsonify({'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base})
 
 
 @bp.route('/api/run/stop', methods=['POST'])

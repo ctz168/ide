@@ -11,6 +11,21 @@ from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote
 bp = Blueprint('venv', __name__)
 
 
+def _get_effective_base(config=None):
+    """Get the effective base directory for venv operations.
+    When a project is open, returns the project directory.
+    Otherwise returns the workspace root."""
+    if config is None:
+        config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            return project_dir
+    return base
+
+
 @bp.route('/api/compilers', methods=['GET'])
 @handle_error
 def list_compilers():
@@ -48,14 +63,17 @@ def create_venv():
     config = load_config()
     base = config.get('workspace', WORKSPACE)
 
+    # When a project is open, create venv inside the project directory
+    effective_base = _get_effective_base(config)
+
     if not path:
-        path = os.path.join(base, '.venv')
+        path = os.path.join(effective_base, '.venv')
 
     target = os.path.realpath(path)
-    proc_id = run_process(f'python3 -m venv {shlex_quote(target)}', cwd=base)
+    proc_id = run_process(f'python3 -m venv {shlex_quote(target)}', cwd=effective_base)
     if proc_id:
         config['venv_path'] = target
-        save_config(config)
+    save_config(config)
     return jsonify({'ok': True, 'proc_id': proc_id, 'venv_path': target})
 
 
@@ -65,12 +83,16 @@ def list_venvs():
     config = load_config()
     base = config.get('workspace', WORKSPACE)
     venvs = []
+
+    # When a project is open, only scan the project directory
+    scan_base = _get_effective_base(config)
+
     # Search for common venv directories
-    for root, dirs, files in os.walk(base):
+    for root, dirs, files in os.walk(scan_base):
         # Skip hidden dirs except .venv
         dirs[:] = [d for d in dirs if not d.startswith('.') or d == '.venv']
         # Limit depth
-        depth = root[len(base):].count(os.sep)
+        depth = root[len(scan_base):].count(os.sep)
         if depth > 2:
             continue
         if 'pyvenv.cfg' in files:
@@ -81,7 +103,25 @@ def list_venvs():
                 'active': config.get('venv_path') == root,
                 'name': os.path.basename(root),
             })
-    return jsonify({'venvs': venvs, 'current': config.get('venv_path', '')})
+
+    # If the current venv_path is outside the project, clear it (stale)
+    current_venv = config.get('venv_path', '')
+    project = config.get('project', None)
+    cleared_stale = False
+    if project and current_venv:
+        project_dir = os.path.realpath(os.path.join(base, project))
+        if not current_venv.startswith(project_dir):
+            config['venv_path'] = ''
+            save_config(config)
+            current_venv = ''
+            cleared_stale = True
+
+    return jsonify({
+        'venvs': venvs,
+        'current': current_venv,
+        'cleared_stale': cleared_stale,
+        'has_project': bool(project),
+    })
 
 
 @bp.route('/api/venv/activate', methods=['POST'])

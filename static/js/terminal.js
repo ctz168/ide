@@ -134,7 +134,7 @@ const TerminalManager = (() => {
         try {
             appendOutput(`─────────────────────────────────────────`, 'status');
             appendOutput(`$ ${compiler} ${file_path}${args ? ' ' + args : ''}`, 'system');
-            appendOutput(`[info] PID: pending... | CWD: workspace | Time: ${new Date().toLocaleString()}`, 'info');
+            appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
 
             const body = { file_path, compiler };
             if (args) body.args = args;
@@ -148,6 +148,14 @@ const TerminalManager = (() => {
             if (!resp.ok) throw new Error(`Execution failed: ${resp.statusText}`);
 
             const data = await resp.json();
+
+            // Warn if no venv is configured for Python
+            if (data.no_venv && (compiler === 'python3' || compiler === 'python')) {
+                appendOutput(`[warn] 未检测到虚拟环境。建议在调试面板创建虚拟环境以确保依赖隔离。`, 'warn');
+                if (data.cwd) {
+                    appendOutput(`[info] CWD: ${data.cwd}`, 'info');
+                }
+            }
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
@@ -1076,6 +1084,16 @@ const TerminalManager = (() => {
             loadVenvInfo();
             appendOutput('[system] Workspace changed: ' + (window.FileManager ? window.FileManager.workspacePath : 'unknown'), 'system');
         });
+
+        // Re-bind venv to project directory when project is opened/closed
+        document.addEventListener('project:opened', () => {
+            loadVenvInfo();
+            appendOutput('[system] Project opened — virtual environment re-scanned', 'system');
+        });
+        document.addEventListener('project:closed', () => {
+            loadVenvInfo();
+            appendOutput('[system] Project closed — virtual environment reset to workspace', 'system');
+        });
     }
 
     /**
@@ -1175,6 +1193,8 @@ const TerminalManager = (() => {
                 if (data.current) {
                     const name = data.current.split('/').pop();
                     currentVenvEl.textContent = name;
+                } else if (data.cleared_stale) {
+                    currentVenvEl.textContent = '未设置 (旧环境已清除)';
                 } else {
                     currentVenvEl.textContent = '未设置';
                 }
@@ -1197,23 +1217,25 @@ const TerminalManager = (() => {
                 }
             }
 
-            // Show/hide venv packages button
+            // Show/hide venv packages list
             const venvPackagesDiv = document.getElementById('venv-packages');
-            if (venvPackagesDiv && data.current) {
-                // Load and show packages
+            const activeVenv = data.current || (data.venvs && data.venvs.length > 0 ? data.venvs[0].full_path : '');
+            if (venvPackagesDiv && activeVenv) {
                 try {
                     const pkgResp = await fetch('/api/venv/packages');
                     if (pkgResp.ok) {
                         const pkgData = await pkgResp.json();
                         const pkgList = document.getElementById('venv-pkg-list');
                         if (pkgList && pkgData.packages) {
-                            pkgList.innerHTML = pkgData.packages.map(p => 
+                            pkgList.innerHTML = pkgData.packages.map(p =>
                                 `<div style="padding:2px 8px;">${p.name || p.key} ${p.version || ''}</div>`
                             ).join('');
                             venvPackagesDiv.style.display = '';
                         }
                     }
                 } catch (_e) {}
+            } else if (venvPackagesDiv) {
+                venvPackagesDiv.style.display = 'none';
             }
 
             return data;
