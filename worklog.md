@@ -49,3 +49,25 @@ Stage Summary:
 - Files modified: static/js/files.js (+68 lines), static/js/git.js (+115 lines)
 - Commit: 7961229
 - Push: successful to origin/main
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: Add restore/checkout buttons to git diff view and commit log
+
+Work Log:
+- Read git.py, git.js, editor.js, index.html to understand current implementation
+- Added POST /api/git/restore endpoint for restoring files to HEAD state
+- Added POST /api/git/checkout-commit endpoint for checking out specific commits (detached HEAD)
+- Added restoreFile() function in git.js with confirmation dialog
+- Added checkoutCommit() function in git.js with confirmation dialog
+- Modified renderLogList() to add ⏪ checkout button per commit item
+- Modified showDiff() in editor.js to add "⏪ 恢复" restore button for single-file diffs
+- Added CSS styles for .git-log-header, .git-log-checkout-btn, .diff-restore-btn
+- Committed and pushed to ctz168/ide (commit 5c5b121)
+
+Stage Summary:
+- Backend: 2 new API endpoints (/api/git/restore, /api/git/checkout-commit)
+- Frontend: restore button in diff view header, checkout button in commit log list
+- All operations show confirmation dialog before executing
+- Git commands logged to terminal console
