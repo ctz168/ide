@@ -316,6 +316,12 @@
             <textarea id="chat-input" placeholder="输入消息... (Enter发送)" rows="2"></textarea>
             <div class="chat-send-row">
                 <select id="chat-model-select" title="选择模型"></select>
+                <div id="ctx-progress-ring" class="ctx-progress-ring" title="上下文占用">
+                    <svg viewBox="0 0 36 36">
+                        <circle class="ctx-ring-bg" cx="18" cy="18" r="15.5" fill="none" stroke-width="3"/>
+                        <circle class="ctx-ring-fill" cx="18" cy="18" r="15.5" fill="none" stroke-width="3" stroke-dasharray="97.4" stroke-dashoffset="97.4" stroke-linecap="round" transform="rotate(-90 18 18)"/>
+                    </svg>
+                </div>
                 <button id="chat-send">发送</button>
             </div>
         </div>

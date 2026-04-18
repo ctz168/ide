@@ -79,6 +79,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': True,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'max_context': 128000,
         'reasoning': True,
     },
     {
@@ -91,6 +92,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'max_context': 200000,
         'reasoning': True,
     },
     {
@@ -103,6 +105,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'max_context': 128000,
         'reasoning': True,
     },
     {
@@ -115,6 +118,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 16384,
+        'max_context': 128000,
         'reasoning': True,
     },
 ]
@@ -137,6 +141,7 @@ def load_llm_config():
                 'enabled': True,
                 'temperature': config.get('temperature', 0.7),
                 'max_tokens': config.get('max_tokens', 4096),
+                'max_context': 128000,
                 'reasoning': True,
             }
             config['models'] = [legacy]
@@ -149,10 +154,12 @@ def load_llm_config():
             if 'api_type' in config:
                 del config['api_type']
             save_llm_config(config)
-        # Ensure all models have the reasoning field (migration for existing configs)
+        # Ensure all models have the reasoning and max_context field (migration for existing configs)
         for m in config.get('models', []):
             if 'reasoning' not in m:
                 m['reasoning'] = True
+            if 'max_context' not in m:
+                m['max_context'] = 128000
         return config
     return {
         'models': DEFAULT_LLM_MODELS,

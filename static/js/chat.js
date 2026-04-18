@@ -217,6 +217,65 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         return Math.ceil(text.length / 4);
     }
 
+    // ── Context Progress Ring ───────────────────────────────────────
+
+    /**
+     * Calculate current context token usage and update the ring indicator.
+     * The ring shows: thin white outline at 0% → thick black fill at 100%.
+     * Over 80% turns red as a warning.
+     */
+    function updateContextRing() {
+        const ring = document.getElementById('ctx-progress-ring');
+        if (!ring) return;
+        const fillEl = ring.querySelector('.ctx-ring-fill');
+        if (!fillEl) return;
+
+        // Get max_context from current selected model config
+        let maxCtx = 128000; // default
+        const modelSelect = document.getElementById('chat-model-select');
+        if (modelSelect && modelSelect._modelConfigs) {
+            const idx = parseInt(modelSelect.value);
+            if (!isNaN(idx) && modelSelect._modelConfigs[idx]) {
+                maxCtx = modelSelect._modelConfigs[idx].max_context || 128000;
+            }
+        }
+
+        // Estimate total tokens from all messages
+        let totalTokens = 0;
+        for (const msg of messages) {
+            totalTokens += estimateTokens(msg.content || '');
+        }
+
+        const pct = Math.min(totalTokens / maxCtx, 1);
+        const circumference = 97.4; // 2 * PI * 15.5
+        const offset = circumference * (1 - pct);
+
+        fillEl.style.strokeDashoffset = offset;
+
+        // Color: white at low, darken toward black at high, red over 80%
+        if (pct >= 0.8) {
+            fillEl.style.stroke = pct >= 1 ? '#ff4444' : '#ff6644';
+            fillEl.style.strokeWidth = '4';
+        } else {
+            // Interpolate from thin white to thick dark
+            const gray = Math.round(255 - pct * 255);
+            fillEl.style.stroke = `rgb(${gray},${gray},${gray})`;
+            fillEl.style.strokeWidth = pct > 0.05 ? (3 + pct * 2) + 'px' : '3px';
+        }
+
+        // Update tooltip
+        ring.title = `上下文: ~${totalTokens} / ${maxCtx} tokens (${Math.round(pct * 100)}%)`;
+
+        // Show percentage text inside ring
+        let pctLabel = ring.querySelector('.ctx-pct');
+        if (!pctLabel) {
+            pctLabel = document.createElement('span');
+            pctLabel.className = 'ctx-pct';
+            ring.appendChild(pctLabel);
+        }
+        pctLabel.textContent = Math.round(pct * 100) + '%';
+    }
+
     // ── Markdown-Lite Rendering ────────────────────────────────────
 
     /**
@@ -619,6 +678,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         bindCopyButtons(container);
         forceScrollToBottom();
+        updateContextRing();
     }
 
     function addMessage(role, content, extra) {
@@ -638,6 +698,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         bindCopyButtons(container);
         forceScrollToBottom();
+        updateContextRing();
 
         return el;
     }
@@ -851,6 +912,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             contentEl.innerHTML = renderMarkdownLite(streamBuffer);
             bindCopyButtons(contentEl);
             scrollToBottom();
+        }
+
+        // Throttled context ring update during streaming
+        if (!appendStreamChunk._ringTimer) {
+            appendStreamChunk._ringTimer = setTimeout(() => {
+                updateContextRing();
+                appendStreamChunk._ringTimer = null;
+            }, 500);
         }
     }
 
@@ -1662,6 +1731,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             messages = [];
             lastUserMessage = null;
             renderMessages([]);
+            updateContextRing();
             showToast('Chat history cleared', 'success');
         } catch (err) {
             showToast('Error clearing chat: ' + err.message, 'error');
@@ -1681,6 +1751,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         lastUserMessage = null;
         renderMessages([]);
         clearBackup();
+        updateContextRing();
 
         // Focus input
         const input = document.getElementById('chat-input');
@@ -2006,8 +2077,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             select._changeBound = true;
             select.addEventListener('change', () => {
                 localStorage.setItem('phoneide_chat_model', select.value);
+                updateContextRing();
             });
         }
+        // Store model configs for context ring calculation
+        select._modelConfigs = models;
+        updateContextRing();
     }
 
     async function saveLLMConfig(config) {
@@ -2125,6 +2200,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 <label><span>Max Tokens</span>
                                     <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="128000" step="256" value="${m.max_tokens || '4096'}">
                                 </label>
+                                <label><span>最大上下文</span>
+                                    <input type="number" class="llm-max-context" data-idx="${idx}" min="1024" max="2000000" step="1024" value="${m.max_context || '128000'}">
+                                </label>
                                 <label class="llm-reasoning-label"><span>推理模式</span>
                                     <input type="checkbox" class="llm-reasoning" data-idx="${idx}" ${m.reasoning !== false ? 'checked' : ''}>
                                 </label>
@@ -2213,6 +2291,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             list.querySelectorAll('.llm-max-tokens').forEach(input => {
                 input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096; });
             });
+            list.querySelectorAll('.llm-max-context').forEach(input => {
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_context = parseInt(input.value, 10) || 128000; });
+            });
             list.querySelectorAll('.llm-reasoning').forEach(cb => {
                 cb.addEventListener('change', () => { workingModels[parseInt(cb.dataset.idx)].reasoning = cb.checked; });
             });
@@ -2244,6 +2325,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             overlay.querySelectorAll('.llm-max-tokens').forEach(input => {
                 workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096;
             });
+            overlay.querySelectorAll('.llm-max-context').forEach(input => {
+                workingModels[parseInt(input.dataset.idx)].max_context = parseInt(input.value, 10) || 128000;
+            });
             overlay.querySelectorAll('.llm-reasoning').forEach(cb => {
                 workingModels[parseInt(cb.dataset.idx)].reasoning = cb.checked;
             });
@@ -2263,6 +2347,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 enabled: false,
                 temperature: 0.7,
                 max_tokens: 4096,
+                max_context: 128000,
                 reasoning: true,
             });
             renderModelList();
@@ -3162,6 +3247,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             messages = conv.messages || [];
             renderMessages(messages);
             clearBackup(); // Clear any stale backup when loading a saved conversation
+            updateContextRing();
             showToast('已加载会话: ' + truncate(conv.title || 'New Chat', 30), 'success');
         } catch (err) {
             showToast('加载会话失败: ' + err.message, 'error');

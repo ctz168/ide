@@ -1608,6 +1608,38 @@ html, body {
     opacity: 0.5;
 }
 
+/* Context Progress Ring */
+.ctx-progress-ring {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    cursor: default;
+    position: relative;
+}
+.ctx-progress-ring svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.ctx-ring-bg {
+    stroke: rgba(255, 255, 255, 0.15);
+}
+.ctx-ring-fill {
+    stroke: white;
+    transition: stroke-dashoffset 0.3s ease, stroke 0.3s ease;
+}
+.ctx-progress-ring .ctx-pct {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 8px;
+    color: var(--text-secondary);
+    pointer-events: none;
+    font-family: var(--font-mono);
+}
+
 /* ==================== Overlay ==================== */
 #overlay {
     position: fixed;
