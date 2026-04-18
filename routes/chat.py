@@ -1965,16 +1965,20 @@ def _call_llm_stream_raw(messages, llm_config):
     print(f'[LLM] Headers: {dict((k, v[:20]+"..." if len(v)>20 else v) for k,v in headers.items())}')
     print(f'[LLM] Messages count: {len(api_messages)}')
 
-    with _urllib_opener.open(req, timeout=180) as resp:
-        buffer = ''
+    with _urllib_opener.open(req, timeout=300) as resp:
+        byte_buffer = b''
+        accumulated_finish_reason = None
         while True:
             chunk = resp.read(4096)
             if not chunk:
                 break
-            buffer += chunk.decode('utf-8', errors='ignore')
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
-                line = line.strip()
+            byte_buffer += chunk
+            while b'\n' in byte_buffer:
+                line_bytes, byte_buffer = byte_buffer.split(b'\n', 1)
+                try:
+                    line = line_bytes.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    continue
                 if not line.startswith('data: '):
                     continue
                 data_str = line[6:]
@@ -1984,14 +1988,38 @@ def _call_llm_stream_raw(messages, llm_config):
                     data = json.loads(data_str)
                     choices = data.get('choices', [])
                     if choices:
-                        yield choices[0].get('delta', {})
+                        delta = choices[0].get('delta', {})
+                        fr = choices[0].get('finish_reason')
+                        if fr:
+                            delta['_finish_reason'] = fr
+                            accumulated_finish_reason = fr
+                        yield delta
                 except json.JSONDecodeError:
                     continue
+        # Process any remaining partial data in buffer
+        if byte_buffer.strip():
+            line = byte_buffer.decode('utf-8', errors='replace').strip()
+            if line.startswith('data: ') and line[6:] != '[DONE]':
+                try:
+                    data = json.loads(line[6:])
+                    choices = data.get('choices', [])
+                    if choices:
+                        delta = choices[0].get('delta', {})
+                        fr = choices[0].get('finish_reason')
+                        if fr:
+                            delta['_finish_reason'] = fr
+                        yield delta
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
 # ==================== Context Window Management ====================
 def _estimate_tokens(text):
     """Rough token estimation: ~4 characters per token."""
     return len(text) // 4
+
+def _has_tool_calls(msg):
+    """Check if a message has tool calls."""
+    return bool(msg and msg.get('tool_calls'))
 
 def _compress_context(messages, max_tokens=None):
     """Compress conversation history to fit within context window.
@@ -2033,7 +2061,7 @@ def _compress_context(messages, max_tokens=None):
             summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
 
     summary = 'Earlier conversation summary:\n' + '\n'.join(summary_parts[-10:])
-    summary_msg = {'role': 'system', 'content': summary}
+    summary_msg = {'role': 'user', 'content': summary}
 
     # Compress recent tool results if still too large
     compressed_recent = []
@@ -2254,6 +2282,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
     total_iterations = 0
     accumulated_text = ''
     tool_calls_in_progress = []
+    loop_completed_normally = False
     # Buffer for streaming tool_calls assembly
     current_tool_calls = []
     current_tool_call_idx = {}
@@ -2265,20 +2294,31 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         # Call LLM with streaming
         response_message = None
-        for retry in range(MAX_ITERATION_RETRIES):
+        finish_reason = None
+        retry = 0
+        context_retries = 0
+        MAX_CONTEXT_RETRIES = 20
+        while retry < MAX_ITERATION_RETRIES:
             try:
                 current_tool_calls = []
                 current_args_buffer = {}
                 current_tool_call_idx = {}
                 delta_content = ''
                 delta_tool_calls = []
+                saved_accumulated = accumulated_text  # save for rollback on failure
                 # Pre-compute LLM URL for error reporting
                 try:
                     current_llm_url, _ = _get_llm_endpoint(llm_config, llm_config.get('model', 'gpt-4o-mini'))
-                except:
+                except Exception:
                     current_llm_url = '(unknown)'
 
+                finish_reason = None
                 for delta in _call_llm_stream_raw(context, llm_config):
+                    # Capture finish_reason
+                    fr = delta.get('_finish_reason')
+                    if fr:
+                        finish_reason = fr
+
                     # Handle text content
                     content_chunk = delta.get('content')
                     if content_chunk:
@@ -2322,9 +2362,10 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 }
                 if current_tool_calls:
                     response_message['tool_calls'] = current_tool_calls
-                break
+                break  # success — exit retry loop
 
             except urllib.error.HTTPError as e:
+                accumulated_text = saved_accumulated  # rollback on failure
                 body = e.read().decode() if hasattr(e, 'read') else ''
                 err_detail = f'URL: {current_llm_url}\nHTTP {e.code}: {body[:300]}'
                 
@@ -2340,24 +2381,29 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 )
                 
                 if is_context_error:
-                    # Aggressively compress context and retry immediately
+                    context_retries += 1
+                    if context_retries >= MAX_CONTEXT_RETRIES:
+                        yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts. Please start a new conversation.'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                        return
+                    # Aggressively compress context and retry (don't consume normal retry counter)
                     budget = llm_config.get('max_tokens', 4096) * 10
-                    # Halve the budget to force aggressive compression
                     context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context too large, compressing and retrying ({retry + 1}/{MAX_ITERATION_RETRIES})...'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context too large, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
                     print(f'[LLM] Context overflow detected (HTTP {e.code}), compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {budget // 2})')
                     time.sleep(0.5)
-                    # Don't increment retry counter for context errors — allow more retries
                     continue
                 
-                if retry < MAX_ITERATION_RETRIES - 1:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'LLM API error (retry {retry + 1}): {err_detail[:200]}'})}\n\n"
-                    time.sleep(1 * (retry + 1))
+                retry += 1
+                if retry < MAX_ITERATION_RETRIES:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'LLM API error (retry {retry}): {err_detail[:200]}'})}\n\n"
+                    time.sleep(1 * retry)
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'content': f'LLM API error after {MAX_ITERATION_RETRIES} retries:\n{err_detail}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
             except Exception as e:
+                accumulated_text = saved_accumulated  # rollback on failure
                 err_detail = f'URL: {current_llm_url}\nError: {str(e)}'
                 
                 # Also check for context errors in generic exceptions
@@ -2368,23 +2414,36 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 ])
                 
                 if is_context_error:
+                    context_retries += 1
+                    if context_retries >= MAX_CONTEXT_RETRIES:
+                        yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts.'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                        return
                     budget = llm_config.get('max_tokens', 4096) * 10
                     context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context error, compressing and retrying ({retry + 1}/{MAX_ITERATION_RETRIES})...'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context error, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
                     print(f'[LLM] Context overflow exception, compressed and retrying')
                     time.sleep(0.5)
                     continue
                 
-                if retry < MAX_ITERATION_RETRIES - 1:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Retry {retry + 1}: {err_detail[:200]}'})}\n\n"
-                    time.sleep(1 * (retry + 1))
+                retry += 1
+                if retry < MAX_ITERATION_RETRIES:
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Retry {retry}: {err_detail[:200]}'})}\n\n"
+                    time.sleep(1 * retry)
                 else:
                     yield f"data: {json.dumps({'type': 'error', 'content': f'LLM request failed after {MAX_ITERATION_RETRIES} retries:\n{err_detail}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                     return
 
         if response_message is None:
-            response_message = {'role': 'assistant', 'content': accumulated_text or '(no response)'}
+            # All retries exhausted without success
+            yield f"data: {json.dumps({'type': 'error', 'content': 'All retries failed: LLM did not return a valid response.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+            return
+
+        # Warn if model hit max_tokens (finish_reason == 'length')
+        if finish_reason == 'length' and not _has_tool_calls(response_message):
+            yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached). Consider increasing Max Tokens in settings for longer responses.'})}\n\n"
 
         content = response_message.get('content', '') or ''
         tool_calls_raw = response_message.get('tool_calls', [])
@@ -2394,6 +2453,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         # If no tool calls, we're done
         if not tool_calls_raw:
+            loop_completed_normally = True
             break
 
         # Add assistant message to context AND history for progressive save
@@ -2464,7 +2524,10 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
     if conv_id:
         save_conversation(conv_id, history)
 
-    yield f"data: {json.dumps({'type': 'done', 'iterations': total_iterations, 'tool_calls': len(tool_calls_in_progress), 'completed': True})}\n\n"
+    if not loop_completed_normally:
+        yield f"data: {json.dumps({'type': 'warning', 'content': f'Agent loop reached max iterations ({MAX_AGENT_ITERATIONS}). Task may be incomplete.'})}\n\n"
+
+    yield f"data: {json.dumps({'type': 'done', 'iterations': total_iterations, 'tool_calls': len(tool_calls_in_progress), 'completed': loop_completed_normally})}\n\n"
 
 # ==================== Chat Endpoints ====================
 @bp.route('/api/chat/history', methods=['GET'])
@@ -2618,6 +2681,10 @@ def send_chat_stream():
             event_queue.put(err_event)
             with _active_task['lock']:
                 _active_task['event_buffer'].append(err_event)
+            done_event = f"data: {json.dumps({'type': 'done', 'completed': False, 'error': True})}\n\n"
+            event_queue.put(done_event)
+            with _active_task['lock']:
+                _active_task['event_buffer'].append(done_event)
         finally:
             # Signal completion
             event_queue.put(None)
