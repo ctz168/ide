@@ -52,11 +52,27 @@ const DebuggerUI = (() => {
 
     // ── Start Debug ──
     async function startDebug() {
-        // Get current file from editor
-        const filePath = window.EditorManager ? EditorManager.getCurrentFile() : null;
+        // Priority: 1) persisted run file, 2) currently open editor file
+        let filePath = window.RunConfig ? RunConfig.getRunFile() : '';
+        filePath = filePath || (window.EditorManager ? EditorManager.getCurrentFile() : null);
+
         if (!filePath) {
-            if (window.showToast) window.showToast('请先打开一个文件', 'error');
-            return;
+            // No file bound — show file picker
+            if (window.showFilePickerDialog) {
+                try {
+                    filePath = await showFilePickerDialog('选择调试文件');
+                    if (filePath && window.RunConfig) {
+                        RunConfig.setRunFile(filePath);
+                    }
+                } catch (e) {
+                    if (window.showToast) window.showToast('获取文件列表失败', 'error');
+                    return;
+                }
+            }
+            if (!filePath) {
+                if (window.showToast) window.showToast('请先选择一个文件', 'error');
+                return;
+            }
         }
 
         // Collect breakpoints for current file

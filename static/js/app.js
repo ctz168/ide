@@ -167,6 +167,171 @@ const AppManager = (() => {
         return promise;
     }
 
+    /**
+     * File picker dialog - browse directories and select a file to run
+     * @param {string} title - Dialog title
+     * @param {string} [initialPath] - Initial directory to browse
+     * @returns {Promise<string|null>} - Selected file path or null if cancelled
+     */
+    function showFilePickerDialog(title, initialPath) {
+        return new Promise(async (resolve) => {
+            const overlay = document.getElementById('dialog-overlay');
+            const dialogTitle = document.getElementById('dialog-title');
+            const dialogBody = document.getElementById('dialog-body');
+            const dialogButtons = document.getElementById('dialog-buttons');
+
+            dialogTitle.textContent = title;
+            let currentBrowsePath = initialPath || (window.FileManager ? window.FileManager.currentPath : '');
+            let selectedFile = null;
+
+            function renderFileList() {
+                let param = '';
+                const rel = currentBrowsePath;
+                if (rel) param = `?path=${encodeURIComponent(rel)}`;
+
+                fetch(`/api/files/list${param}`)
+                    .then(resp => resp.json())
+                    .then(data => {
+                        const items = data.items || [];
+                        // Sort: directories first, then files
+                        const dirs = items.filter(i => i.is_dir);
+                        const files = items.filter(i => !i.is_dir);
+
+                        let html = '<div id="file-picker-breadcrumb" style="display:flex;align-items:center;gap:4px;margin-bottom:8px;font-size:12px;color:var(--text-secondary);flex-wrap:wrap;"></div>';
+                        html += '<div id="file-picker-list" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-tertiary);"></div>';
+
+                        dialogBody.innerHTML = html;
+
+                        // Render breadcrumb
+                        const breadcrumbEl = document.getElementById('file-picker-breadcrumb');
+                        const pathParts = currentBrowsePath ? currentBrowsePath.split('/') : [];
+                        let crumbs = ['<span class="fp-crumb" data-path="" style="cursor:pointer;color:var(--accent);padding:2px 4px;border-radius:3px;">根目录</span>'];
+                        let accum = '';
+                        pathParts.forEach((p, idx) => {
+                            accum += (accum ? '/' : '') + p;
+                            crumbs.push('<span style="color:var(--text-muted);">/</span>');
+                            if (idx === pathParts.length - 1) {
+                                crumbs.push(`<span style="color:var(--text-primary);padding:2px 4px;">${escapeHTML(p)}</span>`);
+                            } else {
+                                crumbs.push(`<span class="fp-crumb" data-path="${escapeAttr(accum)}" style="cursor:pointer;color:var(--accent);padding:2px 4px;border-radius:3px;">${escapeHTML(p)}</span>`);
+                            }
+                        });
+                        breadcrumbEl.innerHTML = crumbs.join('');
+
+                        // Bind breadcrumb clicks
+                        breadcrumbEl.querySelectorAll('.fp-crumb').forEach(el => {
+                            const handleCrumb = () => {
+                                currentBrowsePath = el.dataset.path;
+                                renderFileList();
+                            };
+                            if (window.bindTouchButton) {
+                                bindTouchButton(el, handleCrumb);
+                            } else {
+                                el.addEventListener('click', handleCrumb);
+                            }
+                        });
+
+                        // Render file list
+                        const listEl = document.getElementById('file-picker-list');
+                        if (items.length === 0) {
+                            listEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);">空目录</div>';
+                            return;
+                        }
+
+                        // Render directories
+                        dirs.forEach(item => {
+                            const el = document.createElement('div');
+                            el.className = 'fp-item';
+                            el.dataset.path = item.path;
+                            el.dataset.isdir = 'true';
+                            el.style.cssText = 'display:flex;align-items:center;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-primary);gap:8px;';
+                            el.innerHTML = `<span style="font-size:16px;">📁</span><span style="flex:1;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(item.name)}</span><span style="color:var(--text-muted);font-size:11px;">▸</span>`;
+                            const handleDir = () => {
+                                currentBrowsePath = item.path;
+                                renderFileList();
+                            };
+                            if (window.bindTouchButton) {
+                                bindTouchButton(el, handleDir);
+                            } else {
+                                el.addEventListener('click', handleDir);
+                            }
+                            el.addEventListener('touchstart', () => { el.style.background = 'var(--bg-hover)'; }, { passive: true });
+                            el.addEventListener('touchend', () => { el.style.background = ''; }, { passive: true });
+                            listEl.appendChild(el);
+                        });
+
+                        // Render files
+                        files.forEach(item => {
+                            const el = document.createElement('div');
+                            el.className = 'fp-item';
+                            el.dataset.path = item.path;
+                            el.dataset.isdir = 'false';
+                            el.style.cssText = 'display:flex;align-items:center;padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-primary);gap:8px;';
+                            const icon = item.icon || '📄';
+                            el.innerHTML = `<span style="font-size:16px;">${icon}</span><span style="flex:1;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(item.name)}</span>`;
+                            const handleFile = () => {
+                                // Highlight selected
+                                listEl.querySelectorAll('.fp-item').forEach(i => i.style.background = '');
+                                el.style.background = 'var(--accent)';
+                                el.style.color = 'var(--bg-primary)';
+                                selectedFile = item.path;
+                            };
+                            if (window.bindTouchButton) {
+                                bindTouchButton(el, handleFile);
+                            } else {
+                                el.addEventListener('click', handleFile);
+                            }
+                            el.addEventListener('dblclick', () => {
+                                // Double-click to select and confirm
+                                selectedFile = item.path;
+                                overlay.classList.add('hidden');
+                                resolve(selectedFile);
+                            });
+                            el.addEventListener('touchstart', () => { el.style.background = 'var(--bg-hover)'; }, { passive: true });
+                            el.addEventListener('touchend', () => { if (selectedFile !== item.path) el.style.background = ''; }, { passive: true });
+                            listEl.appendChild(el);
+                        });
+                    })
+                    .catch(() => {
+                        dialogBody.innerHTML = '<div style="padding:20px;text-align:center;color:var(--error);">加载失败</div>';
+                    });
+            }
+
+            // Start rendering
+            renderFileList();
+
+            // Buttons
+            dialogButtons.innerHTML = '';
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '取消';
+            cancelBtn.className = 'btn-cancel';
+            const cancelHandler = () => { overlay.classList.add('hidden'); resolve(null); };
+            if (window.bindTouchButton) {
+                bindTouchButton(cancelBtn, cancelHandler);
+            } else {
+                cancelBtn.onclick = cancelHandler;
+            }
+            dialogButtons.appendChild(cancelBtn);
+
+            const confirmBtn = document.createElement('button');
+            confirmBtn.textContent = '确定';
+            confirmBtn.className = 'btn-confirm';
+            const confirmHandler = () => { overlay.classList.add('hidden'); resolve(selectedFile); };
+            if (window.bindTouchButton) {
+                bindTouchButton(confirmBtn, confirmHandler);
+            } else {
+                confirmBtn.onclick = confirmHandler;
+            }
+            dialogButtons.appendChild(confirmBtn);
+
+            overlay.classList.remove('hidden');
+            overlay.onclick = (e) => {
+                if (e.target === overlay) { overlay.classList.add('hidden'); resolve(null); }
+            };
+        });
+    }
+    window.showFilePickerDialog = showFilePickerDialog;
+
     function showInputDialog(title, fields) {
         // fields: [{name, label, type, placeholder, value, options}]
         let html = '';
@@ -205,6 +370,54 @@ const AppManager = (() => {
     window.showChoiceDialog = showChoiceDialog;
     window.showInputDialog = showInputDialog;
     window.showDialog = showDialog;
+    window.showFilePickerDialog = showFilePickerDialog;
+
+    // ── Run Config (persistent per workspace) ──
+    const RunConfig = {
+        STORAGE_KEY: 'phoneide_run_config',
+        _cache: null,
+
+        _getWorkspaceKey() {
+            // Use workspace path to isolate config per project
+            const ws = document.getElementById('workspace-path');
+            return ws ? ws.value || 'default' : 'default';
+        },
+
+        _load() {
+            if (this._cache) return this._cache;
+            try {
+                const raw = localStorage.getItem(this.STORAGE_KEY);
+                this._cache = raw ? JSON.parse(raw) : {};
+            } catch (e) {
+                this._cache = {};
+            }
+            return this._cache;
+        },
+
+        _save() {
+            try {
+                localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this._cache));
+            } catch (e) { /* storage full or unavailable */ }
+        },
+
+        getRunFile() {
+            const key = this._getWorkspaceKey();
+            return this._load()[key] || '';
+        },
+
+        setRunFile(filePath) {
+            const key = this._getWorkspaceKey();
+            this._load()[key] = filePath;
+            this._save();
+        },
+
+        clearRunFile() {
+            const key = this._getWorkspaceKey();
+            this._load()[key] = '';
+            this._save();
+        }
+    };
+    window.RunConfig = RunConfig;
 
     // ── Touch-Friendly Button Binding (Android WebView fix) ──
     // In Android WebView, click events are unreliable on buttons inside
@@ -703,42 +916,28 @@ const AppManager = (() => {
         });
         // Run
         document.getElementById('btn-run').addEventListener('click', async () => {
-            if (window.TerminalManager) {
-                let filePath = window.EditorManager ? EditorManager.getCurrentFile() : '';
-                const compiler = document.getElementById('compiler-select');
-                const compilerVal = compiler ? compiler.value : 'python3';
-                
-                if (filePath) {
-                    TerminalManager.execute(filePath, compilerVal);
-                } else {
-                    // Show file picker to select a file to run
-                    try {
-                        const listResp = await fetch('/api/files/list');
-                        if (listResp.ok) {
-                            const listData = await listResp.json();
-                            const items = listData.items || [];
-                            const files = items.filter(i => !i.is_dir && i.is_dir !== true);
-                            if (files.length > 0) {
-                                const options = files.map(f => ({
-                                    label: f.name,
-                                    value: f.path
-                                }));
-                                const chosen = await showChoiceDialog('选择运行文件', '选择要运行的文件:', options);
-                                if (chosen) {
-                                    TerminalManager.execute(chosen, compilerVal);
-                                }
-                            } else {
-                                const code = window.EditorManager ? EditorManager.getContent() : '';
-                                if (code && code.trim()) {
-                                    TerminalManager.executeCode(code, compilerVal);
-                                } else {
-                                    showToast('没有找到可运行的文件', 'warning');
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        showToast('获取文件列表失败', 'error');
+            if (!window.TerminalManager) return;
+            const compiler = document.getElementById('compiler-select');
+            const compilerVal = compiler ? compiler.value : 'python3';
+
+            // Priority: 1) persisted run file, 2) currently open editor file
+            let filePath = RunConfig.getRunFile() ||
+                           (window.EditorManager ? EditorManager.getCurrentFile() : '');
+
+            if (filePath) {
+                // Persist and execute
+                RunConfig.setRunFile(filePath);
+                TerminalManager.execute(filePath, compilerVal);
+            } else {
+                // No file bound yet — show file picker dialog
+                try {
+                    const chosen = await showFilePickerDialog('选择运行文件');
+                    if (chosen) {
+                        RunConfig.setRunFile(chosen);
+                        TerminalManager.execute(chosen, compilerVal);
                     }
+                } catch (err) {
+                    showToast('获取文件列表失败', 'error');
                 }
             }
         });
