@@ -17,7 +17,7 @@ const ChatManager = (() => {
     let turnIndicator = null;         // turn X/Y element reference
     let iterationCount = 0;           // agent iteration counter
     let streamingStartTime = null;    // for execution time tracking
-    let chatMode = 'execute';           // 'plan' or 'execute'
+    let chatMode = localStorage.getItem('phoneide_chat_mode') || 'execute';
     let planContent = '';               // stored plan markdown for editing
     let lastPlanMsgEl = null;           // reference to plan message element for actions
     let currentConvId = null;           // current conversation id (null = unsaved new chat)
@@ -1545,6 +1545,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const config = await loadLLMConfig();
         if (!config) return;
         const models = config.models || [];
+        const savedModel = localStorage.getItem('phoneide_chat_model');
         const currentVal = select.value;
         select.innerHTML = '';
         for (let i = 0; i < models.length; i++) {
@@ -1556,12 +1557,22 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             if (opt.disabled) opt.textContent += ' (disabled)';
             select.appendChild(opt);
         }
-        // Restore previous selection or pick first enabled
-        if (currentVal !== '' && select.querySelector(`option[value="${currentVal}"]`)) {
+        // Restore saved selection, then previous selection, then first enabled
+        if (savedModel !== null && select.querySelector(`option[value="${savedModel}"]`)) {
+            select.value = savedModel;
+        } else if (currentVal !== '' && select.querySelector(`option[value="${currentVal}"]`)) {
             select.value = currentVal;
         } else {
             const firstEnabled = select.querySelector('option:not([disabled])');
             if (firstEnabled) select.value = firstEnabled.value;
+        }
+
+        // Persist model selection on change
+        if (!select._changeBound) {
+            select._changeBound = true;
+            select.addEventListener('change', () => {
+                localStorage.setItem('phoneide_chat_model', select.value);
+            });
         }
     }
 
@@ -2541,6 +2552,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             if (editor) editor.remove();
             // Switch to execute mode and send the plan
             chatMode = 'execute';
+            localStorage.setItem('phoneide_chat_mode', chatMode);
             updateModeToggleUI();
             addMessage('system', '📋 计划已批准，开始执行...');
             sendMessage('Please execute the following plan:\n\n' + currentPlan);
@@ -2870,6 +2882,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         select.addEventListener('change', () => {
             chatMode = select.value;
+            localStorage.setItem('phoneide_chat_mode', chatMode);
         });
 
         wrapper.appendChild(label);
