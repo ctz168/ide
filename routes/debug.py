@@ -12,6 +12,7 @@ import traceback
 import linecache
 import bisect
 from flask import Blueprint, jsonify, request, Response
+from utils import WORKSPACE
 
 bp = Blueprint('debug', __name__)
 
