@@ -72,3 +72,24 @@ Stage Summary:
 - localStorage backup is properly managed: cleared on success, persisted on error, timer stopped on completion
 - Files modified: routes/chat.py, static/js/chat.js
 - Committed and pushed to GitHub
+
+---
+Task ID: 1
+Agent: Main Agent
+Task: 修复进程标签页 - 页面最小化后进程状态错误显示为已停止
+
+Work Log:
+- 分析了 TerminalManager 和 DebugManager 的进程状态监控机制
+- 定位到三个根因: _recoverRunState() 提前返回、轮询无容错、定时器不恢复
+- 修改 terminal.js: _recoverRunState() 改为始终查询后端 /api/run/processes
+- 修改 terminal.js: 轮询增加连续失败容错机制 (3次阈值)
+- 修改 terminal.js: SSE onerror 和 HTTP 错误不再立即清理进程
+- 修改 debug.js: visibilitychange 恢复时重建 setInterval 定时器
+- 修改 debug.js: visibilitychange 不再限制必须 activeTab === 'procs'
+- 增加 Page Lifecycle resume 事件支持 (移动端 WebView)
+- 提交并推送到 GitHub
+
+Stage Summary:
+- 修复了页面最小化后进程状态错误显示为已停止的问题
+- 两个文件修改: static/js/terminal.js, static/js/debug.js
+- Commit: 8801aa1 "fix: 进程状态恢复 - 页面最小化后正确恢复运行中的进程"
