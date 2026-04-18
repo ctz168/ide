@@ -46,3 +46,29 @@ Stage Summary:
 - Backend: New endpoints: `/api/chat/task/status` (GET) and `/api/chat/task/stream` (GET)
 - Frontend: static/js/chat.js — auto-reconnect on page load, activity badge on chat button, task status polling
 - Architecture: Agent runs independently in background thread; frontend can disconnect/reconnect without losing progress
+---
+Task ID: 1
+Agent: main
+Task: Fix retry button to continue from failure point instead of restarting + improve chat history persistence
+
+Work Log:
+- Analyzed the retry mechanism: retry button called sendMessage() which restarted entire agent loop from scratch
+- Backend (routes/chat.py):
+  - Added `is_retry` parameter to `run_agent_loop_stream()` to skip adding user message on retry
+  - Added progressive history saving after each iteration's tool calls complete
+  - Added pre-save before agent loop starts (handles first-call failures)
+  - `send_chat_stream()` now accepts `retry: true` flag from frontend
+  - Added `max_iterations` to tool_result SSE events for turn indicator
+- Frontend (static/js/chat.js):
+  - Created `retryFromError()` function that sends `{retry: true, conv_id}` to backend
+  - Changed retry button from `sendMessage(lastUserMessage)` to `retryFromError()`
+  - Added `clearBackup()` on successful `done` events in sendMessage and retryFromError
+  - Added `backupMessages()` on error/abort for crash recovery
+  - Added `stopBackupTimer()` in finally blocks to prevent timer leaks
+
+Stage Summary:
+- Retry button now continues from where the task failed, preserving all tool execution progress
+- Chat history is progressively saved to backend during execution
+- localStorage backup is properly managed: cleared on success, persisted on error, timer stopped on completion
+- Files modified: routes/chat.py, static/js/chat.js
+- Committed and pushed to GitHub
