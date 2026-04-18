@@ -545,7 +545,7 @@ const FileManager = (() => {
         }
 
         if (items.length === 0) {
-            html = '<div class="file-tree-empty">Empty folder</div>';
+            html += '<div class="file-tree-empty">Empty folder</div>';
         }
 
         treeEl.innerHTML = html;
