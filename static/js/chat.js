@@ -301,6 +301,37 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         });
     }
 
+    /**
+     * Create a copy button that copies plain text from a message element
+     * @param {string} text - The plain text to copy
+     * @returns {HTMLElement}
+     */
+    function createMsgCopyBtn(text) {
+        const btn = document.createElement('button');
+        btn.className = 'msg-copy-btn';
+        btn.textContent = '📋 复制';
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const copyText = typeof text === 'string' ? text : '';
+            navigator.clipboard.writeText(copyText).then(() => {
+                btn.textContent = '✅ 已复制';
+                setTimeout(() => { btn.textContent = '📋 复制'; }, 1500);
+            }).catch(() => {
+                const ta = document.createElement('textarea');
+                ta.value = copyText;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch (_) {}
+                document.body.removeChild(ta);
+                btn.textContent = '✅ 已复制';
+                setTimeout(() => { btn.textContent = '📋 复制'; }, 1500);
+            });
+        });
+        return btn;
+    }
+
     // ── Auto-Scroll with User Detection ────────────────────────────
 
     function initAutoScroll() {
@@ -432,6 +463,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 div.appendChild(timeEl);
             }
 
+            // Copy button for tool result
+            if (content) {
+                const resultStr = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+                if (resultStr.trim()) {
+                    div.appendChild(createMsgCopyBtn(resultStr));
+                }
+            }
+
             return div;
         }
 
@@ -476,6 +515,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         timeEl.className = 'chat-time';
         timeEl.textContent = formatTime(timeStr);
         div.appendChild(timeEl);
+
+        // Message-level copy button for user and assistant messages
+        if ((role === 'user' || role === 'assistant') && content) {
+            const plainText = content.replace(/<[^>]*>/g, ''); // strip HTML tags
+            if (plainText.trim()) {
+                div.appendChild(createMsgCopyBtn(plainText));
+            }
+        }
 
         // Bind copy buttons inside this message
         bindCopyButtons(div);
@@ -698,6 +745,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         timeEl.textContent = formatTime(new Date());
         toolEl.appendChild(timeEl);
 
+        // Copy button for tool result
+        if (result) {
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+            if (resultStr.trim()) {
+                toolEl.appendChild(createMsgCopyBtn(resultStr));
+            }
+        }
+
         toolEl.classList.remove('tool-progress');
         bindCopyButtons(toolEl);
     }
@@ -770,6 +825,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         timeEl.className = 'chat-time';
         timeEl.textContent = formatTime(new Date());
         currentStreamEl.appendChild(timeEl);
+
+        // Copy button for streamed message
+        if (streamBuffer && streamBuffer.trim()) {
+            currentStreamEl.appendChild(createMsgCopyBtn(streamBuffer));
+        }
 
         // Cache the message
         messages.push({
@@ -1234,7 +1294,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
 
         // Clear input
-        if (input) input.value = '';
+        if (input) {
+            input.value = '';
+            localStorage.removeItem('phoneide_chat_input');
+        }
         autoResizeInput();
         lastUserMessage = message;
 
@@ -2137,6 +2200,25 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             .code-copy-btn:hover { opacity: 1; }
             .code-copy-btn:active { transform: scale(0.9); }
 
+            /* ── Message Copy Button ── */
+            .msg-copy-btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 3px;
+                border: none;
+                background: transparent;
+                color: var(--text-muted);
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: var(--radius-sm);
+                cursor: pointer;
+                margin-top: 4px;
+                opacity: 0.6;
+                transition: opacity 0.15s;
+            }
+            .msg-copy-btn:hover { opacity: 1; color: var(--text-secondary); }
+            .msg-copy-btn:active { transform: scale(0.95); }
+
             /* ── Tool Messages ── */
             .tool-header {
                 display: flex;
@@ -2790,13 +2872,28 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         // Chat input
         const input = document.getElementById('chat-input');
         if (input) {
+            // Restore persisted input text
+            const savedInput = localStorage.getItem('phoneide_chat_input');
+            if (savedInput) {
+                input.value = savedInput;
+                autoResizeInput();
+            }
             input.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                     e.preventDefault();
                     sendMessage();
                 }
             });
-            input.addEventListener('input', autoResizeInput);
+            input.addEventListener('input', () => {
+                autoResizeInput();
+                // Persist input text for crash/recovery
+                const val = input.value;
+                if (val.trim()) {
+                    localStorage.setItem('phoneide_chat_input', val);
+                } else {
+                    localStorage.removeItem('phoneide_chat_input');
+                }
+            });
         }
 
         // New chat button
