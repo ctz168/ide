@@ -1203,14 +1203,36 @@ html, body {
     inset: 0;
     flex-direction: column;
     overflow: hidden;
+    z-index: 0;
+    visibility: hidden;
 }
 .bpanel.active {
     display: flex;
+    z-index: 1;
+    visibility: visible;
 }
 
 /* Output panel: allow shell input bar at bottom */
 #bpanel-output {
     overflow: hidden;
+}
+
+/* Browser preview panel: ensure iframe doesn't leak out */
+#bpanel-browser {
+    z-index: 0;
+}
+#bpanel-browser.active {
+    z-index: 1;
+}
+#preview-frame {
+    border: none !important;
+    background: #fff;
+    width: 100%;
+    min-height: 0;
+    pointer-events: none;
+}
+#bpanel-browser.active #preview-frame {
+    pointer-events: auto;
 }
 
 #bottom-panel-resize {

@@ -32,9 +32,28 @@ const DebugManager = (() => {
                 tab.classList.add('active');
                 const target = tab.dataset.btab;
                 activeTab = target;
-                document.querySelectorAll('.bpanel').forEach(p => p.classList.remove('active'));
+                // Deactivate all panels, activate selected
+                document.querySelectorAll('.bpanel').forEach(p => {
+                    p.classList.remove('active');
+                });
                 const panel = document.getElementById('bpanel-' + target);
                 if (panel) panel.classList.add('active');
+                // Special handling for browser/preview panel:
+                // When switching AWAY from browser, aggressively hide the iframe
+                // to prevent it from leaking through on some browsers/WebViews
+                const browserPanel = document.getElementById('bpanel-browser');
+                const previewFrame = document.getElementById('preview-frame');
+                if (browserPanel && previewFrame) {
+                    if (target !== 'browser') {
+                        browserPanel.style.display = 'none';
+                        previewFrame.style.visibility = 'hidden';
+                        previewFrame.style.height = '0';
+                    } else {
+                        browserPanel.style.display = '';
+                        previewFrame.style.visibility = '';
+                        previewFrame.style.height = '';
+                    }
+                }
                 if (target === 'console') renderConsole();
                 if (target === 'network') renderNetwork();
                 if (target === 'errors') renderErrors();

@@ -988,19 +988,37 @@ const GitManager = (() => {
         const menu = document.createElement('div');
         menu.className = 'context-menu visible';
         menu.style.left = `${Math.min(x, window.innerWidth - 200)}px`;
-        menu.style.top = `${Math.min(y, window.innerHeight - 200)}px`;
+        menu.style.top = `${Math.min(y, window.innerHeight - 300)}px`;
 
         const items = [];
+        const statusLower = (status || '').toLowerCase();
+        const isUntracked = statusLower.includes('untracked') || statusLower === 'untracked' || status === '?';
+        const isDeleted = statusLower.includes('deleted');
 
-        items.push({ label: 'View Diff', action: () => diff(path) });
-        items.push({ label: 'Stage File', action: () => addFiles(path) });
-        items.push({ label: 'Open File', action: () => {
+        items.push({ label: '查看差异', action: () => diff(path) });
+        items.push({ label: '暂存文件', action: () => addFiles(path) });
+        items.push({ label: '打开文件', action: () => {
             if (window.FileManager) window.FileManager.openFile(path);
         }});
 
-        menu.innerHTML = items.map(item =>
-            `<button class="context-menu-item">${escapeHTML(item.label)}</button>`
-        ).join('');
+        // Restore/Revert — only for modified/staged files (not untracked or deleted)
+        if (!isUntracked && !isDeleted) {
+            items.push({ label: '回退修改', action: () => restoreFile(path) });
+        }
+
+        // Add to .gitignore — mainly for untracked files, but allow for any
+        items.push({ label: '添加到 .gitignore', action: () => addToGitignore(path) });
+
+        // Delete file — only for untracked files or tracked modified files
+        // (not for files already marked as deleted by git)
+        if (!isDeleted) {
+            items.push({ label: '🗑 删除文件', danger: true, action: () => deleteGitFile(path) });
+        }
+
+        menu.innerHTML = items.map(item => {
+            const cls = item.danger ? 'context-menu-item danger' : 'context-menu-item';
+            return `<button class="${cls}">${escapeHTML(item.label)}</button>`;
+        }).join('');
 
         const buttons = menu.querySelectorAll('.context-menu-item');
         items.forEach((item, i) => {
@@ -1026,6 +1044,95 @@ const GitManager = (() => {
 
     function removeChangeContextMenu() {
         document.querySelectorAll('.context-menu').forEach(m => m.remove());
+    }
+
+    // ── API: Add to .gitignore ────────────────────────────────────
+
+    /**
+     * Add a file/directory pattern to .gitignore
+     * @param {string} filepath - file path to ignore
+     */
+    async function addToGitignore(filepath) {
+        const gitCwd = getGitCwd();
+        if (!gitCwd) {
+            showToast('未打开项目目录', 'error');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/files/read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: '.gitignore' })
+            });
+            let content = '';
+            if (resp.ok) {
+                const data = await resp.json();
+                content = data.content || '';
+            }
+
+            // Check if already ignored
+            const lines = content.split('\n');
+            const pattern = filepath.replace(/^\//, '');
+            if (lines.some(l => l.trim() === pattern || l.trim() === '/' + pattern)) {
+                showToast('已在 .gitignore 中', 'info');
+                return;
+            }
+
+            // Append new entry
+            if (content && !content.endsWith('\n')) content += '\n';
+            content += pattern + '\n';
+
+            const writeResp = await fetch('/api/files/write', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: '.gitignore', content })
+            });
+            if (!writeResp.ok) {
+                throw new Error('写入 .gitignore 失败');
+            }
+
+            gitLogSimple(`update .gitignore (+${pattern})`, null);
+            showToast(`已添加 ${filepath} 到 .gitignore`, 'success');
+            await refreshStatus();
+        } catch (err) {
+            showToast('添加 .gitignore 失败: ' + err.message, 'error');
+        }
+    }
+
+    // ── API: Delete File ──────────────────────────────────────────
+
+    /**
+     * Delete a file from the filesystem (with confirmation)
+     * @param {string} filepath - file path to delete
+     */
+    async function deleteGitFile(filepath) {
+        const confirmed = await confirmDialog(
+            '删除文件',
+            `确定要删除 "${filepath}" 吗？此操作不可撤销。`
+        );
+        if (!confirmed) return;
+
+        try {
+            const resp = await fetch('/api/files/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: filepath })
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || '删除失败');
+            }
+
+            gitLogSimple(`rm ${filepath}`, null);
+            showToast(`已删除 ${filepath}`, 'success');
+            await refresh();
+
+            // Refresh file list
+            if (window.FileManager) await window.FileManager.refresh();
+        } catch (err) {
+            showToast('删除失败: ' + err.message, 'error');
+        }
     }
 
     // ── UI Helpers ─────────────────────────────────────────────────
@@ -1229,6 +1336,8 @@ const GitManager = (() => {
         gitInit,
         restoreFile,
         checkoutCommit,
+        addToGitignore,
+        deleteGitFile,
 
         // Getters
         get currentBranch() { return currentBranch; },
