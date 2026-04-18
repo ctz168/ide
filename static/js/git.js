@@ -1182,7 +1182,7 @@ const GitManager = (() => {
         const gitCwd = getGitCwd();
         let fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
         // Ensure no leading slash (would break os.path.join in backend)
-        if (fullPath.startsWith('/')) fullPath = fullPath.replace(/^\/+/,");
+        if (fullPath.startsWith('/')) fullPath = fullPath.replace(/^\/+/, '');
 
         try {
             const resp = await fetch('/api/files/delete', {
