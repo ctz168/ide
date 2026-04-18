@@ -71,3 +71,25 @@ Stage Summary:
 - Frontend: restore button in diff view header, checkout button in commit log list
 - All operations show confirmation dialog before executing
 - Git commands logged to terminal console
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix 3 issues: console height, file tree persistence, venv creation
+
+Work Log:
+- Changed default bottom panel height from 250px to 60% of screen height (terminal.js)
+- Found and fixed file tree persistence bug: loadSavedState() was called AFTER loadFileList(),
+  which overwrote the saved sub-path via saveState(). Moved loadSavedState() to before loadFileList().
+- Found and fixed venv creation bug: os.path.realpath('.venv') resolved relative to server CWD,
+  not the project directory. Added os.path.join(effective_base, path) for relative paths.
+- Improved venv stale detection: now checks if venv directory and pyvenv.cfg actually exist
+  before clearing, and only checks project boundary as secondary condition.
+- Fixed venv activate to resolve relative paths from workspace root (matching list output format).
+- Committed and pushed to ctz168/ide (commit 730985b)
+
+Stage Summary:
+- terminal.js: panelHeight = Math.floor(window.innerHeight * 0.6)
+- files.js: loadSavedState() called before loadFileList() in init()
+- venv.py: create_venv resolves path from effective_base; list_venvs checks dir existence first;
+  activate_venv resolves from workspace root
