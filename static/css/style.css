@@ -957,21 +957,26 @@ html, body {
 .CodeMirror {
     height: 100% !important;
     font-family: var(--font-mono) !important;
-    font-size: 12px !important;
-    line-height: 1.6 !important;
+    font-size: 11px !important;
+    line-height: 1.5 !important;
     background: var(--bg-primary) !important;
-    touch-action: manipulation;
+    touch-action: pan-y pan-x pinch-zoom;
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 .CodeMirror-gutters {
     background: var(--bg-secondary) !important;
     border-right: 1px solid var(--border) !important;
+    min-width: 24px !important;
 }
 
 .CodeMirror-linenumber {
     color: var(--text-muted) !important;
-    font-size: 11px !important;
-    padding: 0 4px !important;
+    font-size: 10px !important;
+    padding: 0 2px 0 4px !important;
+    min-width: 20px !important;
+    width: 20px !important;
 }
 
 .CodeMirror-activeline-background {
@@ -979,11 +984,15 @@ html, body {
 }
 
 .CodeMirror-cursor {
-    border-left: 2px solid var(--accent) !important;
+    border-left: 1px solid var(--accent) !important;
 }
 
 .CodeMirror-selected {
     background: rgba(137, 180, 250, 0.2) !important;
+}
+
+.CodeMirror-focused .CodeMirror-selected {
+    background: rgba(137, 180, 250, 0.3) !important;
 }
 
 .CodeMirror-matchingbracket {
@@ -1018,6 +1027,29 @@ html, body {
     background: rgba(255, 150, 0, 0.5) !important;
 }
 
+/* Breakpoint gutter marker styles */
+.CodeMirror-gutter-elt {
+    cursor: pointer;
+}
+
+/* Breakpoint red dot */
+.CodeMirror-breakpoint-marker {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff5555;
+    margin: 2px auto;
+    cursor: pointer;
+    box-shadow: 0 0 4px rgba(255, 85, 85, 0.5);
+    transition: transform 0.15s ease;
+}
+
+/* Debug current line highlight */
+.debug-current-line {
+    background: rgba(137, 180, 250, 0.15) !important;
+    border-left: 3px solid var(--accent) !important;
+}
+
 /* Multi-Select Styles */
 .CodeMirror-multi-select-cursor {
     border-left: 2px solid #ff6b6b !important;
@@ -1048,6 +1080,81 @@ html, body {
 .editor-status-bar .multi-select-indicator {
     color: #ff6b6b;
     font-weight: bold;
+}
+
+.editor-status-bar {
+    display: flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    gap: 4px;
+    min-height: 18px;
+}
+
+/* Debug var/stack/bp rows */
+.debug-var-row,
+.debug-stack-row,
+.debug-bp-row,
+.debug-ai-row {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    gap: 6px;
+}
+.debug-var-row:hover,
+.debug-stack-row:hover,
+.debug-bp-row:hover {
+    background: var(--bg-hover);
+}
+.var-name,
+.stack-func,
+.bp-file,
+.ai-tool {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+.var-value,
+.stack-loc,
+.bp-line,
+.ai-time {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.bp-remove {
+    color: var(--red);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 4px;
+    flex-shrink: 0;
+}
+.bp-remove:hover {
+    background: rgba(243, 139, 168, 0.2);
+    border-radius: 2px;
+}
+.debug-stack-row.current {
+    background: rgba(137, 180, 250, 0.1);
+    border-left: 2px solid var(--accent);
+}
+.debug-empty {
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 8px 12px;
+    text-align: center;
+    font-style: italic;
 }
 
 /* ==================== Bottom Panel (Output) ==================== */

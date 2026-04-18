@@ -11,6 +11,8 @@ import threading
 import webbrowser
 import subprocess
 import re
+import gzip
+import zlib
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -18,6 +20,13 @@ from urllib.parse import urlparse, urljoin, urlencode
 
 from flask import Blueprint, jsonify, request, Response, make_response
 from utils import handle_error
+
+# Try importing brotli (may not be installed)
+try:
+    import brotli
+    _HAS_BROTLI = True
+except ImportError:
+    _HAS_BROTLI = False
 
 bp = Blueprint('browser', __name__)
 
@@ -194,9 +203,10 @@ _STRIP_HEADERS = {
 }
 
 # Headers from the target that should be passed through
+# NOTE: content-encoding is NOT passed — we decompress on the server side
+# so that we can rewrite URLs before sending to the browser.
 _PASS_HEADERS = {
     'content-type',
-    'content-encoding',
     'transfer-encoding',
     'cache-control',
     'etag',
@@ -245,10 +255,33 @@ class _CaseInsensitiveDict:
         return [(k, v) for k, (_, v) in self._store.items()]
 
 
+def _decompress_body(raw_body, content_encoding):
+    """Decompress the response body if it was compressed by the server.
+    Some servers ignore Accept-Encoding: identity and send compressed content anyway."""
+    if not content_encoding:
+        return raw_body
+    enc = content_encoding.lower().strip()
+    try:
+        if enc == 'gzip' or enc == 'x-gzip':
+            return gzip.decompress(raw_body)
+        elif enc == 'deflate':
+            return zlib.decompress(raw_body)
+        elif enc == 'br' and _HAS_BROTLI:
+            return brotli.decompress(raw_body)
+    except Exception:
+        pass
+    return raw_body
+
+
 def _proxy_response(target_resp, proxy_base):
-    """Build a Flask Response from a target response, rewriting HTML if needed."""
+    """Build a Flask Response from a target response, rewriting URLs if needed."""
     content_type = target_resp.headers.get('content-type', '')
     raw_body = target_resp.content
+
+    # Decompress if server sent compressed content despite Accept-Encoding: identity
+    ce = target_resp.headers.get('content-encoding', '')
+    if ce:
+        raw_body = _decompress_body(raw_body, ce)
 
     # For HTML, rewrite URLs to route through our proxy
     if 'text/html' in content_type:
@@ -259,11 +292,27 @@ def _proxy_response(target_resp, proxy_base):
             content_type = 'text/html; charset=utf-8'
         except Exception:
             pass
-    # For CSS, rewrite url() references
+    # For CSS, rewrite url() references and @import
     elif 'text/css' in content_type:
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_css_urls(text, proxy_base)
+            raw_body = text.encode('utf-8')
+        except Exception:
+            pass
+    # For JavaScript, rewrite import statements to route through proxy
+    elif 'javascript' in content_type or 'application/x-javascript' in content_type:
+        try:
+            text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
+            text = _rewrite_js_urls(text, proxy_base)
+            raw_body = text.encode('utf-8')
+        except Exception:
+            pass
+    # For SVG, rewrite URLs (SVG is XML-based)
+    elif 'image/svg+xml' in content_type:
+        try:
+            text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
+            text = _rewrite_html_urls(text, proxy_base)
             raw_body = text.encode('utf-8')
         except Exception:
             pass
@@ -274,7 +323,7 @@ def _proxy_response(target_resp, proxy_base):
     if content_type:
         resp.headers['Content-Type'] = content_type
 
-    # Pass through safe headers
+    # Pass through safe headers (NOT content-encoding since we decompressed)
     for key in _PASS_HEADERS:
         val = target_resp.headers.get(key)
         if val:
@@ -291,8 +340,6 @@ def _proxy_response(target_resp, proxy_base):
 
 def _rewrite_html_urls(html, proxy_base):
     """Rewrite URLs in HTML attributes to route through the proxy."""
-    # Rewrite <a href>, <link href>, <script src>, <img src>, <iframe src>,
-    # <form action>, <source src>, <video src>, <audio src>, <track src>
     url_attrs = [
         (r'(<a\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])', 2),
         (r'(<link\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])', 2),
@@ -306,19 +353,61 @@ def _rewrite_html_urls(html, proxy_base):
         (r'(<track\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
         (r'(<embed\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
         (r'(<object\s[^>]*?data\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<input\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<area\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<button\s[^>]*?formaction\s*=\s*["\'])([^"\']*)(["\'])', 2),
     ]
 
     def _replace(match):
         prefix = match.group(1)
         url = match.group(2)
         suffix = match.group(3)
-        # Skip javascript:, data:, #, mailto:, tel:
         if url and not url.startswith(('javascript:', 'data:', '#', 'mailto:', 'tel:', 'blob:')):
             url = _proxy_url(url, proxy_base)
         return prefix + url + suffix
 
     for pattern, _ in url_attrs:
         html = re.sub(pattern, _replace, html, flags=re.IGNORECASE)
+
+    # Rewrite srcset attributes (responsive images)
+    def _rewrite_srcset(match):
+        attr_prefix = match.group(1)
+        srcset_val = match.group(2)
+        quote = match.group(3)
+        parts = srcset_val.split(',')
+        new_parts = []
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            tokens = part.split(None, 1)
+            url = tokens[0]
+            descriptor = tokens[1] if len(tokens) > 1 else ''
+            if url and not url.startswith(('data:', 'blob:')):
+                url = _proxy_url(url, proxy_base)
+            if descriptor:
+                new_parts.append(url + ' ' + descriptor)
+            else:
+                new_parts.append(url)
+        return attr_prefix + ', '.join(new_parts) + quote
+
+    html = re.sub(
+        r'((?:srcset|data-srcset)\s*=\s*["\'])([^"\']*)(["\'])',
+        _rewrite_srcset, html, flags=re.IGNORECASE
+    )
+
+    # Rewrite inline style="...url(...)..."
+    def _rewrite_inline_style(match):
+        prefix = match.group(1)
+        style_val = match.group(2)
+        quote = match.group(3)
+        style_val = _rewrite_css_urls(style_val, proxy_base)
+        return prefix + style_val + quote
+
+    html = re.sub(
+        r'(<[^>]+\bstyle\s*=\s*["\'])([^"\']*)(["\'])',
+        _rewrite_inline_style, html, flags=re.IGNORECASE
+    )
 
     # Rewrite <base href> if present
     html = re.sub(
@@ -333,25 +422,84 @@ def _rewrite_html_urls(html, proxy_base):
         '', html, flags=re.IGNORECASE
     )
 
+    # Inject <base> tag if not present, so any URLs missed by regex
+    # still resolve correctly against the target origin
+    base_tag = re.search(r'<base\s', html, re.IGNORECASE)
+    if not base_tag:
+        base_match = re.search(r'base=([^&]+)', proxy_base)
+        if base_match:
+            target_base = urllib.parse.unquote(base_match.group(1))
+            parsed = urlparse(target_base)
+            base_href = f'{parsed.scheme}://{parsed.netloc}'
+            html = re.sub(
+                r'(<head[^>]*>)',
+                lambda m: m.group(1) + f'<base href="{base_href}/">',
+                html, count=1, flags=re.IGNORECASE
+            )
+
     return html
 
 
 def _rewrite_css_urls(css, proxy_base):
-    """Rewrite url() references in CSS to route through the proxy."""
-    def _replace(match):
+    """Rewrite url() references and @import in CSS to route through the proxy."""
+    def _replace_url(match):
         url = match.group(1)
         if url and not url.startswith(('data:', 'blob:')):
             url = _proxy_url(url, proxy_base)
         return 'url(' + url + ')'
 
-    return re.sub(r'url\(\s*["\']?([^"\')\s]+)["\']?\s*\)', _replace, css, flags=re.IGNORECASE)
+    css = re.sub(r'url\(\s*["\']?([^"\'\)\s]+)["\']?\s*\)', _replace_url, css, flags=re.IGNORECASE)
+
+    # Rewrite @import "..." and @import '...' (without url())
+    def _replace_import(match):
+        quote = match.group(1)
+        url = match.group(2)
+        if url and not url.startswith(('data:', 'blob:')):
+            url = _proxy_url(url, proxy_base)
+        return '@import ' + quote + url + quote
+
+    css = re.sub(r'@import\s+(["\'])([^"\']+)(["\'])', _replace_import, css, flags=re.IGNORECASE)
+
+    return css
+
+
+def _rewrite_js_urls(js, proxy_base):
+    """Rewrite static import URLs in JavaScript to route through the proxy.
+    This is best-effort — dynamic URLs constructed at runtime cannot be fully handled server-side."""
+    # Rewrite import() dynamic imports
+    def _replace_import(match):
+        quote = match.group(1)
+        url = match.group(2)
+        if url and not url.startswith(('data:', 'blob:')):
+            url = _proxy_url(url, proxy_base)
+        return 'import(' + quote + url + quote + ')'
+
+    js = re.sub(r'import\(\s*(["\'])([^"\']+)(["\'])\s*\)', _replace_import, js)
+
+    # Rewrite static import ... from '...' and from "..."
+    def _replace_static_import(match):
+        prefix = match.group(1)
+        quote = match.group(2)
+        url = match.group(3)
+        if url and not url.startswith(('.', '/', 'data:', 'blob:', 'http')):
+            # Bare module specifier — don't rewrite
+            return match.group(0)
+        if url and not url.startswith(('data:', 'blob:')):
+            url = _proxy_url(url, proxy_base)
+        return prefix + quote + url + quote
+
+    js = re.sub(r'(import\s+[^;\n]+?\s+from\s+)(["\'])([^"\']+)(["\'])', _replace_static_import, js)
+    # Rewrite simple import "..." statements
+    js = re.sub(r'(import\s*)(["\'])([^"\']+)(["\'])', _replace_static_import, js)
+
+    return js
 
 
 def _proxy_url(url, proxy_base):
     """Convert an absolute or relative URL to a proxy URL.
 
     proxy_base has the form:
-      /api/browser/proxy?url=<encoded_target>&base=<encoded_target>
+      /api/browser/proxy?url=<encoded_target>&base=<encoded_dir>
     For relative URLs we need to preserve the base and pass rel separately.
     """
     if not url:
@@ -370,18 +518,13 @@ def _proxy_url(url, proxy_base):
     return proxy_base + '&rel=' + urllib.parse.quote(url, safe='')
 
 
-def _get_original_base(proxy_base):
-    """Extract the original target URL from the proxy base URL."""
-    return proxy_base
-
-
 @bp.route('/api/browser/proxy')
 @handle_error
 def proxy():
     """
     Reverse proxy for iframe preview.
     Fetches the target URL, strips X-Frame-Options / CSP headers,
-    rewrites HTML/CSS URLs to route through this proxy.
+    rewrites HTML/CSS/JS URLs to route through this proxy.
 
     Query params:
       url  — the target URL to fetch
@@ -409,17 +552,18 @@ def proxy():
     if not target_url.startswith('http://') and not target_url.startswith('https://'):
         return jsonify({'error': 'Only http/https URLs are allowed'}), 400
 
-    # Security: prevent SSRF — only allow localhost, private IPs, and known domains
     parsed = urlparse(target_url)
     hostname = parsed.hostname or ''
-    # Allow all hostnames for development use (IDE is typically local-only)
 
     try:
         # Fetch target URL using urllib
         req = urllib.request.Request(target_url, method='GET')
-        req.add_header('User-Agent', 'PhoneIDE-Proxy/1.0')
-        req.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+        req.add_header('User-Agent', 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36')
+        # Use */* for subresources (not the HTML-preferring Accept header)
+        req.add_header('Accept', '*/*')
         req.add_header('Accept-Encoding', 'identity')  # avoid gzip to simplify URL rewriting
+        # Forward Referer so target servers handle relative redirects correctly
+        req.add_header('Referer', f'{parsed.scheme}://{parsed.netloc}/')
 
         raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
         raw_body = raw_resp.read()
@@ -427,8 +571,17 @@ def proxy():
         resp_headers = dict(raw_resp.headers.items())
 
         # Build proxy base URL for rewriting
+        # Use the directory of the target URL as base, so relative URLs resolve correctly
+        # e.g. for http://host:8080/app/page.html, base should be http://host:8080/app/
+        path = parsed.path or '/'
+        if '/' in path.rstrip('/'):
+            dir_path = path.rsplit('/', 1)[0] + '/'
+        else:
+            dir_path = '/'
+        dir_url = f'{parsed.scheme}://{parsed.netloc}{dir_path}'
+
         proxy_base = f'/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
-        proxy_base += f'&base={urllib.parse.quote(target_url, safe="")}'
+        proxy_base += f'&base={urllib.parse.quote(dir_url, safe="")}'
 
         wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
         return _proxy_response(wrapped, proxy_base)

@@ -274,6 +274,15 @@ const EditorManager = (() => {
         // Apply initial font size
         applyFontSize(config.fontSize);
 
+        // Set breakpoint gutter width
+        if (editor) {
+            const gutters = editor.getWrapperElement().querySelectorAll('.CodeMirror-gutter');
+            if (gutters.length > 0) {
+                gutters[0].style.width = '22px';
+                gutters[0].style.minWidth = '22px';
+            }
+        }
+
         // Create status bar
         createStatusBar();
 

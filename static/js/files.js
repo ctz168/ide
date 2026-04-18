@@ -189,6 +189,9 @@ const FileManager = (() => {
             const activeEl = document.querySelector(`.file-item[data-path="${CSS.escape(path)}"]`);
             if (activeEl) activeEl.classList.add('active');
 
+            // Notify debugger module to update breakpoint gutter markers
+            document.dispatchEvent(new CustomEvent('file:opened', { detail: { path: path, filePath: path } }));
+
             safeToast(`Opened ${currentFileName}`, 'info');
         } catch (err) {
             safeToast(`Error opening file: ${err.message}`, 'error');
