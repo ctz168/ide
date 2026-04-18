@@ -283,7 +283,15 @@ def _proxy_response(target_resp, proxy_base):
         raw_body = _decompress_body(raw_body, ce)
 
     # For HTML, rewrite URLs to route through our proxy
-    if 'text/html' in content_type:
+    # NOTE: also catch content_type that is None or missing (some servers omit it)
+    ct_lower = (content_type or '').lower()
+    if not ct_lower:
+        # No content-type — sniff by checking if body looks like HTML
+        if raw_body and raw_body.lstrip()[:100].lower().startswith(b'<!') or b'<html' in raw_body[:500].lower():
+            ct_lower = 'text/html'
+            content_type = 'text/html; charset=utf-8'
+
+    if 'text/html' in ct_lower:
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_html_urls(text, proxy_base)
@@ -292,7 +300,7 @@ def _proxy_response(target_resp, proxy_base):
         except Exception:
             pass
     # For CSS, rewrite url() references and @import
-    elif 'text/css' in content_type:
+    elif 'text/css' in ct_lower:
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_css_urls(text, proxy_base)
@@ -300,7 +308,7 @@ def _proxy_response(target_resp, proxy_base):
         except Exception:
             pass
     # For JavaScript, rewrite import statements to route through proxy
-    elif 'javascript' in content_type or 'application/x-javascript' in content_type:
+    elif 'javascript' in ct_lower or 'application/x-javascript' in ct_lower or 'text/javascript' in ct_lower or 'module' in ct_lower:
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_js_urls(text, proxy_base)
@@ -308,7 +316,7 @@ def _proxy_response(target_resp, proxy_base):
         except Exception:
             pass
     # For SVG, rewrite URLs (SVG is XML-based)
-    elif 'image/svg+xml' in content_type:
+    elif 'image/svg+xml' in ct_lower:
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_html_urls(text, proxy_base)
@@ -570,11 +578,18 @@ def proxy():
         req.add_header('Accept-Encoding', 'identity')  # avoid gzip to simplify URL rewriting
         # Forward Referer so target servers handle relative redirects correctly
         req.add_header('Referer', f'{parsed.scheme}://{parsed.netloc}/')
+        # Forward Host header so virtual-host servers respond correctly
+        req.add_header('Host', hostname)
 
         raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
         raw_body = raw_resp.read()
         status_code = raw_resp.status
         resp_headers = dict(raw_resp.headers.items())
+
+        # Log proxy activity for diagnostics (visible in server.log)
+        content_type = resp_headers.get('Content-Type', 'unknown')
+        body_size = len(raw_body)
+        print(f'[PROXY] {status_code} {target_url} [{content_type}] {body_size}B')
 
         # Build proxy base URL for rewriting
         # Use the directory of the target URL as base, so relative URLs resolve correctly
