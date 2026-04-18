@@ -957,26 +957,38 @@ html, body {
 .CodeMirror {
     height: 100% !important;
     font-family: var(--font-mono) !important;
-    font-size: 10px !important;
+    font-size: 8px !important;
     line-height: 1.5 !important;
     background: var(--bg-primary) !important;
-    touch-action: manipulation;
-    -webkit-user-select: text;
-    user-select: text;
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-touch-callout: default !important;
+}
+
+/* Ensure all CodeMirror child elements allow text selection */
+.CodeMirror *,
+.CodeMirror-code,
+.CodeMirror-line,
+.CodeMirror-line span,
+.CodeMirror-gutter-elt,
+.CodeMirror-linenumber {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-touch-callout: default !important;
 }
 
 .CodeMirror-gutters {
     background: var(--bg-secondary) !important;
     border-right: 1px solid var(--border) !important;
-    min-width: 24px !important;
+    min-width: 22px !important;
 }
 
 .CodeMirror-linenumber {
     color: var(--text-muted) !important;
-    font-size: 9px !important;
+    font-size: 7px !important;
     padding: 0 2px 0 4px !important;
-    min-width: 20px !important;
-    width: 20px !important;
+    min-width: 18px !important;
+    width: 18px !important;
 }
 
 .CodeMirror-activeline-background {
@@ -1858,7 +1870,7 @@ button, .file-item, .search-result-item, .git-change-item {
 
 /* Breakpoint gutter */
 .CodeMirror-gutters .breakpoints {
-    width: 20px;
+    width: 18px;
 }
 .CodeMirror-gutter-elt .breakpoints {
     /* ensure marker divs are centered */

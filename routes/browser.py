@@ -205,12 +205,11 @@ _STRIP_HEADERS = {
 # Headers from the target that should be passed through
 # NOTE: content-encoding is NOT passed — we decompress on the server side
 # so that we can rewrite URLs before sending to the browser.
+# NOTE: cache-control, etag, last-modified are NOT passed — we strip them
+# to prevent the browser from caching stale rewritten content.
 _PASS_HEADERS = {
     'content-type',
     'transfer-encoding',
-    'cache-control',
-    'etag',
-    'last-modified',
     'set-cookie',
     'access-control-allow-origin',
     'access-control-allow-credentials',
@@ -329,6 +328,11 @@ def _proxy_response(target_resp, proxy_base):
         if val:
             resp.headers[key] = val
 
+    # Prevent caching of proxied content (URLs are rewritten per-session)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+
     # Allow embedding from any origin
     resp.headers['X-Frame-Options'] = 'ALLOWALL'
     resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -422,20 +426,10 @@ def _rewrite_html_urls(html, proxy_base):
         '', html, flags=re.IGNORECASE
     )
 
-    # Inject <base> tag if not present, so any URLs missed by regex
-    # still resolve correctly against the target origin
-    base_tag = re.search(r'<base\s', html, re.IGNORECASE)
-    if not base_tag:
-        base_match = re.search(r'base=([^&]+)', proxy_base)
-        if base_match:
-            target_base = urllib.parse.unquote(base_match.group(1))
-            parsed = urlparse(target_base)
-            base_href = f'{parsed.scheme}://{parsed.netloc}'
-            html = re.sub(
-                r'(<head[^>]*>)',
-                lambda m: m.group(1) + f'<base href="{base_href}/">',
-                html, count=1, flags=re.IGNORECASE
-            )
+    # Do NOT inject <base> tag — all URLs are already rewritten to absolute
+    # proxy URLs, so <base> is unnecessary and can cause subtle issues with
+    # JavaScript URL construction and relative path resolution.
+    # (Previously we injected <base> but it caused more harm than good.)
 
     return html
 
