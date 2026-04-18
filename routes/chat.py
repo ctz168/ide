@@ -2129,18 +2129,37 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
         'history': history,
     }
 
-def run_agent_loop_stream(user_message, llm_config, conv_id=None):
-    """Generator that runs the agent loop and yields SSE events."""
+def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False):
+    """Generator that runs the agent loop and yields SSE events.
+    
+    Args:
+        user_message: The user's message text.
+        llm_config: LLM configuration dict.
+        conv_id: Optional conversation ID for persistence.
+        is_retry: If True, this is a retry of a failed turn. The conversation
+                  history already contains the user message and partial progress,
+                  so we don't add the user message again.
+    """
     # Load history from conversation if conv_id provided, otherwise from legacy chat_history
     if conv_id:
         conv = get_conversation(conv_id)
         history = list(conv.get('messages', [])) if conv else []
     else:
         history = load_chat_history()
-    user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
-    history.append(user_msg)
+
+    # Only add user message if this is NOT a retry
+    # On retry, the history already has the user message from the failed run
+    if not is_retry:
+        user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
+        history.append(user_msg)
 
     context = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+
+    # Pre-save history before starting the loop so retry can recover even if
+    # the very first LLM call fails (before any tool execution).
+    save_chat_history(history)
+    if conv_id:
+        save_conversation(conv_id, history)
 
     final_content = ''
     total_iterations = 0
@@ -2249,13 +2268,15 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
         if not tool_calls_raw:
             break
 
-        # Add assistant message to context
-        context.append({
+        # Add assistant message to context AND history for progressive save
+        assistant_msg = {
             'role': 'assistant',
             'content': content or None,
             'tool_calls': tool_calls_raw,
             'time': datetime.now().isoformat(),
-        })
+        }
+        context.append(assistant_msg)
+        history.append(assistant_msg)
 
         # Reset accumulated text for next iteration
         accumulated_text = ''
@@ -2276,18 +2297,25 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None):
 
             ok, result_str, elapsed = execute_agent_tool(tool_name, tool_args)
 
-            yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2)})}\n\n"
+            yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
 
-            context.append({
+            tool_msg = {
                 'role': 'tool',
                 'tool_call_id': tool_call_id,
                 'name': tool_name,
                 'content': result_str,
                 'time': datetime.now().isoformat(),
-            })
+            }
+            context.append(tool_msg)
+            history.append(tool_msg)
 
             # Compress context if needed
             context = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+
+        # Progressive save: persist history after each iteration so retry can resume
+        save_chat_history(history)
+        if conv_id:
+            save_conversation(conv_id, history)
 
     # Build final assistant message for history
     final_assistant = {
@@ -2404,7 +2432,8 @@ def send_chat_stream():
     data = request.json
     message = data.get('message', '').strip()
     conv_id = data.get('conv_id')  # optional conversation id
-    if not message:
+    is_retry = data.get('retry', False)  # if True, continue from failed state instead of restart
+    if not message and not is_retry:
         return jsonify({'error': 'Message required'}), 400
 
     # Allow frontend to specify which model to use by index
@@ -2444,7 +2473,7 @@ def send_chat_stream():
     def _run_agent():
         """Background thread: runs the agent loop and puts events into queue + buffer."""
         try:
-            for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id):
+            for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id, is_retry=is_retry):
                 event_queue.put(sse_event)
                 with _active_task['lock']:
                     _active_task['event_buffer'].append(sse_event)

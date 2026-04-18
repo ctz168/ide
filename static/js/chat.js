@@ -539,11 +539,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             if (extra.retryable) {
                 const retryBtn = document.createElement('button');
                 retryBtn.className = 'chat-retry-btn';
-                retryBtn.textContent = '🔄 Retry';
+                retryBtn.textContent = '🔄 重试';
                 retryBtn.addEventListener('click', () => {
-                    if (lastUserMessage) {
-                        sendMessage(lastUserMessage);
-                    }
+                    retryFromError();
                 });
                 div.appendChild(retryBtn);
             }
@@ -1562,6 +1560,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         // Play completion sound and show notification
                         playCompletionSound();
                         showToast('✅ Task completed successfully!', 'success', 3000);
+
+                        // Task completed — backend saved history, clear local backup
+                        clearBackup();
                         
                         // In plan mode, inject action buttons
                         if (chatMode === 'plan' && finalizedEl && streamBuffer) {
@@ -1591,6 +1592,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 showToast('Chat error: ' + err.message, 'error');
                 hasError = true;
             }
+            // On error/abort, do a final backup so messages survive refresh
+            backupMessages();
         } finally {
             currentAbortController = null;
             isProcessing = false;
@@ -1598,6 +1601,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             hideTyping();
             hideTurnIndicator();
             autoResizeInput();
+
+            // Stop the periodic backup timer
+            stopBackupTimer();
 
             const sendBtn = document.getElementById('chat-send');
             if (sendBtn) {
@@ -1661,6 +1667,248 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             return;
         }
         await sendMessage(lastUserMessage);
+    }
+
+    // ── Retry from Error (continue from failure point) ────────────
+
+    /**
+     * Retry a failed task by continuing from where it left off.
+     * Unlike resendLastMessage() which restarts from scratch, this sends
+     * a retry flag with conv_id so the backend resumes the agent loop
+     * using the already-saved conversation history (which includes all
+     * tool calls and results from before the error).
+     */
+    async function retryFromError() {
+        if (isProcessing) return;
+
+        if (!currentConvId) {
+            // No conversation ID — can't resume, fall back to resend
+            if (lastUserMessage) {
+                await sendMessage(lastUserMessage);
+            } else {
+                showToast('No task to retry', 'warning');
+            }
+            return;
+        }
+
+        // Ensure convId exists
+        if (!currentConvId) {
+            currentConvId = 'conv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        }
+
+        setProcessing(true);
+        hideTurnIndicator();
+
+        streamingStartTime = Date.now();
+        iterationCount = 0;
+        let currentToolEl = null;
+        let lastToolName = null;
+        let hasError = false;
+
+        // Start periodic backup during streaming
+        startBackupTimer();
+
+        // Create abort controller
+        currentAbortController = new AbortController();
+        const signal = currentAbortController.signal;
+
+        try {
+            const reqUrl = '/api/chat/send/stream';
+            const modelSelect = document.getElementById('chat-model-select');
+            const reqBody = {
+                message: lastUserMessage || '',
+                conv_id: currentConvId,
+                retry: true  // Tell backend to continue from saved state
+            };
+            if (modelSelect && modelSelect.value !== '') {
+                reqBody.model_index = parseInt(modelSelect.value);
+            }
+
+            addMessage('system', '🔄 Retrying from where it left off...');
+
+            const resp = await fetch(reqUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(reqBody),
+                signal
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 409) {
+                    addMessage('system', 'A task is already running. Waiting...');
+                    showToast('A task is already running', 'warning');
+                    startTaskStatusPolling();
+                    setProcessing(false);
+                    return;
+                }
+                const errBody = await resp.text().catch(() => '');
+                const detail = `Status: ${resp.status} ${resp.statusText}\n${errBody}`;
+                throw new Error(detail);
+            }
+
+            // Read the SSE stream
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const rawData = line.substring(6).trim();
+                    if (!rawData || rawData === '[DONE]') continue;
+
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(rawData);
+                    } catch (_) {
+                        continue;
+                    }
+
+                    const eventType = parsed.type || '';
+
+                    if (eventType === 'text') {
+                        hideTyping();
+                        if (!currentStreamEl) {
+                            startStreamingMessage();
+                        }
+                        appendStreamChunk(parsed.content || parsed.text || '');
+                    } else if (eventType === 'tool_start') {
+                        hideTyping();
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        currentToolEl = showToolProgress(
+                            parsed.tool || parsed.name || 'unknown',
+                            parsed.args
+                        );
+                        lastToolName = parsed.tool || parsed.name || null;
+                        setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
+                    } else if (eventType === 'tool_result') {
+                        const ok = parsed.ok !== false && parsed.error === undefined;
+                        finalizeToolResult(
+                            currentToolEl,
+                            parsed.result || parsed.output || parsed.error || '',
+                            ok
+                        );
+                        iterationCount++;
+                        updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
+                        setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
+                        currentToolEl = null;
+                        if (window.FileManager && lastToolName) {
+                            const fileTools = ['write_file', 'edit_file', 'create_directory', 'delete_path', 'install_package'];
+                            if (fileTools.includes(lastToolName)) {
+                                window.FileManager.refresh();
+                            }
+                        }
+                        if (window.DebuggerUI && lastToolName) {
+                            const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
+                                'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
+                                'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
+                                'browser_click', 'browser_input', 'browser_console', 'browser_page_info', 'server_logs'];
+                            if (debugTools.includes(lastToolName)) {
+                                try {
+                                    document.dispatchEvent(new CustomEvent('debug:ai_activity', {
+                                        detail: {
+                                            tool: lastToolName,
+                                            args: parsed.args || {},
+                                            result: (parsed.result || parsed.output || '') || '',
+                                        }
+                                    }));
+                                } catch(e) {}
+                            }
+                        }
+                        lastToolName = null;
+                        forceScrollToBottom();
+                    } else if (eventType === 'thinking') {
+                        setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
+                        hideTyping();
+                        showTyping();
+                    } else if (eventType === 'error') {
+                        hasError = true;
+                        hideTyping();
+                        setExecuteStatus('');
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        const errMsg = parsed.content || parsed.message || parsed.error || rawData;
+                        addMessage('error', errMsg, { retryable: true });
+                        showToast('Chat error: ' + errMsg, 'error');
+                    } else if (eventType === 'done') {
+                        hideTyping();
+                        let finalizedEl = null;
+                        if (currentStreamEl && streamBuffer) {
+                            finalizedEl = finalizeStreamMessage();
+                        }
+                        const totalDuration = Date.now() - streamingStartTime;
+                        const tokensUsed = estimateTokens(streamBuffer);
+                        let summary = `Completed in ${formatDuration(totalDuration)}`;
+                        if (parsed.iterations) {
+                            summary += ` · ${parsed.iterations} iteration(s)`;
+                        }
+                        summary += ` · ~${tokensUsed} tokens`;
+                        setExecuteStatus(summary);
+                        playCompletionSound();
+                        showToast('✅ Task completed successfully!', 'success', 3000);
+
+                        // Task completed — clear local backup
+                        clearBackup();
+
+                        if (chatMode === 'plan' && finalizedEl && streamBuffer) {
+                            lastPlanMsgEl = finalizedEl;
+                            planContent = streamBuffer;
+                            injectPlanActions(finalizedEl, streamBuffer);
+                        }
+                    }
+                }
+            }
+
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                hideTyping();
+                if (currentStreamEl && streamBuffer) {
+                    finalizeStreamMessage();
+                }
+                addMessage('system', 'Retry stopped by user.');
+                showToast('Retry stopped', 'info');
+            } else {
+                hideTyping();
+                if (currentStreamEl && streamBuffer) {
+                    finalizeStreamMessage();
+                }
+                addMessage('error', err.message, { retryable: true });
+                showToast('Retry error: ' + err.message, 'error');
+                hasError = true;
+            }
+            // On error/abort, do a final backup so messages survive refresh
+            backupMessages();
+        } finally {
+            currentAbortController = null;
+            isProcessing = false;
+            hideStopButton();
+            hideTyping();
+            hideTurnIndicator();
+            autoResizeInput();
+            stopBackupTimer();
+
+            const sendBtn = document.getElementById('chat-send');
+            if (sendBtn) {
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send';
+                sendBtn.style.display = '';
+            }
+            const inputEl = document.getElementById('chat-input');
+            if (inputEl) {
+                inputEl.disabled = false;
+            }
+        }
     }
 
     // ── LLM Settings ───────────────────────────────────────────────
