@@ -519,12 +519,15 @@ def _inject_script_interceptor(html, proxy_base):
     """Inject a script into the HTML that intercepts dynamically-created elements
     and JavaScript-driven navigation, rewriting URLs to route through the proxy.
 
-    Three layers of client-side interception:
+    Five layers of client-side interception:
     1. document.createElement('script'/'link') — rewrite src/href on set
     2. Navigation APIs — Location.prototype.href/assign/replace, window.open
        + HTMLAnchorElement.prototype.href — intercept dynamically created <a> href
     3. Document-level click listener — safety net for unrewritten <a> clicks
        (covers innerHTML-inserted anchors, and any <a> the server missed)
+    4. fetch() interceptor — route relative fetch URLs through the proxy
+       (critical for SPA apps that use fetch('/api/...') for API calls)
+    4b. XMLHttpRequest.open interceptor — same as fetch but for legacy XHR
 
     Also fixes _toProxyUrl to use new URL(src, base) instead of string
     concatenation, which caused double-slash errors for root-relative paths
@@ -650,6 +653,58 @@ def _inject_script_interceptor(html, proxy_base):
         "            }\n"
         "        }\n"
         "    }, true);  // capture phase to intercept before any other handler\n"
+        "\n"
+        "    // --- Layer 4: fetch() interceptor ---\n"
+        "    // Intercept all fetch() calls to route relative URLs through the proxy.\n"
+        "    // This is critical for SPA applications that use fetch() for API calls\n"
+        "    // (e.g. fetch('/api/organization')) -- without this, relative URLs resolve\n"
+        "    // to the proxy server (IDE) instead of the original target server.\n"
+        "    var _origFetch = window.fetch;\n"
+        "    window.fetch = function(input, init) {\n"
+        "        var url;\n"
+        "        if (typeof input === 'string') {\n"
+        "            url = input;\n"
+        "        } else if (input && typeof input === 'object' && typeof input.url === 'string') {\n"
+        "            url = input.url;\n"
+        "        } else {\n"
+        "            return _origFetch.apply(this, arguments);\n"
+        "        }\n"
+        "        // Skip already-proxied URLs, data URLs, blob URLs, javascript URLs\n"
+        "        if (!url || url.indexOf('/api/browser/proxy') !== -1 ||\n"
+        "            url.startsWith('data:') || url.startsWith('blob:') ||\n"
+        "            url.startsWith('javascript:')) {\n"
+        "            return _origFetch.apply(this, arguments);\n"
+        "        }\n"
+        "        // Rewrite relative URLs (starting with / or not starting with a protocol)\n"
+        "        var isRelative = url.startsWith('/') ||\n"
+        "            (!url.startsWith('http://') && !url.startsWith('https://'));\n"
+        "        if (isRelative) {\n"
+        "            var proxyUrl = _toProxyUrl(url);\n"
+        "            if (typeof input === 'string') {\n"
+        "                return _origFetch.call(this, proxyUrl, init);\n"
+        "            } else {\n"
+        "                // Request object -- create a new one with the proxied URL\n"
+        "                return _origFetch.call(this, new Request(proxyUrl, input));\n"
+        "            }\n"
+        "        }\n"
+        "        return _origFetch.apply(this, arguments);\n"
+        "    };\n"
+        "\n"
+        "    // --- Layer 4b: XMLHttpRequest interceptor ---\n"
+        "    // Same as fetch() but for legacy XMLHttpRequest.open() calls.\n"
+        "    var _origXHROpen = XMLHttpRequest.prototype.open;\n"
+        "    XMLHttpRequest.prototype.open = function(method, url) {\n"
+        "        if (url && typeof url === 'string' &&\n"
+        "            url.indexOf('/api/browser/proxy') === -1 &&\n"
+        "            !url.startsWith('data:') && !url.startsWith('blob:')) {\n"
+        "            var isRelative = url.startsWith('/') ||\n"
+        "                (!url.startsWith('http://') && !url.startsWith('https://'));\n"
+        "            if (isRelative) {\n"
+        "                arguments[1] = _toProxyUrl(url);\n"
+        "            }\n"
+        "        }\n"
+        "        return _origXHROpen.apply(this, arguments);\n"
+        "    };\n"
         "})();\n"
         "</script>"
     )
@@ -788,6 +843,24 @@ def _rewrite_js_urls(js, proxy_base):
         r"(window\.open\s*\(\s*['\"])([^'\"]+)(['\"])",
         lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
         js
+    )
+
+    # ── Rewrite fetch() URLs in JS ──
+    # Catches static string arguments to fetch('/path')
+    # This is best-effort; the client-side fetch interceptor handles dynamic URLs.
+    def _replace_fetch_url(match):
+        prefix = match.group(1)
+        url = match.group(2)
+        suffix = match.group(3)
+        # Only rewrite if it looks like a URL/path
+        if url and (url.startswith('/') or url.startswith('./') or url.startswith('../') or
+                    url.startswith('http://') or url.startswith('https://')):
+            url = _proxy_url(url, proxy_base)
+        return prefix + url + suffix
+
+    js = re.sub(
+        r"(fetch\s*\(\s*['\"])([^'\"]+)(['\"])",
+        _replace_fetch_url, js
     )
 
     return js
