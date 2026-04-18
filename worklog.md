@@ -1,4 +1,33 @@
 ---
+Task ID: proxy-redirect-v2-fix
+Agent: Main
+Task: 修复预览代理 JS 不加载 — 彻底重写重定向处理策略
+
+Work Log:
+- 用户报告之前的 302 重定向修复仍然导致 JS 无法加载
+- 启动真实 aiohttp myagent 服务 (port 8767) + 真实 IDE 服务器 (port 12345)
+- 发现两个问题:
+  1. 之前返回 302 给浏览器, 浏览器行为不可预测 (iframe 内跟随重定向可能失败)
+  2. _inject_script_interceptor 中 Object.defineProperty 的自定义 setter 没有调用原始 setter
+     导致 DOM content attribute 为空, appendChild 时浏览器不加载脚本
+- 修复方案 A: 不再返回 302 给浏览器
+  - urllib 自动跟随重定向后, 直接用最终 URL 更新 target_url 和 parsed
+  - 用最终 URL 的目录计算 proxy_base, 一次性返回 200 + 正确重写的 HTML
+  - 消除了浏览器端重定向的所有不确定性
+- 修复方案 B: 拦截器使用原始属性描述符
+  - Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src') 获取原始 setter
+  - 自定义 setter 中: _toProxyUrl(val) → _scriptSrcDesc.set.call(this, rewritten)
+  - 确保 DOM content attribute 被正确更新, appendChild 时浏览器能正常加载
+- 真实端到端测试全部通过:
+  - _ORIG_DIR 正确: http://127.0.0.1:8767/ui/chat/
+  - chat.js (1.8KB), groupchat.js (57KB), flow_engine.js (140KB), chat_main.js (264KB) 均正确加载
+  - CSS (119KB) 正确加载
+
+Stage Summary:
+- 文件: routes/browser.py — proxy() 函数和 _inject_script_interceptor() 函数
+- 两个关键修复: (1) 服务端内跟随重定向不再返回302 (2) 拦截器调用原始setter
+
+---
 Task ID: proxy-interceptor-fix
 Agent: Main
 Task: 修复预览代理中动态创建的 script/link 元素 JS 未加载的问题

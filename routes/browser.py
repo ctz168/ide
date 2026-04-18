@@ -721,32 +721,19 @@ def proxy():
         raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
 
         # ── Redirect handling ──
+        # urllib.request.urlopen automatically follows HTTP 302 redirects.
         # If the server redirected (e.g. / → /ui/chat/chat_container.html),
-        # we MUST use the final URL for computing proxy_base. Otherwise relative
+        # raw_resp.url is the FINAL URL after all redirects.
+        # We MUST use the final URL for computing proxy_base. Otherwise relative
         # URLs in the HTML (e.g. <script src="chat.js">) would be resolved
         # against the original URL's directory (/) instead of the actual page
         # directory (/ui/chat/), causing all JS/CSS to 404.
         final_url = getattr(raw_resp, 'url', None) or target_url
         if final_url != target_url:
-            # Safety: avoid infinite redirect loops
-            if '/api/browser/proxy' not in final_url:
-                # Drain and close the response — we'll let the browser re-fetch
-                # via the proxy URL for the final (non-redirecting) URL.
-                try:
-                    raw_resp.read()
-                except Exception:
-                    pass
-                try:
-                    raw_resp.close()
-                except Exception:
-                    pass
-                new_proxy = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(final_url, safe="")}'
-                print(f'[PROXY] Redirect: {target_url} → {final_url}')
-                resp = make_response('', 302)
-                resp.headers['Location'] = new_proxy
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                return resp
-            # Already a proxy URL (loop detected) — fall through and serve normally
+            print(f'[PROXY] Redirect followed: {target_url} → {final_url}')
+            # Use the final URL for everything below
+            target_url = final_url
+            parsed = urlparse(target_url)
 
         raw_body = raw_resp.read()
         status_code = raw_resp.status
@@ -758,7 +745,7 @@ def proxy():
         print(f'[PROXY] {status_code} {target_url} [{content_type}] {body_size}B')
 
         # Build proxy base URL for rewriting
-        # Use the directory of the target URL as base, so relative URLs resolve correctly
+        # Use the directory of the (final) target URL as base, so relative URLs resolve correctly
         # e.g. for http://host:8080/app/page.html, base should be http://host:8080/app/
         path = parsed.path or '/'
         if '/' in path.rstrip('/'):
