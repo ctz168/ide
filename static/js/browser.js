@@ -427,7 +427,11 @@ const BrowserInspector = (() => {
                 }),
             });
         } catch (e) {
-            // Silent — don't spam console with poll errors
+            // Log poll errors (but don't spam — only log once per 10s)
+            if (!pollCommand._lastLog || Date.now() - pollCommand._lastLog > 10000) {
+                console.warn('[BrowserInspector] poll error:', e.message);
+                pollCommand._lastLog = Date.now();
+            }
         }
     }
 

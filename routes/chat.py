@@ -1448,7 +1448,10 @@ def _tool_browser_navigate(args):
     if not url.startswith('http://') and not url.startswith('https://'):
         url = 'http://' + url
     cmd_id = create_browser_command('navigate', {'url': url})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
+    # If timed out, it likely means the preview tab is not active — return a helpful message instead of error
+    if isinstance(result, dict) and result.get('error') and 'timed out' in result.get('error', ''):
+        return f'Warning: Preview panel may not be active. The page may still be navigating to: {url}\nUse browser_page_info to verify the page loaded.'
     return _format_browser_result(result)
 
 def _tool_browser_evaluate(args):
@@ -1456,19 +1459,19 @@ def _tool_browser_evaluate(args):
     if not expression:
         return 'Error: expression is required'
     cmd_id = create_browser_command('evaluate', {'expression': expression})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_inspect(args):
     selector = args.get('selector', 'body')
     cmd_id = create_browser_command('inspect', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_query_all(args):
     selector = args.get('selector', '*')
     cmd_id = create_browser_command('query_all', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_click(args):
@@ -1476,7 +1479,7 @@ def _tool_browser_click(args):
     if not selector:
         return 'Error: selector is required'
     cmd_id = create_browser_command('click', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_input(args):
@@ -1485,12 +1488,12 @@ def _tool_browser_input(args):
     if not selector:
         return 'Error: selector is required'
     cmd_id = create_browser_command('input', {'selector': selector, 'text': text})
-    result = wait_browser_result(cmd_id, timeout=15)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_console(args):
     cmd_id = create_browser_command('console', {})
-    result = wait_browser_result(cmd_id, timeout=10)
+    result = wait_browser_result(cmd_id, timeout=30)
     if not isinstance(result, dict):
         return str(result)
     if result.get('ok'):
@@ -1505,7 +1508,7 @@ def _tool_browser_console(args):
 
 def _tool_browser_cookies(args):
     cmd_id = create_browser_command('cookies', {})
-    result = wait_browser_result(cmd_id, timeout=10)
+    result = wait_browser_result(cmd_id, timeout=30)
     if not isinstance(result, dict):
         return str(result)
     if result.get('ok'):
@@ -1521,7 +1524,7 @@ def _tool_browser_cookies(args):
 
 def _tool_browser_page_info(args):
     cmd_id = create_browser_command('page_info', {})
-    result = wait_browser_result(cmd_id, timeout=10)
+    result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
 
 def _tool_browser_open_external(args):
