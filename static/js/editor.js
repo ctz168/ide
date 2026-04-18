@@ -1415,9 +1415,14 @@ const EditorManager = (() => {
         // Header
         const header = document.createElement('div');
         header.className = 'diff-header';
+        const isFileDiff = title && title !== 'All changes' && title !== 'Diff';
+        const restoreBtnHTML = isFileDiff
+            ? `<button class="diff-restore-btn" data-diff-filepath="${escapeHTML(title)}" title="恢复到该版本">⏪ 恢复</button>`
+            : '';
         header.innerHTML = `
             <span class="diff-title">🔀 ${escapeHTML(title)}</span>
             <div class="diff-actions">
+                ${restoreBtnHTML}
                 <button class="diff-close-btn" title="Close">✕</button>
             </div>
         `;
@@ -1464,6 +1469,17 @@ const EditorManager = (() => {
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) overlay.remove();
         });
+
+        // Restore file handler
+        const restoreBtn = header.querySelector('.diff-restore-btn');
+        if (restoreBtn) {
+            restoreBtn.addEventListener('click', () => {
+                const filepath = restoreBtn.dataset.diffFilepath;
+                if (filepath && window.GitManager && window.GitManager.restoreFile) {
+                    window.GitManager.restoreFile(filepath);
+                }
+            });
+        }
 
         // Escape key
         const escHandler = (e) => {

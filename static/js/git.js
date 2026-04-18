@@ -673,6 +673,87 @@ const GitManager = (() => {
         }
     }
 
+    // ── API: Restore File ──────────────────────────────────────
+
+    /**
+     * Restore a file to its HEAD state (discard working/staged changes)
+     * @param {string} filepath - file path to restore
+     */
+    async function restoreFile(filepath) {
+        const confirmed = await confirmDialog(
+            '恢复文件',
+            `确定要恢复 "${filepath}" 到 HEAD 版本吗？未提交的修改将被丢弃。`
+        );
+        if (!confirmed) return;
+
+        try {
+            const gitCwd = getGitCwd();
+            const resp = await fetch('/api/git/restore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath, path: gitCwd })
+            });
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, '恢复失败');
+                throw new Error(errorMsg);
+            }
+            const data = await resp.json();
+            gitLog(`restore -- ${filepath}`, data);
+            showToast('文件已恢复到 HEAD 版本', 'success');
+            await refresh();
+
+            // Close the diff overlay if open
+            const diffOverlay = document.getElementById('diff-overlay');
+            if (diffOverlay) diffOverlay.remove();
+
+            // Refresh file list
+            if (window.FileManager) await window.FileManager.refresh();
+            return data;
+        } catch (err) {
+            showToast('恢复失败: ' + err.message, 'error');
+        }
+    }
+
+    // ── API: Checkout Commit ───────────────────────────────────────
+
+    /**
+     * Checkout a specific commit (detached HEAD) to go back to that version.
+     * @param {string} hash - full or short commit hash
+     */
+    async function checkoutCommit(hash) {
+        const confirmed = await confirmDialog(
+            '回到该版本',
+            `确定要回到版本 ${hash.substring(0, 7)} 吗？\n这将进入 detached HEAD 状态。\n之后可以用 git checkout <分支名> 回到最新版本。`
+        );
+        if (!confirmed) return;
+
+        showToast(`正在切换到 ${hash.substring(0, 7)}...`, 'info');
+
+        try {
+            const gitCwd = getGitCwd();
+            const resp = await fetch('/api/git/checkout-commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ref: hash, path: gitCwd })
+            });
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, '切换版本失败');
+                throw new Error(errorMsg);
+            }
+            const data = await resp.json();
+            gitLog(`checkout ${hash.substring(0, 7)}`, data);
+            showToast(`已切换到 ${hash.substring(0, 7)}`, 'success');
+            await refresh();
+
+            // Refresh file list
+            if (window.FileManager) await window.FileManager.refresh();
+            return data;
+        } catch (err) {
+            showToast('切换版本失败: ' + err.message, 'error');
+            gitLogSimple(`checkout ${hash.substring(0, 7)}`, err.message);
+        }
+    }
+
     // ── API: Diff ──────────────────────────────────────────────────
 
     /**
@@ -831,6 +912,7 @@ const GitManager = (() => {
         let html = '';
         for (const commit of commits) {
             const hash = commit.hash || commit.oid || commit.id || '';
+            const fullHash = commit.full_hash || hash;
             const shortHash = hash.substring(0, 7);
             const message = commit.message || commit.msg || '';
             const author = commit.author || '';
@@ -841,6 +923,7 @@ const GitManager = (() => {
                     <div class="git-log-header">
                         <span class="git-log-hash">${escapeHTML(shortHash)}</span>
                         <span class="git-log-author">${escapeHTML(author)}</span>
+                        <button class="git-log-checkout-btn" data-full-hash="${escapeAttr(fullHash)}" title="回到该版本">⏪</button>
                     </div>
                     <div class="git-log-message">${escapeHTML(message.split('\n')[0])}</div>
                     <div class="git-log-date">${escapeHTML(date)}</div>
@@ -848,6 +931,22 @@ const GitManager = (() => {
         }
 
         el.innerHTML = html;
+
+        // Bind checkout buttons
+        el.querySelectorAll('.git-log-checkout-btn').forEach(btn => {
+            const handler = (e) => {
+                e.stopPropagation();
+                const fullHash = btn.dataset.fullHash;
+                if (fullHash) checkoutCommit(fullHash);
+            };
+            btn.addEventListener('click', handler);
+            // Touch support
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handler(e);
+            });
+        });
     }
 
     /**
@@ -1128,6 +1227,8 @@ const GitManager = (() => {
         stash,
         diff,
         gitInit,
+        restoreFile,
+        checkoutCommit,
 
         // Getters
         get currentBranch() { return currentBranch; },

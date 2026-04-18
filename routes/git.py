@@ -370,3 +370,52 @@ def git_reset():
     cwd = resolve_cwd()
     r = git_cmd(f'reset {mode} HEAD', cwd=cwd)
     return jsonify({'ok': r['ok'], 'stderr': r['stderr']})
+
+
+@bp.route('/api/git/restore', methods=['POST'])
+@handle_error
+def git_restore():
+    """Restore a file to its state in HEAD (discard working/staged changes).
+
+    Accepts:
+        - filepath: file path(s) to restore. If omitted, restores all files.
+        - staged: if True, unstage the file (git restore --staged); default False.
+    """
+    data = request.json or {}
+    filepath = data.get('filepath', '')
+    staged = data.get('staged', False)
+    cwd = resolve_cwd()
+
+    cmd = 'restore'
+    if staged:
+        cmd += ' --staged'
+    if filepath:
+        cmd += f' -- {shlex_quote(filepath)}'
+
+    r = git_cmd(cmd, cwd=cwd)
+    return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
+
+
+@bp.route('/api/git/checkout-commit', methods=['POST'])
+@handle_error
+def git_checkout_commit():
+    """Checkout a specific commit hash (detached HEAD) or a file at a commit."""
+    data = request.json or {}
+    ref = data.get('ref', '')
+    filepath = data.get('filepath', '')
+    cwd = resolve_cwd()
+
+    if not ref:
+        return jsonify({'error': 'Commit ref required'}), 400
+
+    if filepath:
+        # Restore a specific file from a commit: git checkout <ref> -- <file>
+        cmd = f'checkout {shlex_quote(ref)} -- {shlex_quote(filepath)}'
+    else:
+        # Checkout the commit (detached HEAD): git checkout <ref>
+        cmd = f'checkout {shlex_quote(ref)}'
+
+    r = git_cmd(cmd, cwd=cwd, timeout=120)
+    if not r['ok']:
+        return jsonify({'error': r['stderr'] or 'Checkout failed'}), 500
+    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})

@@ -551,6 +551,63 @@ html, body {
     text-overflow: ellipsis;
 }
 
+/* Git log item layout with checkout button */
+.git-log-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.git-log-hash {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.git-log-author {
+    color: var(--text-muted);
+    font-size: 10px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.git-log-checkout-btn {
+    width: 26px;
+    height: 22px;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+.git-log-checkout-btn:hover,
+.git-log-checkout-btn:active {
+    background: var(--bg-hover);
+    color: var(--accent);
+}
+.git-log-message {
+    color: var(--text-secondary);
+    margin-top: 2px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.git-log-date {
+    color: var(--text-muted);
+    font-size: 9px;
+    margin-top: 1px;
+    font-family: var(--font-mono);
+}
+
 /* ==================== Search Panel ==================== */
 .search-box {
     display: flex;
@@ -2103,6 +2160,27 @@ button, .file-item, .search-result-item, .git-change-item {
 .diff-close-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+
+.diff-restore-btn {
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    background: none;
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+.diff-restore-btn:hover,
+.diff-restore-btn:active {
+    background: rgba(189, 147, 249, 0.15);
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 .diff-content {
