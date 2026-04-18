@@ -469,46 +469,51 @@ def _inject_script_interceptor(html, proxy_base):
     interceptor = f"""<script>
 (function() {{
     var _origCreate = document.createElement.bind(document);
-    var _origAppendChild = Node.prototype.appendChild;
     var _ORIG_DIR = {repr(original_dir)};
     var _PROXY_BASE = {repr(proxy_base)};
+
+    // Save original property descriptors so we can call the real setter
+    // which properly updates both the IDL attribute AND the DOM content attribute.
+    // Without calling the original setter, the content attribute stays empty
+    // and the browser won't fetch the script when appendChild is called.
+    var _scriptSrcDesc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+    var _linkHrefDesc = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
 
     function _toProxyUrl(src) {{
         if (!src || typeof src !== 'string') return src;
         if (src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('javascript:')) return src;
         if (src.indexOf('/api/browser/proxy') !== -1) return src;  // already proxied
-        // Resolve relative to original directory first
+        // Build proxy URL — resolve relative URLs against original directory
         var absUrl;
         if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('//')) {{
             absUrl = src;
         }} else {{
             absUrl = _ORIG_DIR + src;
         }}
-        // Build proxy URL
-        var enc = encodeURIComponent(absUrl);
-        var baseEnc = encodeURIComponent(_ORIG_DIR);
-        return _PROXY_BASE + '&rel=' + encodeURIComponent(src);
+        // For relative URLs, use the rel param so the proxy can resolve correctly
+        // For absolute URLs pointing to the original server, still route through proxy
+        return _PROXY_BASE + '&rel=' + encodeURIComponent(absUrl);
     }}
 
     // Intercept createElement('script') to rewrite src on set
     document.createElement = function(tag) {{
         var el = _origCreate(tag);
-        if (tag.toLowerCase() === 'script') {{
-            var _realSrc;
+        if (tag.toLowerCase() === 'script' && _scriptSrcDesc) {{
             Object.defineProperty(el, 'src', {{
-                get: function() {{ return _realSrc; }},
+                get: function() {{ return _scriptSrcDesc.get.call(this); }},
                 set: function(val) {{
-                    _realSrc = _toProxyUrl(val);
+                    var rewritten = _toProxyUrl(val);
+                    _scriptSrcDesc.set.call(this, rewritten);
                 }},
                 configurable: true
             }});
         }}
-        if (tag.toLowerCase() === 'link') {{
-            var _realHref;
+        if (tag.toLowerCase() === 'link' && _linkHrefDesc) {{
             Object.defineProperty(el, 'href', {{
-                get: function() {{ return _realHref; }},
+                get: function() {{ return _linkHrefDesc.get.call(this); }},
                 set: function(val) {{
-                    _realHref = _toProxyUrl(val);
+                    var rewritten = _toProxyUrl(val);
+                    _linkHrefDesc.set.call(this, rewritten);
                 }},
                 configurable: true
             }});

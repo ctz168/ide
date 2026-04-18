@@ -1,4 +1,26 @@
 ---
+Task ID: proxy-interceptor-fix
+Agent: Main
+Task: 修复预览代理中动态创建的 script/link 元素 JS 未加载的问题
+
+Work Log:
+- 用户报告重定向修复生效后，myagent 页面 JS 仍然没有加载（函数未定义）
+- 启动模拟 myagent 的测试 HTTP 服务器 (port 8767)，进行端到端测试
+- 服务端代理链路测试通过: HTML 重写正确, chat.js URL 重写正确, groupchat.js/flow_engine.js/chat_main.js 均可正确代理
+- 定位根本原因: _inject_script_interceptor 中的 Object.defineProperty 覆盖了 script/link 的 src/href 属性
+  - 旧代码: 自定义 setter 只将值存到 _realSrc 变量, 没有调用原始 setter
+  - 导致: DOM content attribute 始终为空, 浏览器在 appendChild 时读取 content attribute 发现为空, 不发起网络请求
+- 修复: 使用 Object.getOwnPropertyDescriptor 获取原始属性描述符, 在自定义 setter 中先重写 URL 再调用原始 setter
+  - _scriptSrcDesc.set.call(this, rewritten) 正确更新 IDL 属性和 DOM content attribute
+  - _linkHrefDesc.set.call(this, rewritten) 同样处理 link 元素
+- 修复后验证: 拦截器代码包含 _scriptSrcDesc.set.call, 三个动态脚本均通过代理正确加载
+
+Stage Summary:
+- 文件: routes/browser.py — _inject_script_interceptor 函数
+- 根因: Object.defineProperty 自定义 setter 未调用原始 setter, DOM content attribute 未设置
+- 修复: 保存原始属性描述符, 在自定义 setter 中调用原始 setter 确保正确更新 DOM
+
+---
 Task ID: proxy-redirect-fix
 Agent: Main
 Task: 修复预览代理重定向导致跨端口JS/CSS全部404的问题
