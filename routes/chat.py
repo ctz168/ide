@@ -34,16 +34,46 @@ from utils import (
     get_file_type, shlex_quote,
 )
 from routes.git import git_cmd
+from routes.browser import create_browser_command, wait_browser_result
 
 bp = Blueprint('chat', __name__)
 
 # ==================== System Prompt ====================
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
-You have access to tools that let you read/write files, execute code, search projects, manage git, and more.
+You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
 
 ## Available Tools
-You have 19 tools available. When you need to perform an action, call the appropriate tool using function calling.
+You have **26 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
+
+### File & Code Tools (19)
+- `read_file` / `write_file` / `edit_file` -- Read, create, or modify files
+- `list_directory` / `search_files` / `grep_code` -- Browse and search the project
+- `run_command` -- Execute shell commands (Python, bash, etc.)
+- `file_info` / `create_directory` / `delete_path` -- File system operations
+- `git_status` / `git_diff` / `git_commit` / `git_log` / `git_checkout` -- Full Git workflow
+- `install_package` / `list_packages` -- Python/npm package management
+- `web_search` / `web_fetch` -- Search the web and fetch page content
+
+### Browser Debugging Tools (7) -- NEW
+The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
+- `browser_navigate` -- Open a URL in the preview (must be same-origin, e.g. localhost)
+- `browser_evaluate` -- Execute JavaScript expressions in the page and get results
+- `browser_inspect` -- Get detailed info about a DOM element (tag, attributes, styles, position, visibility)
+- `browser_query_all` -- List all elements matching a CSS selector with summary info
+- `browser_click` -- Simulate clicking an element
+- `browser_input` -- Simulate typing text into an input/textarea
+- `browser_console` -- Get captured console.log/warn/error output from the page
+- `browser_cookies` -- Read cookies of the preview page
+- `browser_page_info` -- Get page title, URL, viewport, and scroll position
+
+**Browser Debugging Workflow:**
+1. Use `browser_navigate` to open the target page (e.g. http://localhost:8080)
+2. Use `browser_page_info` to verify the page loaded
+3. Use `browser_inspect` or `browser_query_all` to examine elements
+4. Use `browser_click` / `browser_input` to interact
+5. Use `browser_evaluate` for custom JS (e.g. get scroll position, check state)
+6. Use `browser_console` to check for errors after interactions
 
 ## Important Rules
 1. Always use absolute paths when referencing files
@@ -56,6 +86,9 @@ For multi-step tasks, think step by step and use tools in sequence.
 8. Always explain what you're doing and why before taking action
 9. Respect the workspace boundary - all file operations are scoped to the workspace
 10. When running shell commands, be cautious with destructive operations
+11. For browser tools, the preview must be on the "Preview" tab with a page loaded
+12. Browser tools only work with same-origin pages (localhost). Cross-origin pages will fail
+13. After clicking or inputting, wait a moment before inspecting results
 
 ## Workspace
 Current workspace: {WORKSPACE}
@@ -566,6 +599,181 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Browser Debugging Tools ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_navigate',
+            'description': (
+                'Navigate the built-in preview iframe to a URL. The page must be same-origin (e.g. localhost). '
+                'Returns success/error status. Use this first before other browser tools.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'url': {
+                        'type': 'string',
+                        'description': 'URL to navigate to (e.g. "http://localhost:8080")',
+                    },
+                },
+                'required': ['url'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_evaluate',
+            'description': (
+                'Execute a JavaScript expression in the preview page and return the result. '
+                'Useful for getting page state, checking variables, or running custom queries. '
+                'The expression runs in the page context with full DOM access.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'expression': {
+                        'type': 'string',
+                        'description': 'JavaScript expression to evaluate (e.g. "document.title", "window.scrollY", "JSON.stringify(performance.timing)")',
+                    },
+                },
+                'required': ['expression'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_inspect',
+            'description': (
+                'Inspect a DOM element in the preview page. Returns detailed info: tag name, id, class, '
+                'attributes, text content, computed styles, position/size, visibility status, child count. '
+                'Use CSS selector to target elements (e.g. "#login-btn", ".nav-item", "form input[name=email]")'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the element to inspect',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_query_all',
+            'description': (
+                'List all elements matching a CSS selector in the preview page. Returns up to 50 results '
+                'with tag name, id, class, text preview, visibility, and position. '
+                'Useful for discovering what elements exist on a page.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector (e.g. "button", ".card", "a[href]")',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_click',
+            'description': (
+                'Simulate a mouse click on an element in the preview page. '
+                'Useful for testing button clicks, link navigation, form submissions, etc.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the element to click',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_input',
+            'description': (
+                'Simulate typing text into an input, textarea, or contenteditable element. '
+                'Compatible with React/Vue (uses native value setter). '
+                'Triggers input and change events.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the input/textarea element',
+                    },
+                    'text': {
+                        'type': 'string',
+                        'description': 'Text to type into the element',
+                    },
+                },
+                'required': ['selector', 'text'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_console',
+            'description': (
+                'Get captured console output (log, warn, error, info) from the preview page. '
+                'The console interceptor is auto-injected when a page loads in the preview. '
+                'Returns the last 100 log entries with timestamps and types.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_cookies',
+            'description': (
+                'Read cookies from the preview page. Returns parsed cookie name-value pairs. '
+                'Only works for same-origin pages. Returns empty if no cookies are set.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_page_info',
+            'description': (
+                'Get basic information about the currently loaded page in the preview. '
+                'Returns title, URL, character set, viewport size, scroll position, and body element count.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
 ]
 
 # ==================== Security Helpers ====================
@@ -1009,6 +1217,104 @@ def _tool_delete_path(args):
     except Exception as e:
         return f'Error deleting path: {str(e)}'
 
+# ==================== Browser Debugging Tools ====================
+
+def _format_browser_result(result):
+    """Format a browser command result dict into a readable string."""
+    if not isinstance(result, dict):
+        return str(result) if result else '(no result)'
+    if result.get('error'):
+        return f"Error: {result['error']}"
+    # Remove 'ok' key for cleaner output
+    info = {k: v for k, v in result.items() if k != 'ok'}
+    try:
+        return json.dumps(info, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(info)
+
+def _tool_browser_navigate(args):
+    url = args.get('url', '')
+    if not url:
+        return 'Error: URL is required'
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'http://' + url
+    cmd_id = create_browser_command('navigate', {'url': url})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_evaluate(args):
+    expression = args.get('expression', '')
+    if not expression:
+        return 'Error: expression is required'
+    cmd_id = create_browser_command('evaluate', {'expression': expression})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_inspect(args):
+    selector = args.get('selector', 'body')
+    cmd_id = create_browser_command('inspect', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_query_all(args):
+    selector = args.get('selector', '*')
+    cmd_id = create_browser_command('query_all', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_click(args):
+    selector = args.get('selector', '')
+    if not selector:
+        return 'Error: selector is required'
+    cmd_id = create_browser_command('click', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_input(args):
+    selector = args.get('selector', '')
+    text = args.get('text', '')
+    if not selector:
+        return 'Error: selector is required'
+    cmd_id = create_browser_command('input', {'selector': selector, 'text': text})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_console(args):
+    cmd_id = create_browser_command('console', {})
+    result = wait_browser_result(cmd_id, timeout=10)
+    if not isinstance(result, dict):
+        return str(result)
+    if result.get('ok'):
+        logs = result.get('logs', [])
+        if not logs:
+            return '(no console output captured yet - ensure the Bridge is injected)'
+        lines = []
+        for log in logs:
+            lines.append(f"  [{log.get('type','log')}] {log.get('time','')}  {log.get('text','')}")
+        return f"Console output ({result.get('count', len(logs))} entries):\n" + '\n'.join(lines[-100:])
+    return _format_browser_result(result)
+
+def _tool_browser_cookies(args):
+    cmd_id = create_browser_command('cookies', {})
+    result = wait_browser_result(cmd_id, timeout=10)
+    if not isinstance(result, dict):
+        return str(result)
+    if result.get('ok'):
+        cookies = result.get('cookies', [])
+        raw = result.get('raw', '')
+        if isinstance(cookies, list) and cookies:
+            lines = [f"  {c.get('name','')}: {c.get('value','')}" for c in cookies]
+            return f"Cookies ({len(cookies)} total):\n" + '\n'.join(lines)
+        elif isinstance(cookies, str):
+            return cookies
+        return '(no cookies)'
+    return _format_browser_result(result)
+
+def _tool_browser_page_info(args):
+    cmd_id = create_browser_command('page_info', {})
+    result = wait_browser_result(cmd_id, timeout=10)
+    return _format_browser_result(result)
+
 _TOOL_HANDLERS = {
     'read_file': _tool_read_file,
     'write_file': _tool_write_file,
@@ -1029,6 +1335,15 @@ _TOOL_HANDLERS = {
     'delete_path': _tool_delete_path,
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
+    'browser_navigate': _tool_browser_navigate,
+    'browser_evaluate': _tool_browser_evaluate,
+    'browser_inspect': _tool_browser_inspect,
+    'browser_query_all': _tool_browser_query_all,
+    'browser_click': _tool_browser_click,
+    'browser_input': _tool_browser_input,
+    'browser_console': _tool_browser_console,
+    'browser_cookies': _tool_browser_cookies,
+    'browser_page_info': _tool_browser_page_info,
 }
 
 def execute_agent_tool(name, arguments):

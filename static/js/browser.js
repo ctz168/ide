@@ -1,0 +1,544 @@
+/**
+ * BrowserInspector - Preview iframe + bridge for AI browser debugging tools.
+ *
+ * Architecture:
+ *   Backend AI tool → create_browser_command() → frontend polls /api/browser/poll
+ *   → frontend executes in iframe → frontend POSTs /api/browser/result → tool returns
+ *
+ * Same-origin only: the preview iframe must load a page from the same origin (localhost).
+ */
+const BrowserInspector = (() => {
+    'use strict';
+
+    // ── State ──
+    let iframe = null;
+    let pollTimer = null;
+    let bridgeInjected = false;
+    let iframeLogs = [];  // console logs captured from iframe
+    let pollInterval = 600;  // ms between polls
+
+    // ── Helpers ──
+    function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+
+    function tryIframeWin() {
+        try { return iframe && iframe.contentWindow; } catch (e) { return null; }
+    }
+    function tryIframeDoc() {
+        try { return iframe && iframe.contentDocument; } catch (e) { return null; }
+    }
+
+    // ── Bridge Injection ──
+    /**
+     * Inject a console interceptor script into the iframe.
+     * Captures console.log/warn/error/info and forwards via postMessage.
+     * Also listens for window.error events.
+     */
+    function injectBridge() {
+        const win = tryIframeWin();
+        const doc = tryIframeDoc();
+        if (!win || !doc) {
+            if (window.showToast) window.showToast('无法访问 iframe（跨域或未加载）', 'warning');
+            return false;
+        }
+        try {
+            // Remove old bridge if exists
+            const old = doc.getElementById('phoneide-bridge');
+            if (old) old.remove();
+
+            const script = doc.createElement('script');
+            script.id = 'phoneide-bridge';
+            script.textContent = `(function(){
+                var _L=console.log,_W=console.warn,_E=console.error,_I=console.info;
+                function _s(t,a){
+                    try{
+                        var args=[];
+                        for(var i=0;i<a.length;i++){
+                            var v=a[i];
+                            if(v===null) args.push('null');
+                            else if(v===undefined) args.push('undefined');
+                            else if(typeof v==='object'){
+                                try{args.push(JSON.stringify(v,null,2).substring(0,2000));}catch(e){args.push(String(v));}
+                            }
+                            else args.push(String(v));
+                        }
+                        window.parent.postMessage({
+                            source:'pide-bridge',
+                            type:t,
+                            text:args.join(' ')
+                        },'*');
+                    }catch(ex){}
+                }
+                console.log=function(){_s('log',arguments);_L.apply(console,arguments);};
+                console.warn=function(){_s('warn',arguments);_W.apply(console,arguments);};
+                console.error=function(){_s('error',arguments);_E.apply(console,arguments);};
+                console.info=function(){_s('info',arguments);_I.apply(console,arguments);};
+                window.addEventListener('error',function(e){
+                    try{
+                        window.parent.postMessage({
+                            source:'pide-bridge',
+                            type:'uncaught',
+                            text:e.message+' at '+e.filename+':'+e.lineno+':'+e.colno
+                        },'*');
+                    }catch(ex){}
+                });
+                window.addEventListener('unhandledrejection',function(e){
+                    try{
+                        var r=e.reason;
+                        window.parent.postMessage({
+                            source:'pide-bridge',
+                            type:'promise',
+                            text:'Unhandled: '+(r&&r.message?r.message:String(r))
+                        },'*');
+                    }catch(ex){}
+                });
+                _I('[PhoneIDE] Bridge injected successfully');
+            })();`;
+            doc.head.appendChild(script);
+            bridgeInjected = true;
+            if (window.showToast) window.showToast('Bridge 已注入', 'success', 1500);
+            return true;
+        } catch (e) {
+            if (window.showToast) window.showToast('注入失败: ' + e.message, 'error');
+            return false;
+        }
+    }
+
+    // ── Listen for bridge messages from iframe ──
+    function initBridgeListener() {
+        window.addEventListener('message', function (e) {
+            if (!e.data || e.data.source !== 'pide-bridge') return;
+            iframeLogs.push({
+                type: e.data.type || 'log',
+                text: e.data.text || '',
+                time: new Date().toLocaleTimeString(),
+            });
+            if (iframeLogs.length > 500) iframeLogs.splice(0, iframeLogs.length - 500);
+        });
+    }
+
+    // ── iframe DOM Operations ──
+
+    function evaluate(expression) {
+        const win = tryIframeWin();
+        if (!win) return { error: '无法访问 iframe（跨域或未加载页面）' };
+        try {
+            const result = win.eval(expression);
+            // Try to serialize
+            if (result === undefined) return { ok: true, result: 'undefined' };
+            if (result === null) return { ok: true, result: 'null' };
+            if (typeof result === 'object') {
+                try { return { ok: true, result: JSON.stringify(result, null, 2).substring(0, 5000) }; }
+                catch (e) { return { ok: true, result: String(result).substring(0, 5000) }; }
+            }
+            return { ok: true, result: String(result) };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function inspectElement(selector) {
+        const doc = tryIframeDoc();
+        const win = tryIframeWin();
+        if (!doc || !win) return { error: '无法访问 iframe' };
+        try {
+            const el = doc.querySelector(selector);
+            if (!el) return { error: '未找到元素: ' + selector };
+
+            const rect = el.getBoundingClientRect();
+            const computed = win.getComputedStyle(el);
+
+            // Collect attributes
+            const attrs = {};
+            for (const attr of el.attributes) {
+                attrs[attr.name] = attr.value;
+            }
+
+            return {
+                ok: true,
+                tagName: el.tagName,
+                id: el.id || '',
+                className: (typeof el.className === 'string' ? el.className : el.className.baseVal) || '',
+                href: el.href || '',
+                src: el.src || '',
+                type: el.type || '',
+                name: el.name || '',
+                value: el.value !== undefined && el.value !== null ? String(el.value).substring(0, 500) : '',
+                placeholder: el.placeholder || '',
+                textContent: (el.textContent || '').trim().substring(0, 500),
+                innerHTML: (el.innerHTML || '').substring(0, 2000),
+                attributes: attrs,
+                rect: {
+                    top: Math.round(rect.top),
+                    left: Math.round(rect.left),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    bottom: Math.round(rect.bottom),
+                    right: Math.round(rect.right),
+                },
+                visible: rect.width > 0 && rect.height > 0 && computed.display !== 'none' && computed.visibility !== 'hidden',
+                display: computed.display,
+                visibility: computed.visibility,
+                opacity: computed.opacity,
+                zIndex: computed.zIndex,
+                color: computed.color,
+                backgroundColor: computed.backgroundColor,
+                fontSize: computed.fontSize,
+                fontWeight: computed.fontWeight,
+                childCount: el.children.length,
+                parentTag: el.parentElement ? el.parentElement.tagName : '',
+            };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function queryAll(selector) {
+        const doc = tryIframeDoc();
+        if (!doc) return { error: '无法访问 iframe' };
+        try {
+            const elements = doc.querySelectorAll(selector);
+            const results = [];
+            for (let i = 0; i < Math.min(elements.length, 50); i++) {
+                const el = elements[i];
+                const rect = el.getBoundingClientRect();
+                results.push({
+                    index: i,
+                    tagName: el.tagName,
+                    id: el.id || '',
+                    className: (typeof el.className === 'string' ? el.className : '').substring(0, 200),
+                    textContent: (el.textContent || '').trim().substring(0, 100),
+                    href: el.href || '',
+                    src: el.src || '',
+                    visible: rect.width > 0 && rect.height > 0,
+                    rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
+                });
+            }
+            return { ok: true, total: elements.length, shown: results.length, elements: results };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function simulateClick(selector) {
+        const doc = tryIframeDoc();
+        if (!doc) return { error: '无法访问 iframe' };
+        try {
+            const el = doc.querySelector(selector);
+            if (!el) return { error: '未找到元素: ' + selector };
+            el.click();
+            return { ok: true, message: '已点击: ' + selector };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function simulateInput(selector, text, clearFirst) {
+        const doc = tryIframeDoc();
+        const win = tryIframeWin();
+        if (!doc || !win) return { error: '无法访问 iframe' };
+        try {
+            const el = doc.querySelector(selector);
+            if (!el) return { error: '未找到元素: ' + selector };
+
+            // Use native setter for React/Vue compatibility
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                const proto = el.tagName === 'TEXTAREA' ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value') && Object.getOwnPropertyDescriptor(proto, 'value').set;
+                if (setter) {
+                    setter.call(el, text);
+                } else {
+                    el.value = text;
+                }
+                el.dispatchEvent(new win.Event('input', { bubbles: true }));
+                el.dispatchEvent(new win.Event('change', { bubbles: true }));
+            } else {
+                // For contenteditable elements
+                el.textContent = text;
+                el.dispatchEvent(new win.Event('input', { bubbles: true }));
+            }
+            return { ok: true, message: '已输入到: ' + selector, length: text.length };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function simulateKeyPress(key, selector) {
+        const doc = tryIframeDoc();
+        const win = tryIframeWin();
+        if (!doc || !win) return { error: '无法访问 iframe' };
+        try {
+            const target = selector ? doc.querySelector(selector) : doc.body;
+            if (!target && selector) return { error: '未找到元素: ' + selector };
+            const el = target || doc.body;
+            el.dispatchEvent(new win.KeyboardEvent('keydown', { key: key, code: key, bubbles: true, cancelable: true }));
+            el.dispatchEvent(new win.KeyboardEvent('keyup', { key: key, code: key, bubbles: true }));
+            return { ok: true, message: '按键: ' + key + (selector ? ' on ' + selector : '') };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    function getCookies() {
+        const doc = tryIframeDoc();
+        if (!doc) return { error: '无法访问 iframe（跨域无法读取 Cookie）' };
+        try {
+            const cookieStr = doc.cookie || '';
+            if (!cookieStr) return { ok: true, cookies: '(无 Cookie)', count: 0 };
+            const cookies = cookieStr.split(';').map(c => c.trim()).filter(Boolean);
+            const parsed = cookies.map(c => {
+                const [name, ...rest] = c.split('=');
+                return { name: name.trim(), value: rest.join('=').trim() };
+            });
+            return { ok: true, cookies: parsed, raw: cookieStr, count: parsed.length };
+        } catch (e) {
+            return { error: '无法读取 Cookie: ' + e.message + '（可能跨域限制）' };
+        }
+    }
+
+    function getConsoleLogs(sinceIndex) {
+        const start = (typeof sinceIndex === 'number') ? sinceIndex : 0;
+        const logs = iframeLogs.slice(start);
+        return { ok: true, total: iframeLogs.length, from: start, count: logs.length, logs: logs };
+    }
+
+    function navigate(url) {
+        if (!iframe) return { error: '预览框架不可用' };
+        if (!url) return { error: 'URL 不能为空' };
+        iframe.src = url;
+        bridgeInjected = false;
+        return { ok: true, message: '正在导航到: ' + url };
+    }
+
+    function getPageInfo() {
+        const doc = tryIframeDoc();
+        const win = tryIframeWin();
+        if (!doc || !win) return { error: '无法访问 iframe' };
+        try {
+            return {
+                ok: true,
+                title: doc.title || '',
+                url: win.location.href || '',
+                charset: doc.characterSet || '',
+                contentType: doc.contentType || '',
+                bodyChildCount: doc.body ? doc.body.children.length : 0,
+                htmlLength: doc.documentElement.outerHTML.length,
+                viewport: {
+                    width: win.innerWidth,
+                    height: win.innerHeight,
+                },
+                scrollPosition: {
+                    x: win.scrollX || win.pageXOffset,
+                    y: win.scrollY || win.pageYOffset,
+                },
+            };
+        } catch (e) {
+            return { error: e.message };
+        }
+    }
+
+    // ── Command Dispatcher ──
+
+    function executeCommand(action, params) {
+        switch (action) {
+            case 'evaluate':
+                return evaluate(params.expression || '');
+            case 'inspect':
+                return inspectElement(params.selector || 'body');
+            case 'query_all':
+                return queryAll(params.selector || '*');
+            case 'click':
+                return simulateClick(params.selector || '');
+            case 'input':
+                return simulateInput(params.selector || '', params.text || '', params.clearFirst);
+            case 'keypress':
+                return simulateKeyPress(params.key || '', params.selector);
+            case 'cookies':
+                return getCookies();
+            case 'console':
+                return getConsoleLogs(params.sinceIndex);
+            case 'navigate':
+                return navigate(params.url || '');
+            case 'page_info':
+                return getPageInfo();
+            default:
+                return { error: '未知操作: ' + action };
+        }
+    }
+
+    // ── Poll Backend for Pending Commands ──
+
+    async function pollCommand() {
+        try {
+            // Use real fetch (not the intercepted one from DebugManager)
+            const origFetch = window._origFetch || window.fetch.bind(window);
+            const resp = await origFetch('/api/browser/poll');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data.cmd_id) return;
+
+            // Execute the command
+            const result = executeCommand(data.action, data.params || {});
+
+            // Post result back
+            await origFetch('/api/browser/result', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cmd_id: data.cmd_id,
+                    result: result,
+                }),
+            });
+        } catch (e) {
+            // Silent — don't spam console with poll errors
+        }
+    }
+
+    // ── Render iframe console logs in a mini-panel ──
+
+    function renderIframeLogs() {
+        const container = document.getElementById('iframe-logs');
+        if (!container) return;
+        container.innerHTML = '';
+        if (iframeLogs.length === 0) {
+            container.innerHTML = '<div style="color:var(--text-muted);padding:8px;font-size:11px;text-align:center;">暂无日志（注入 Bridge 后自动捕获）</div>';
+            return;
+        }
+        const start = Math.max(0, iframeLogs.length - 80);
+        for (let i = start; i < iframeLogs.length; i++) {
+            const log = iframeLogs[i];
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:3px 8px;font-size:11px;border-bottom:1px solid var(--border);font-family:var(--font-mono);';
+
+            let color = 'var(--text-secondary)';
+            if (log.type === 'error' || log.type === 'uncaught') color = 'var(--red)';
+            else if (log.type === 'warn') color = 'var(--yellow)';
+            else if (log.type === 'info') color = 'var(--blue)';
+
+            div.innerHTML =
+                '<span style="color:var(--text-muted);font-size:9px;margin-right:4px;">' + escapeHTML(log.time) + '</span>' +
+                '<span style="color:' + color + ';font-size:10px;font-weight:bold;margin-right:4px;">' + escapeHTML(log.type) + '</span>' +
+                '<span style="color:var(--text-secondary);word-break:break-all;">' + escapeHTML(log.text).substring(0, 300) + '</span>';
+            container.appendChild(div);
+        }
+        container.scrollTop = container.scrollHeight;
+    }
+
+    // ── Init ──
+
+    function init() {
+        iframe = document.getElementById('preview-frame');
+
+        // Save original fetch before DebugManager wraps it
+        if (window.fetch && !window._origFetch) {
+            window._origFetch = window.fetch.bind(window);
+        }
+
+        initBridgeListener();
+
+        // Start polling
+        pollTimer = setInterval(pollCommand, pollInterval);
+
+        // Wire UI buttons
+        wireUI();
+
+        // Watch iframe load
+        if (iframe) {
+            iframe.addEventListener('load', function () {
+                bridgeInjected = false;
+                // Auto-inject bridge after load
+                setTimeout(function () {
+                    injectBridge();
+                }, 500);
+            });
+        }
+    }
+
+    function wireUI() {
+        // Inject button
+        const injectBtn = document.getElementById('browser-inject-btn');
+        if (injectBtn) {
+            injectBtn.addEventListener('click', function () { injectBridge(); });
+        }
+
+        // Navigate / Go button
+        const goBtn = document.getElementById('browser-go-btn');
+        const urlInput = document.getElementById('browser-url-input');
+        if (goBtn && urlInput) {
+            goBtn.addEventListener('click', function () {
+                const url = urlInput.value.trim();
+                if (url) navigate(url);
+            });
+            urlInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const url = urlInput.value.trim();
+                    if (url) navigate(url);
+                }
+            });
+        }
+
+        // Refresh iframe
+        const refreshBtn = document.getElementById('browser-refresh-btn');
+        if (refreshBtn && iframe) {
+            refreshBtn.addEventListener('click', function () {
+                if (iframe.src) iframe.src = iframe.src;
+            });
+        }
+
+        // Show iframe logs button
+        const logsBtn = document.getElementById('browser-logs-btn');
+        const logsPanel = document.getElementById('iframe-logs-panel');
+        if (logsBtn && logsPanel) {
+            logsBtn.addEventListener('click', function () {
+                const visible = logsPanel.style.display !== 'none';
+                logsPanel.style.display = visible ? 'none' : '';
+                if (!visible) renderIframeLogs();
+                logsBtn.textContent = visible ? '📋 日志' : '📋 关闭';
+            });
+        }
+
+        // Clear iframe logs
+        const clearLogsBtn = document.getElementById('iframe-logs-clear');
+        if (clearLogsBtn) {
+            clearLogsBtn.addEventListener('click', function () {
+                iframeLogs = [];
+                renderIframeLogs();
+            });
+        }
+    }
+
+    // ── Boot ──
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+    return {
+        init,
+        injectBridge,
+        evaluate,
+        inspectElement,
+        queryAll,
+        simulateClick,
+        simulateInput,
+        simulateKeyPress,
+        getCookies,
+        getConsoleLogs,
+        navigate,
+        getPageInfo,
+        renderIframeLogs,
+        get bridgeInjected() { return bridgeInjected; },
+        get iframeLogs() { return iframeLogs; },
+        get iframeReady() {
+            try { return !!(iframe && iframe.contentDocument); }
+            catch (e) { return false; }
+        },
+    };
+})();
+
+window.BrowserInspector = BrowserInspector;

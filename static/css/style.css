@@ -2266,3 +2266,70 @@ button, .file-item, .search-result-item, .git-change-item {
     color: #C4621A;
     background: rgba(196, 98, 26, 0.08);
 }
+
+/* ==================== Browser Preview Panel ==================== */
+#bpanel-browser {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+#bpanel-browser.active {
+    display: flex !important;
+}
+
+#browser-toolbar {
+    flex-shrink: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+#browser-toolbar input {
+    font-size: 13px !important;  /* Prevent iOS zoom */
+}
+
+#browser-toolbar button {
+    transition: background 0.15s;
+}
+
+#browser-toolbar button:active {
+    opacity: 0.7;
+    transform: scale(0.95);
+}
+
+#preview-frame {
+    flex: 1;
+    border: none;
+    background: #fff;
+    width: 100%;
+    min-height: 0;
+}
+
+#iframe-logs-panel {
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow: hidden;
+}
+
+#iframe-logs {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+}
+
+/* Browser tools status indicator in chat */
+.chat-msg .tool-name[data-tool^="browser_"] {
+    color: var(--orange) !important;
+}
+
+/* Make the preview panel tab stand out slightly */
+#bottom-tabs .btab[data-btab="browser"] {
+    color: var(--teal);
+}
+#bottom-tabs .btab[data-btab="browser"].active {
+    color: var(--teal);
+    border-bottom-color: var(--teal);
+}

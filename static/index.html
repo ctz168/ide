@@ -167,6 +167,7 @@
                     <button class="btab" data-btab="errors">⚠ 错误</button>
                     <button class="btab" data-btab="http">📡 HTTP</button>
                     <button class="btab" data-btab="procs">⚙ 进程</button>
+                    <button class="btab" data-btab="browser">🔍 预览</button>
                 </div>
                 <button id="bottom-panel-close">✕</button>
                 <button id="bottom-panel-clear">🗑</button>
@@ -214,13 +215,22 @@
                         <div id="http-response"></div>
                     </div>
                 </div>
-                <!-- Process Manager -->
-                <div id="bpanel-procs" class="bpanel">
-                    <div id="process-manager">
-                        <table>
-                            <thead><tr><th>ID</th><th>状态</th><th>运行时间</th><th>操作</th></tr></thead>
-                            <tbody id="process-list"></tbody>
-                        </table>
+                <!-- Browser Preview -->
+                <div id="bpanel-browser" class="bpanel" style="flex-direction:column;overflow:hidden;">
+                    <div id="browser-toolbar" style="display:flex;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;align-items:center;flex-wrap:nowrap;">
+                        <input type="text" id="browser-url-input" placeholder="http://localhost:8080" style="flex:1;min-width:0;padding:5px 8px;border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);">
+                        <button id="browser-go-btn" title="导航" style="padding:5px 10px;border:1px solid var(--border);background:var(--accent);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">GO</button>
+                        <button id="browser-refresh-btn" title="刷新" style="padding:5px 8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:12px;cursor:pointer;">↻</button>
+                        <button id="browser-inject-btn" title="注入 Bridge" style="padding:5px 8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;white-space:nowrap;">💉</button>
+                        <button id="browser-logs-btn" title="iframe 控制台日志" style="padding:5px 8px;border:1px solid var(--border);background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:12px;cursor:pointer;">📋 日志</button>
+                    </div>
+                    <iframe id="preview-frame" style="flex:1;border:none;background:#fff;width:100%;" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
+                    <div id="iframe-logs-panel" style="display:none;height:120px;border-top:1px solid var(--border);background:var(--bg-tertiary);flex-shrink:0;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;padding:2px 8px;border-bottom:1px solid var(--border);">
+                            <span style="font-size:10px;color:var(--text-muted);">iframe 控制台</span>
+                            <button id="iframe-logs-clear" style="padding:1px 6px;border:none;background:none;color:var(--text-muted);font-size:10px;cursor:pointer;">清空</button>
+                        </div>
+                        <div id="iframe-logs" style="height:calc(100% - 22px);overflow-y:auto;padding:0;"></div>
                     </div>
                 </div>
             </div>
@@ -473,6 +483,7 @@
     <script src="/js/git.js"></script>
     <script src="/js/search.js"></script>
     <script src="/js/terminal.js"></script>
+    <script src="/js/browser.js"></script>
     <script src="/js/chat.js"></script>
     <script src="/js/editor.js"></script>
     <script src="/js/debug.js"></script>

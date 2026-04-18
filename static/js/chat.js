@@ -27,7 +27,9 @@ const ChatManager = (() => {
         'read_file', 'write_file', 'execute_code', 'search_files',
         'list_files', 'git_status', 'git_diff', 'terminal', 'install_package',
         'web_search', 'web_fetch', 'git_commit', 'git_log', 'git_checkout',
-        'edit_file', 'create_directory', 'delete_path', 'file_info', 'grep_code', 'list_packages'
+        'edit_file', 'create_directory', 'delete_path', 'file_info', 'grep_code', 'list_packages',
+        'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
+        'browser_click', 'browser_input', 'browser_console', 'browser_cookies', 'browser_page_info',
     ];
 
     const TOOL_ICONS = {
@@ -51,6 +53,15 @@ const ChatManager = (() => {
         grep_code:     '🔎',
         web_search:    '🌐',
         web_fetch:     '📄',
+        browser_navigate:    '🌐',
+        browser_evaluate:    '⚡',
+        browser_inspect:    '🔍',
+        browser_query_all:    '📋',
+        browser_click:       '👆',
+        browser_input:       '⌨️',
+        browser_console:     '📋',
+        browser_cookies:     '🍪',
+        browser_page_info:   'ℹ️',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"
