@@ -707,6 +707,20 @@ const FileManager = (() => {
             items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
         }
 
+        // Git ignore — convert workspace-relative path to git-root-relative path
+        if (window.GitManager) {
+            let gitRelPath = path;
+            const proj = window.ProjectManager && window.ProjectManager.getCurrentProject();
+            if (proj && proj.project && gitRelPath.startsWith(proj.project + '/')) {
+                gitRelPath = gitRelPath.substring(proj.project.length + 1);
+            }
+            if (type === 'directory' && !gitRelPath.endsWith('/')) {
+                gitRelPath += '/';
+            }
+            const _gitPath = gitRelPath;
+            items.push({ label: '🚫 忽略 Git', action: () => window.GitManager.addToGitignore(_gitPath) });
+        }
+
         items.push({ label: 'New File', action: () => createFileIn(path) });
         items.push({ label: 'New Folder', action: () => createFolderIn(path) });
 
