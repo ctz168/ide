@@ -178,8 +178,8 @@ const EditorManager = (() => {
             // Multi-Select support
             cursorBlinkRate: 530,
 
-            // Gutters: line numbers + code folding
-            gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+            // Gutters: breakpoints + line numbers + code folding
+            gutters: ['breakpoints', 'CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
 
             // Placeholder for empty editor
             placeholder: '// Start coding...',
@@ -333,13 +333,15 @@ const EditorManager = (() => {
         }
 
         // ── Breakpoint Gutter Click ──────────────────────────────
-        editor.on('gutterClick', (cm, n) => {
+        editor.on('gutterClick', (cm, n, gutterId) => {
             const filePath = currentFilePath;
             if (!filePath) return;
-            // Toggle breakpoint on line n+1 (1-based)
-            const line = n + 1;
-            if (window.DebuggerUI && DebuggerUI.toggleBreakpoint) {
-                DebuggerUI.toggleBreakpoint(filePath, line);
+            // Only toggle breakpoint when clicking the breakpoints gutter
+            if (gutterId === 'breakpoints') {
+                const line = n + 1;
+                if (window.DebuggerUI && DebuggerUI.toggleBreakpoint) {
+                    DebuggerUI.toggleBreakpoint(filePath, line);
+                }
             }
         });
 

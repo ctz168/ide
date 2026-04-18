@@ -226,7 +226,16 @@ const FileManager = (() => {
             const data = await resp.json();
 
             fileCache[currentFilePath] = { content, modified: false };
+            if (window.EditorManager && typeof window.EditorManager.markClean === 'function') {
+                window.EditorManager.markClean();
+            }
             safeToast(`Saved ${currentFileName}`, 'success');
+
+            // Auto-refresh git status to reflect changes
+            if (window.GitManager && typeof window.GitManager.refreshStatus === 'function') {
+                window.GitManager.refreshStatus().catch(() => {});
+            }
+
             return data;
         } catch (err) {
             safeToast(`Error saving file: ${err.message}`, 'error');

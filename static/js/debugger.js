@@ -588,29 +588,25 @@ const DebuggerUI = (() => {
         const currentFile = EditorManager.getCurrentFile();
         if (currentFile !== filePath) return;
 
-        // Remove old breakpoint markers
+        // Clear all breakpoint markers in the breakpoints gutter
+        editor.clearGutter('breakpoints');
+
+        // Add new markers for each breakpoint line
+        const lines = getBreakpointsForFile(filePath);
+        for (const line of lines) {
+            const marker = document.createElement('div');
+            marker.style.cssText = 'width:12px;height:12px;border-radius:50%;background:#ff5555;margin:2px auto;cursor:pointer;box-shadow:0 0 4px rgba(255,85,85,0.5);transition:transform 0.15s ease;';
+            marker.addEventListener('mouseenter', () => { marker.style.transform = 'scale(1.3)'; });
+            marker.addEventListener('mouseleave', () => { marker.style.transform = 'scale(1)'; });
+            editor.setGutterMarker(line - 1, 'breakpoints', marker);
+        }
+
+        // Also remove old line-class background markers
         editor.getAllMarks().forEach(mark => {
             if (mark._isBreakpoint) {
                 mark.clear();
             }
         });
-
-        // Add new markers
-        const lines = getBreakpointsForFile(filePath);
-        for (const line of lines) {
-            const lineHandle = editor.getLineHandle(line - 1);
-            if (lineHandle) {
-                const marker = editor.addLineClass(line - 1, 'background', 'debug-breakpoint-line');
-                marker._isBreakpoint = true;
-
-                // Also add gutter marker widget
-                const widget = document.createElement('div');
-                widget.className = 'debug-breakpoint-dot';
-                widget.style.cssText = 'width:10px;height:10px;border-radius:50%;background:var(--red);margin:0 auto;cursor:pointer;';
-                editor.addLineWidget(line - 1, widget, { above: true });
-                widget._isBreakpointWidget = true;
-            }
-        }
     }
 
     // ── Open Debug Tab ──

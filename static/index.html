@@ -258,6 +258,22 @@
                         <button id="debug-eval-btn" style="padding:4px 10px;border:none;background:var(--accent);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;">求值</button>
                     </div>
                 </div>
+                <!-- Process Manager -->
+                <div id="bpanel-procs" class="bpanel" style="flex-direction:column;overflow:hidden;">
+                    <table id="process-table" style="width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:11px;">
+                        <thead>
+                            <tr style="border-bottom:1px solid var(--border);">
+                                <th style="padding:4px 8px;text-align:left;color:var(--text-muted);font-size:10px;font-weight:600;">ID</th>
+                                <th style="padding:4px 8px;text-align:left;color:var(--text-muted);font-size:10px;font-weight:600;">状态</th>
+                                <th style="padding:4px 8px;text-align:left;color:var(--text-muted);font-size:10px;font-weight:600;">运行时间</th>
+                                <th style="padding:4px 8px;text-align:right;color:var(--text-muted);font-size:10px;font-weight:600;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="process-list">
+                            <tr><td colspan="4" style="color:var(--text-muted);text-align:center;padding:20px;">无运行中的进程</td></tr>
+                        </tbody>
+                    </table>
+                </div>
                 <!-- Browser Preview -->
                 <div id="bpanel-browser" class="bpanel" style="flex-direction:column;overflow:hidden;">
                     <div id="browser-toolbar" style="display:flex;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;align-items:center;flex-wrap:nowrap;">
