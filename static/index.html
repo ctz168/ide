@@ -39,7 +39,7 @@
             <button class="tab" data-tab="files">📂 文件</button>
             <button class="tab tab-project-only" data-tab="git" style="display:none;">🔀 Git</button>
             <button class="tab" data-tab="search">🔍 搜索</button>
-            <button class="tab tab-project-only" data-tab="debug" style="display:none;">🐛 调试</button>
+            <button class="tab tab-project-only" data-tab="debug" style="display:none;">🔧 环境</button>
         </div>
         <!-- Tab Panels -->
         <div id="left-panels">
@@ -129,6 +129,16 @@
                 </div>
                 <div id="debug-breakpoints"></div>
                 <div id="venv-packages" style="display:none;">
+                    <div id="venv-progress-area" style="display:none;padding:8px 12px;border-top:1px solid var(--border);">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                            <span id="venv-progress-text" style="font-size:11px;color:var(--text-secondary);">正在安装...</span>
+                            <span id="venv-progress-count" style="font-size:10px;color:var(--text-muted);">0/0</span>
+                        </div>
+                        <div style="height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
+                            <div id="venv-progress-bar" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.3s ease;"></div>
+                        </div>
+                        <div id="venv-current-pkg" style="font-size:10px;color:var(--green);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);"></div>
+                    </div>
                     <div style="padding:4px 12px 8px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);">已安装包:</div>
                     <div id="venv-pkg-list" style="flex:1;overflow-y:auto;padding:0 4px;font-size:11px;font-family:var(--font-mono);"></div>
                 </div>
@@ -165,7 +175,7 @@
                     <button class="btab" data-btab="console">📋 控制台</button>
                     <button class="btab" data-btab="network">🌐 网络</button>
                     <button class="btab" data-btab="errors">⚠ 错误</button>
-                    <button class="btab" data-btab="debug">🐛 调试</button>
+                    <button class="btab" data-btab="debug">🔧 环境</button>
                     <button class="btab" data-btab="procs">⚙ 进程</button>
                     <button class="btab" data-btab="browser">🔍 预览</button>
                 </div>

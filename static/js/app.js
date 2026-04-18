@@ -568,6 +568,40 @@ const AppManager = (() => {
                     if (window.EditorManager) EditorManager.closeSearchBar();
                     hideSearchButtons();
                 }
+                // Arrow keys navigate search results
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (window.EditorManager) {
+                        // Auto-trigger search if query exists but no search state
+                        const info = EditorManager.getSearchInfo ? EditorManager.getSearchInfo() : null;
+                        if (!info || !info.query) {
+                            const q = searchInput.value.trim();
+                            if (q) {
+                                EditorManager.search(q);
+                                showSearchButtons();
+                            }
+                        } else {
+                            EditorManager.findNext();
+                            updateSearchCount();
+                        }
+                    }
+                }
+                if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (window.EditorManager) {
+                        const info = EditorManager.getSearchInfo ? EditorManager.getSearchInfo() : null;
+                        if (!info || !info.query) {
+                            const q = searchInput.value.trim();
+                            if (q) {
+                                EditorManager.search(q);
+                                showSearchButtons();
+                            }
+                        } else {
+                            EditorManager.findPrev();
+                            updateSearchCount();
+                        }
+                    }
+                }
             });
 
             // Clear search when input is emptied

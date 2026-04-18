@@ -1192,13 +1192,25 @@ html, body {
 }
 
 /* Bottom panel tab panels */
+#bottom-panels {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+}
 .bpanel {
     display: none;
-    flex: 1;
-    overflow-y: auto;
+    position: absolute;
+    inset: 0;
+    flex-direction: column;
+    overflow: hidden;
 }
 .bpanel.active {
     display: flex;
+}
+
+/* Output panel: allow shell input bar at bottom */
+#bpanel-output {
+    overflow: hidden;
 }
 
 #bottom-panel-resize {
@@ -1563,6 +1575,13 @@ html, body {
 .empty-state .emoji {
     font-size: 40px;
     margin-bottom: 12px;
+}
+
+/* Venv install progress bar animation */
+@keyframes venv-progress-indeterminate {
+    0% { width: 15%; margin-left: 0; }
+    50% { width: 50%; margin-left: 30%; }
+    100% { width: 15%; margin-left: 85%; }
 }
 
 /* ==================== Responsive ==================== */

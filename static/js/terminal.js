@@ -328,7 +328,10 @@ const TerminalManager = (() => {
 
             eventSource.addEventListener('stdout', (e) => {
                 const d = parseSSEData(e.data);
-                appendOutput(d ? d.text : e.data, 'stdout');
+                const text = d ? d.text : e.data;
+                appendOutput(text, 'stdout');
+                // Parse pip output for progress tracking
+                if (text) _parsePipLine(text);
             });
 
             eventSource.addEventListener('stderr', (e) => {
@@ -444,6 +447,8 @@ const TerminalManager = (() => {
                                 rawType === 'status' ? 'system' :
                                 rawType === 'stderr' ? 'stderr' : 'stdout';
                     appendOutput(text, type);
+                    // Parse pip output for progress tracking
+                    if (type === 'stdout' && text) _parsePipLine(text);
                 }
                 pollSince = data.since !== undefined ? data.since : pollSince + lines.length;
             } else if (typeof lines === 'string' && lines.trim()) {
@@ -1312,7 +1317,7 @@ const TerminalManager = (() => {
     }
 
     /**
-     * Install a Python package
+     * Install a Python package — streaming output so each package appears as installed
      */
     async function installPackage(packageName) {
         if (!packageName) {
@@ -1329,12 +1334,16 @@ const TerminalManager = (() => {
         showPanel();
         appendOutput(`$ pip install ${packageName}...`, 'status');
 
+        // Show progress area
+        _showVenvProgress('正在安装 ' + packageName, 0, 1);
+
         try {
+            // Use streaming subprocess instead of capture_output so output is real-time
             const resp = await fetch('/api/run/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    code: `import subprocess; result = subprocess.run(['pip', 'install', '${packageName}'], capture_output=True, text=True); print(result.stdout); print(result.stderr)`,
+                    code: `import subprocess, sys\nproc = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '${packageName.replace(/'/g, "\\'")}'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\nfor line in proc.stdout:\n    print(line, end='')\n    sys.stdout.flush()\nproc.wait()\nif proc.returncode != 0:\n    print(f'\\nExit code: {proc.returncode}')`,
                     compiler: 'python3'
                 })
             });
@@ -1345,18 +1354,25 @@ const TerminalManager = (() => {
                 currentProcId = data.proc_id;
                 pollSince = 0;
                 setRunningState(true);
+                // Set callback to refresh package list after install
+                onProcessComplete = () => {
+                    _hideVenvProgress();
+                    loadVenvInfo();
+                };
                 streamOutput(data.proc_id);
             }
             return data;
         } catch (err) {
             appendOutput(`Error: ${err.message}`, 'error');
             showToast(`安装失败: ${err.message}`, 'error');
+            _hideVenvProgress();
             return { error: err.message };
         }
     }
 
     /**
-     * Import requirements.txt — show confirm, close left sidebar, run pip install
+     * Import requirements.txt — streaming pip install with progress tracking
+     * Each installed dependency appears in real-time, plus progress bar
      */
     async function importRequirements() {
         // Confirm dialog
@@ -1390,12 +1406,20 @@ const TerminalManager = (() => {
         appendOutput('$ pip install -r requirements.txt', 'system');
         appendOutput(`[info] Time: ${new Date().toLocaleString()}`, 'info');
 
+        // Show progress area with indeterminate state
+        _showVenvProgress('正在读取 requirements.txt...', 0, 0);
+
+        // Track collected packages for progress
+        let collectedPkgs = 0;
+        let installedPkgs = 0;
+        const _origAppend = appendOutput;
+
         try {
             const resp = await fetch('/api/run/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    code: 'import subprocess; result = subprocess.run(["pip", "install", "-r", "requirements.txt"], capture_output=True, text=True); print(result.stdout); print(result.stderr)',
+                    code: `import subprocess, sys\nproc = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\nfor line in proc.stdout:\n    print(line, end='')\n    sys.stdout.flush()\nproc.wait()\nif proc.returncode != 0:\n    print(f'\\nExit code: {proc.returncode}')`,
                     compiler: 'python3'
                 })
             });
@@ -1405,12 +1429,183 @@ const TerminalManager = (() => {
                 currentProcId = data.proc_id;
                 pollSince = 0;
                 setRunningState(true);
+
+                // Set callback to refresh and hide progress
+                onProcessComplete = () => {
+                    _hideVenvProgress();
+                    loadVenvInfo().then(() => {
+                        showToast('依赖安装完成，包列表已刷新', 'success');
+                    });
+                };
+
+                // Track SSE output for progress updates
+                const _origStreamOutput = streamOutput;
+                // We hook into appendOutput to detect pip lines
+                const _origFn = window.TerminalManager.appendOutput;
+
                 streamOutput(data.proc_id);
             }
         } catch (err) {
             appendOutput(`Error: ${err.message}`, 'error');
             showToast(`安装失败: ${err.message}`, 'error');
+            _hideVenvProgress();
         }
+    }
+
+    // ── Venv Progress Helpers ──────────────────────────────────────
+
+    let _venvProgressState = { total: 0, collected: 0, installed: 0 };
+
+    function _showVenvProgress(text, current, total) {
+        const area = document.getElementById('venv-progress-area');
+        if (!area) return;
+        area.style.display = '';
+
+        const venvPackages = document.getElementById('venv-packages');
+        if (venvPackages) venvPackages.style.display = '';
+
+        const textEl = document.getElementById('venv-progress-text');
+        const barEl = document.getElementById('venv-progress-bar');
+        const countEl = document.getElementById('venv-progress-count');
+        const pkgEl = document.getElementById('venv-current-pkg');
+
+        if (textEl) textEl.textContent = text || '正在安装...';
+        if (countEl) countEl.textContent = total > 0 ? `${current}/${total}` : '...';
+        if (barEl) {
+            if (total > 0 && current > 0) {
+                barEl.style.width = Math.round((current / total) * 100) + '%';
+            } else {
+                // Indeterminate: animate
+                barEl.style.width = '30%';
+                barEl.style.animation = 'venv-progress-indeterminate 1.5s ease-in-out infinite';
+            }
+        }
+        if (pkgEl) pkgEl.textContent = '';
+
+        _venvProgressState = { total: total, collected: current, installed: current };
+
+        // Ensure venv-packages section is visible
+        const venvInfo = document.getElementById('current-venv');
+        if (venvInfo && venvInfo.textContent !== '未设置') {
+            area.style.display = '';
+        }
+    }
+
+    function _updateVenvProgress(text, current, total) {
+        const textEl = document.getElementById('venv-progress-text');
+        const barEl = document.getElementById('venv-progress-bar');
+        const countEl = document.getElementById('venv-progress-count');
+        const pkgEl = document.getElementById('venv-current-pkg');
+
+        if (textEl && text) textEl.textContent = text;
+        if (countEl) countEl.textContent = total > 0 ? `${current}/${total}` : '...';
+        if (barEl) {
+            if (total > 0 && current > 0) {
+                barEl.style.animation = 'none';
+                barEl.style.width = Math.round((current / total) * 100) + '%';
+            }
+        }
+        if (pkgEl) pkgEl.textContent = text || '';
+    }
+
+    function _hideVenvProgress() {
+        const area = document.getElementById('venv-progress-area');
+        if (area) area.style.display = 'none';
+        _venvProgressState = { total: 0, collected: 0, installed: 0 };
+    }
+
+    /**
+     * Parse pip output line and update progress bar accordingly.
+     * Called for each line of pip output during streaming.
+     */
+    function _parsePipLine(line) {
+        const trimmed = (line || '').trim();
+
+        // "Collecting package-name"
+        const collectMatch = trimmed.match(/^Collecting\s+(\S+)/);
+        if (collectMatch) {
+            _venvProgressState.collected++;
+            const total = Math.max(_venvProgressState.total, _venvProgressState.collected);
+            _venvProgressState.total = total;
+            _updateVenvProgress(
+                '正在收集: ' + collectMatch[1],
+                _venvProgressState.collected, total
+            );
+            return;
+        }
+
+        // "Using cached package-name" or "Requirement already satisfied: package-name"
+        const usingMatch = trimmed.match(/^(?:Using cached|Requirement already satisfied):\s+(\S+)/);
+        if (usingMatch) {
+            _venvProgressState.collected++;
+            _venvProgressState.installed++;
+            const total = Math.max(_venvProgressState.total, _venvProgressState.collected);
+            _venvProgressState.total = total;
+            _updateVenvProgress(
+                '已缓存: ' + usingMatch[1],
+                _venvProgressState.installed, total
+            );
+            return;
+        }
+
+        // "Downloading package-name"
+        const dlMatch = trimmed.match(/^Downloading\s+(\S+)/);
+        if (dlMatch) {
+            _updateVenvProgress(
+                '正在下载: ' + dlMatch[1],
+                _venvProgressState.collected, _venvProgressState.total
+            );
+            return;
+        }
+
+        // "Installing collected packages: ..."
+        const installMatch = trimmed.match(/^Installing collected packages:\s*(.+)/);
+        if (installMatch) {
+            _venvProgressState.total = _venvProgressState.collected;
+            _venvProgressState.installed = 0;
+            const pkgs = installMatch[1].split(',').map(s => s.trim());
+            _updateVenvProgress(
+                '正在安装...',
+                0, pkgs.length
+            );
+            // Count each comma-separated package as installed
+            pkgs.forEach((pkg, i) => {
+                setTimeout(() => {
+                    _venvProgressState.installed = i + 1;
+                    _updateVenvProgress(
+                        '正在安装: ' + pkg.trim(),
+                        i + 1, pkgs.length
+                    );
+                }, (i + 1) * 200);
+            });
+            return;
+        }
+
+        // "Successfully installed package-name ..."
+        const successMatch = trimmed.match(/^Successfully installed\s+(.+)/);
+        if (successMatch) {
+            const pkgs = successMatch[1].split(/\s+/).filter(Boolean);
+            _venvProgressState.total = pkgs.length;
+            _venvProgressState.installed = pkgs.length;
+            _updateVenvProgress(
+                '安装完成!',
+                pkgs.length, pkgs.length
+            );
+            return;
+        }
+    }
+
+    // Hook into appendOutput to parse pip lines for progress bar
+    const _originalAppendOutput = appendOutput;
+    // We need to wrap appendOutput after it's defined, so we do it at init time
+    let _appendOutputWrapped = false;
+
+    function _wrapAppendOutput() {
+        if (_appendOutputWrapped) return;
+        _appendOutputWrapped = true;
+        const orig = appendOutput;
+        // Store reference for wrapper
+        window.TerminalManager._origAppendOutput = orig;
     }
 
     // ── Public API ─────────────────────────────────────────────────
