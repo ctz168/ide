@@ -1877,6 +1877,27 @@ def _call_llm_api(messages, llm_config, stream=False):
             raise Exception(f'Invalid JSON response from LLM API: {str(je)}')
     return result
 
+def _rewrite_for_reasoning_model(payload, api_messages):
+    """Rewrite messages for OpenAI reasoning models which don't support system messages natively.
+    Moves system prompt content into the first user message."""
+    system_msgs = []
+    other_msgs = []
+    for m in api_messages:
+        if m.get('role') == 'system':
+            system_msgs.append(m.get('content', ''))
+        else:
+            other_msgs.append(m)
+
+    if system_msgs:
+        system_text = '\n\n'.join(system_msgs)
+        if other_msgs and other_msgs[0].get('role') == 'user':
+            other_msgs[0]['content'] = f"[System Instructions]\n{system_text}\n\n[User Message]\n{other_msgs[0].get('content', '')}"
+        else:
+            other_msgs.insert(0, {'role': 'user', 'content': f"[System Instructions]\n{system_text}"})
+
+    payload['messages'] = other_msgs
+
+
 def _call_llm_stream_raw(messages, llm_config):
     """Stream LLM response as raw SSE data chunks. Yields parsed delta objects."""
     import urllib.request
@@ -1884,6 +1905,7 @@ def _call_llm_stream_raw(messages, llm_config):
     model = llm_config.get('model', 'gpt-4o-mini')
     temperature = llm_config.get('temperature', 0.7)
     max_tokens = llm_config.get('max_tokens', 4096)
+    reasoning = llm_config.get('reasoning', True)
 
     api_messages = _build_api_messages(messages, llm_config)
 
@@ -1897,6 +1919,39 @@ def _call_llm_stream_raw(messages, llm_config):
         'stream': True,
     }
 
+    # Add reasoning/thinking support for providers that support it
+    if reasoning:
+        provider = llm_config.get('provider', '')
+        api_type = llm_config.get('api_type', '')
+        model_lower = model.lower()
+
+        # OpenAI reasoning models (o1, o3, o4-mini, etc.)
+        if ('o1' in model_lower or 'o3' in model_lower or 'o4' in model_lower or
+            'reasoning' in model_lower or 'codex' in model_lower):
+            payload['reasoning_effort'] = 'high'
+            # OpenAI reasoning models don't support temperature and system messages in the usual way
+            payload.pop('temperature', None)
+            # Move system messages to the first user message for reasoning models
+            _rewrite_for_reasoning_model(payload, api_messages)
+
+        # Anthropic extended thinking (Claude 3.5+)
+        elif provider == 'anthropic' or api_type == 'anthropic':
+            if 'claude-3-5' in model_lower or 'claude-sonnet-4' in model_lower or 'claude-opus-4' in model_lower:
+                payload['thinking'] = {
+                    'type': 'enabled',
+                    'budget_tokens': min(max_tokens * 4, 10000),
+                }
+                # Claude thinking requires temperature=1
+                payload['temperature'] = 1
+
+        # DeepSeek reasoning models
+        elif 'deepseek' in model_lower or 'reasoner' in model_lower:
+            payload.setdefault('temperature', 0.6)
+
+        # QwQ / other reasoning models
+        elif 'qwq' in model_lower or 'think' in model_lower:
+            pass  # These models reason by default, no special params needed
+
     try:
         url, headers = _get_llm_endpoint(llm_config, model)
     except Exception as e:
@@ -1906,7 +1961,7 @@ def _call_llm_stream_raw(messages, llm_config):
 
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
     print(f'[LLM] Calling: {url}')
-    print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}')
+    print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}, Reasoning: {reasoning}')
     print(f'[LLM] Headers: {dict((k, v[:20]+"..." if len(v)>20 else v) for k,v in headers.items())}')
     print(f'[LLM] Messages count: {len(api_messages)}')
 
@@ -1941,13 +1996,17 @@ def _estimate_tokens(text):
 def _compress_context(messages, max_tokens=None):
     """Compress conversation history to fit within context window.
     Keeps: system prompt, last 2 user messages, last 4 tool results, summary of older messages.
+    
+    Returns (messages, was_compressed) tuple.
     """
     if not messages:
-        return messages
+        return messages, False
     max_tokens = max_tokens or 60000
     total = sum(_estimate_tokens(m.get('content', '') or '') for m in messages)
     if total <= max_tokens:
-        return messages
+        return messages, False
+
+    was_compressed = True
 
     # Split messages into older and recent
     # Find the last 2 user messages from the end
@@ -1996,7 +2055,34 @@ def _compress_context(messages, max_tokens=None):
                 if len(content) > 1000:
                     msg['content'] = content[:1000] + '\n[truncated]'
 
-    return all_msgs
+    # Final check: if STILL too large, do aggressive compression
+    total3 = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
+    if total3 > max_tokens:
+        # Only keep the very last user message, assistant response, and summary
+        # This is a drastic measure to ensure the request fits
+        user_indices2 = [i for i, m in enumerate(all_msgs) if m.get('role') == 'user']
+        if len(user_indices2) >= 1:
+            keep_from = user_indices2[-1]
+            kept = all_msgs[keep_from:]
+            # But also aggressively trim tool results in kept messages
+            for msg in kept:
+                if msg.get('role') == 'tool':
+                    content = msg.get('content', '')
+                    if len(content) > 500:
+                        msg['content'] = content[:500] + '\n[truncated]'
+            all_msgs = [summary_msg] + kept
+
+    # ULTIMATE fallback: if STILL too large, trim everything to bare minimum
+    total4 = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
+    if total4 > max_tokens:
+        # Keep only system prompt + last 2 messages, aggressively trimmed
+        minimal = [summary_msg]
+        for msg in all_msgs[-2:]:
+            content = msg.get('content', '') or ''
+            minimal.append(dict(msg, content=content[:200] + ('...' if len(content) > 200 else '')))
+        all_msgs = minimal
+
+    return all_msgs, was_compressed
 
 # ==================== Agent Loop ====================
 MAX_AGENT_ITERATIONS = 100  # Increased from 15 for complex tasks
@@ -2021,7 +2107,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
     history.append(user_msg)
 
     # Compress context if needed
-    context = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+    context, _ = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
     def _emit(event):
         if stream_callback:
@@ -2113,7 +2199,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
             })
 
             # Re-check context size and compress if needed
-            context = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+            context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
     # Build final assistant message for history
     final_assistant = {
@@ -2156,7 +2242,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
         history.append(user_msg)
 
-    context = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+    context, _ = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
     # Pre-save history before starting the loop so retry can recover even if
     # the very first LLM call fails (before any tool execution).
@@ -2241,6 +2327,29 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             except urllib.error.HTTPError as e:
                 body = e.read().decode() if hasattr(e, 'read') else ''
                 err_detail = f'URL: {current_llm_url}\nHTTP {e.code}: {body[:300]}'
+                
+                # Detect context length exceeded errors and aggressively compress context
+                is_context_error = (
+                    e.code in (400, 413, 422) and
+                    any(kw in body.lower() for kw in [
+                        'context', 'token', 'max_length', 'maximum context',
+                        'too many tokens', 'input too large', 'prompt is too long',
+                        'request too large', 'exceeds the model', 'context_length',
+                        'max_tokens', 'too long', '超出', '上下文',
+                    ])
+                )
+                
+                if is_context_error:
+                    # Aggressively compress context and retry immediately
+                    budget = llm_config.get('max_tokens', 4096) * 10
+                    # Halve the budget to force aggressive compression
+                    context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context too large, compressing and retrying ({retry + 1}/{MAX_ITERATION_RETRIES})...'})}\n\n"
+                    print(f'[LLM] Context overflow detected (HTTP {e.code}), compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {budget // 2})')
+                    time.sleep(0.5)
+                    # Don't increment retry counter for context errors — allow more retries
+                    continue
+                
                 if retry < MAX_ITERATION_RETRIES - 1:
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'LLM API error (retry {retry + 1}): {err_detail[:200]}'})}\n\n"
                     time.sleep(1 * (retry + 1))
@@ -2250,6 +2359,22 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     return
             except Exception as e:
                 err_detail = f'URL: {current_llm_url}\nError: {str(e)}'
+                
+                # Also check for context errors in generic exceptions
+                err_lower = str(e).lower()
+                is_context_error = any(kw in err_lower for kw in [
+                    'context', 'token', 'max_length', 'too many tokens',
+                    'prompt is too long', 'too long',
+                ])
+                
+                if is_context_error:
+                    budget = llm_config.get('max_tokens', 4096) * 10
+                    context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context error, compressing and retrying ({retry + 1}/{MAX_ITERATION_RETRIES})...'})}\n\n"
+                    print(f'[LLM] Context overflow exception, compressed and retrying')
+                    time.sleep(0.5)
+                    continue
+                
                 if retry < MAX_ITERATION_RETRIES - 1:
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'Retry {retry + 1}: {err_detail[:200]}'})}\n\n"
                     time.sleep(1 * (retry + 1))
@@ -2318,7 +2443,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 save_conversation(conv_id, history)
 
             # Compress context if needed
-            context = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+            context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
         # Progressive save: persist history after each iteration so retry can resume
         save_chat_history(history)

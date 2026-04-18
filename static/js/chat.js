@@ -2125,6 +2125,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 <label><span>Max Tokens</span>
                                     <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="128000" step="256" value="${m.max_tokens || '4096'}">
                                 </label>
+                                <label class="llm-reasoning-label"><span>推理模式</span>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" class="llm-reasoning" data-idx="${idx}" ${m.reasoning !== false ? 'checked' : ''}>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </label>
                             </div>
                         </div>
                     </div>
@@ -2210,6 +2216,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             list.querySelectorAll('.llm-max-tokens').forEach(input => {
                 input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096; });
             });
+            list.querySelectorAll('.llm-reasoning').forEach(cb => {
+                cb.addEventListener('change', () => { workingModels[parseInt(cb.dataset.idx)].reasoning = cb.checked; });
+            });
         }
 
         // Sync all DOM field values into workingModels (call before save/test)
@@ -2238,6 +2247,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             overlay.querySelectorAll('.llm-max-tokens').forEach(input => {
                 workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096;
             });
+            overlay.querySelectorAll('.llm-reasoning').forEach(cb => {
+                workingModels[parseInt(cb.dataset.idx)].reasoning = cb.checked;
+            });
         }
 
         renderModelList();
@@ -2254,6 +2266,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 enabled: false,
                 temperature: 0.7,
                 max_tokens: 4096,
+                reasoning: true,
             });
             renderModelList();
         });
@@ -2513,9 +2526,57 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             .llm-model-params {
                 display: flex;
                 gap: 8px;
+                flex-wrap: wrap;
             }
             .llm-model-params label {
                 flex: 1;
+                min-width: 120px;
+            }
+            .llm-reasoning-label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .llm-reasoning-label > span:first-child {
+                white-space: nowrap;
+                font-size: 11px;
+            }
+            .toggle-switch {
+                position: relative;
+                display: inline-block;
+                width: 36px;
+                height: 20px;
+                flex-shrink: 0;
+            }
+            .toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            .toggle-slider {
+                position: absolute;
+                cursor: pointer;
+                inset: 0;
+                background: var(--border);
+                border-radius: 20px;
+                transition: 0.2s;
+            }
+            .toggle-slider::before {
+                content: '';
+                position: absolute;
+                height: 14px;
+                width: 14px;
+                left: 3px;
+                bottom: 3px;
+                background: white;
+                border-radius: 50%;
+                transition: 0.2s;
+            }
+            .toggle-switch input:checked + .toggle-slider {
+                background: var(--accent);
+            }
+            .toggle-switch input:checked + .toggle-slider::before {
+                transform: translateX(16px);
             }
             .llm-add-model-btn {
                 width: 100%;

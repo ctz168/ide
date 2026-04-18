@@ -79,6 +79,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': True,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'reasoning': True,
     },
     {
         'name': 'Anthropic',
@@ -90,6 +91,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'reasoning': True,
     },
     {
         'name': 'Ollama',
@@ -101,6 +103,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 4096,
+        'reasoning': True,
     },
     {
         'name': 'ModelScope',
@@ -112,6 +115,7 @@ DEFAULT_LLM_MODELS = [
         'enabled': False,
         'temperature': 0.7,
         'max_tokens': 16384,
+        'reasoning': True,
     },
 ]
 
@@ -133,6 +137,7 @@ def load_llm_config():
                 'enabled': True,
                 'temperature': config.get('temperature', 0.7),
                 'max_tokens': config.get('max_tokens', 4096),
+                'reasoning': True,
             }
             config['models'] = [legacy]
             del config['provider']
@@ -144,6 +149,10 @@ def load_llm_config():
             if 'api_type' in config:
                 del config['api_type']
             save_llm_config(config)
+        # Ensure all models have the reasoning field (migration for existing configs)
+        for m in config.get('models', []):
+            if 'reasoning' not in m:
+                m['reasoning'] = True
         return config
     return {
         'models': DEFAULT_LLM_MODELS,
