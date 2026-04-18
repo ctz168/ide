@@ -453,14 +453,61 @@ html, body {
 
 .git-change-item {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     padding: 6px 12px;
     font-size: 12px;
-    gap: 8px;
+    gap: 4px;
     cursor: pointer;
+    border-bottom: 1px solid var(--border);
 }
 .git-change-item:active {
     background: var(--bg-hover);
+}
+.git-change-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.git-change-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+}
+.git-change-path {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.git-change-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding-left: 22px;
+    flex-shrink: 0;
+}
+.git-action-btn {
+    padding: 2px 6px;
+    border: none;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    line-height: 1.2;
+    transition: background 0.15s;
+}
+.git-action-btn:active {
+    background: var(--bg-active);
+    transform: scale(0.92);
+}
+.git-action-btn.git-action-danger:active {
+    background: rgba(243, 139, 168, 0.2);
+    color: var(--red);
 }
 .git-change-item .git-status-badge {
     font-size: 10px;
@@ -2392,9 +2439,10 @@ button, .file-item, .search-result-item, .git-change-item {
 
 /* ==================== Browser Preview Panel ==================== */
 #bpanel-browser {
-    display: flex !important;
-    flex-direction: column !important;
-    overflow: hidden !important;
+    /* When NOT active, let .bpanel { display: none } take effect.
+       Only show as flex when .active class is present. */
+    flex-direction: column;
+    overflow: hidden;
 }
 
 #bpanel-browser.active {

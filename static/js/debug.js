@@ -40,16 +40,15 @@ const DebugManager = (() => {
                 if (panel) panel.classList.add('active');
                 // Special handling for browser/preview panel:
                 // When switching AWAY from browser, aggressively hide the iframe
-                // to prevent it from leaking through on some browsers/WebViews
+                // to prevent it from leaking through on some mobile WebViews
                 const browserPanel = document.getElementById('bpanel-browser');
                 const previewFrame = document.getElementById('preview-frame');
                 if (browserPanel && previewFrame) {
                     if (target !== 'browser') {
-                        browserPanel.style.display = 'none';
+                        // Extra safety: force hide iframe on top of CSS display:none
                         previewFrame.style.visibility = 'hidden';
                         previewFrame.style.height = '0';
                     } else {
-                        browserPanel.style.display = '';
                         previewFrame.style.visibility = '';
                         previewFrame.style.height = '';
                     }

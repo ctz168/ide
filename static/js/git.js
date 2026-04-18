@@ -862,20 +862,50 @@ const GitManager = (() => {
             const status = change.status || change.category || '?';
             const icon = getStatusIcon(status);
             const escapedPath = escapeHTML(path);
+            const statusLower = (status || '').toLowerCase();
+            const isUntracked = statusLower.includes('untracked') || statusLower === 'untracked' || status === '?';
+            const isDeleted = statusLower.includes('deleted');
 
             html += `
                 <div class="git-change-item" data-path="${escapeAttr(path)}" data-status="${escapeAttr(status)}">
-                    <span class="git-change-icon">${icon}</span>
-                    <span class="git-change-path">${escapedPath}</span>
-                    <span class="git-change-status">${escapeHTML(status)}</span>
+                    <div class="git-change-row">
+                        <span class="git-change-icon">${icon}</span>
+                        <span class="git-change-path">${escapedPath}</span>
+                    </div>
+                    <div class="git-change-actions">
+                        <button class="git-action-btn" data-action="diff" data-path="${escapeAttr(path)}" title="差异">📋</button>
+                        ${!isUntracked && !isDeleted ? `<button class="git-action-btn" data-action="restore" data-path="${escapeAttr(path)}" title="回退修改">↩</button>` : ''}
+                        <button class="git-action-btn" data-action="ignore" data-path="${escapeAttr(path)}" title="添加到 .gitignore">🚫</button>
+                        ${!isDeleted ? `<button class="git-action-btn git-action-danger" data-action="delete" data-path="${escapeAttr(path)}" title="删除文件">🗑</button>` : ''}
+                    </div>
                 </div>`;
         }
 
         el.innerHTML = html;
 
-        // Bind click events on change items
-        el.querySelectorAll('.git-change-item').forEach(item => {
-            item.addEventListener('click', () => {
+        // Bind action button clicks
+        el.querySelectorAll('.git-action-btn').forEach(btn => {
+            const handler = (e) => {
+                e.stopPropagation();
+                const action = btn.dataset.action;
+                const path = btn.dataset.path;
+                if (action === 'diff') diff(path);
+                else if (action === 'restore') restoreFile(path);
+                else if (action === 'ignore') addToGitignore(path);
+                else if (action === 'delete') deleteGitFile(path);
+            };
+            btn.addEventListener('click', handler);
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handler(e);
+            });
+        });
+
+        // Bind click on change item row (for diff)
+        el.querySelectorAll('.git-change-row').forEach(row => {
+            const item = row.closest('.git-change-item');
+            row.addEventListener('click', () => {
                 const path = item.dataset.path;
                 diff(path);
             });

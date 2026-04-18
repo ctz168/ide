@@ -303,7 +303,7 @@ class DebugSession:
 
     def _run_target(self, file_path, args, cwd):
         """Run the target file with tracing enabled."""
-        from utils import load_config, shlex_quote
+        from utils import load_config, shlex_quote, WORKSPACE
 
         config = load_config()
         env = os.environ.copy()
@@ -406,7 +406,16 @@ def debug_start():
     args = data.get('args', '')
     cwd = data.get('cwd', '')
 
-    if not file_path or not os.path.isfile(file_path):
+    if not file_path:
+        return jsonify({'ok': False, 'error': 'file_path is required'})
+
+    # Resolve relative paths against workspace
+    if not os.path.isabs(file_path):
+        resolved = os.path.join(WORKSPACE, file_path)
+        if os.path.isfile(resolved):
+            file_path = resolved
+
+    if not os.path.isfile(file_path):
         return jsonify({'ok': False, 'error': 'File not found: ' + file_path})
 
     session = get_session()

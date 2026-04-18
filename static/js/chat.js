@@ -30,6 +30,8 @@ const ChatManager = (() => {
         'edit_file', 'create_directory', 'delete_path', 'file_info', 'grep_code', 'list_packages',
         'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
         'browser_click', 'browser_input', 'browser_console', 'browser_cookies', 'browser_page_info',
+        'debug_start', 'debug_stop', 'debug_set_breakpoints', 'debug_continue',
+        'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
     ];
 
     const TOOL_ICONS = {
@@ -62,6 +64,14 @@ const ChatManager = (() => {
         browser_console:     '📋',
         browser_cookies:     '🍪',
         browser_page_info:   'ℹ️',
+        debug_start:         '🐛',
+        debug_stop:          '⏹',
+        debug_set_breakpoints: '🔴',
+        debug_continue:      '▶️',
+        debug_step:          '⏭',
+        debug_inspect:       '🔎',
+        debug_evaluate:      '⚡',
+        debug_stack:         '📚',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"

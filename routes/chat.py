@@ -799,11 +799,11 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'debug_start',
-            'description': 'Start a debugging session for a Python file. The file must exist. This begins tracing execution with sys.settrace().',
+            'description': 'Start a debugging session for a Python file. Accepts both absolute paths and paths relative to the workspace (e.g. "myagent/main.py"). This begins tracing execution with sys.settrace().',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'file_path': {'type': 'string', 'description': 'Absolute path to the Python file to debug'},
+                    'file_path': {'type': 'string', 'description': 'Path to the Python file to debug (absolute or relative to workspace)'},
                     'breakpoints': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Optional list of line numbers to set as initial breakpoints', 'default': []},
                 },
                 'required': ['file_path'],
@@ -1430,7 +1430,14 @@ def _tool_debug_start(args):
     from routes.debug import get_session
     file_path = args.get('file_path', '')
     breakpoints = args.get('breakpoints', [])
-    if not file_path or not os.path.isfile(file_path):
+    if not file_path:
+        return 'Error: file_path is required'
+    # Resolve relative paths against workspace
+    if not os.path.isabs(file_path):
+        resolved = os.path.join(WORKSPACE, file_path)
+        if os.path.isfile(resolved):
+            file_path = resolved
+    if not os.path.isfile(file_path):
         return f'Error: File not found: {file_path}'
     session = get_session()
     if breakpoints:
@@ -1450,6 +1457,11 @@ def _tool_debug_set_breakpoints(args):
     lines = args.get('lines', [])
     if not file_path:
         return 'Error: file_path is required'
+    # Resolve relative paths against workspace
+    if not os.path.isabs(file_path):
+        resolved = os.path.join(WORKSPACE, file_path)
+        if os.path.isfile(resolved):
+            file_path = resolved
     session = get_session()
     session.set_breakpoints(file_path, lines)
     return f'Breakpoints set for {os.path.basename(file_path)}: lines {lines}'
