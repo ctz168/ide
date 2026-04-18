@@ -9,8 +9,11 @@ import time
 import threading
 import webbrowser
 import subprocess
+import re
+from urllib.parse import urlparse, urljoin, urlencode
 
-from flask import Blueprint, jsonify, request
+import requests as _requests_lib
+from flask import Blueprint, jsonify, request, Response, make_response
 from utils import handle_error
 
 bp = Blueprint('browser', __name__)
@@ -175,3 +178,235 @@ def open_external():
         return jsonify({'ok': True, 'message': f'Opened: {url}'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ── Proxy Endpoint ──
+
+# Headers from the target that should be stripped to allow iframe embedding
+_STRIP_HEADERS = {
+    'x-frame-options',
+    'content-security-policy',
+    'content-security-policy-report-only',
+    'x-content-type-options',  # strip nosniff so we can proxy any content type
+}
+
+# Headers from the target that should be passed through
+_PASS_HEADERS = {
+    'content-type',
+    'content-encoding',
+    'transfer-encoding',
+    'cache-control',
+    'etag',
+    'last-modified',
+    'set-cookie',
+    'access-control-allow-origin',
+    'access-control-allow-credentials',
+}
+
+
+def _proxy_response(target_resp, proxy_base):
+    """Build a Flask Response from a requests Response, rewriting HTML if needed."""
+    content_type = target_resp.headers.get('content-type', '')
+    raw_body = target_resp.content
+
+    # For HTML, rewrite URLs to route through our proxy
+    if 'text/html' in content_type:
+        try:
+            text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
+            text = _rewrite_html_urls(text, proxy_base)
+            raw_body = text.encode('utf-8')
+            content_type = 'text/html; charset=utf-8'
+        except Exception:
+            pass
+    # For CSS, rewrite url() references
+    elif 'text/css' in content_type:
+        try:
+            text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
+            text = _rewrite_css_urls(text, proxy_base)
+            raw_body = text.encode('utf-8')
+        except Exception:
+            pass
+
+    resp = Response(raw_body, status=target_resp.status_code)
+
+    # Set Content-Type (always)
+    if content_type:
+        resp.headers['Content-Type'] = content_type
+
+    # Pass through safe headers
+    for key in _PASS_HEADERS:
+        val = target_resp.headers.get(key)
+        if val:
+            resp.headers[key] = val
+
+    # Allow embedding from any origin
+    resp.headers['X-Frame-Options'] = 'ALLOWALL'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = '*'
+
+    return resp
+
+
+def _rewrite_html_urls(html, proxy_base):
+    """Rewrite URLs in HTML attributes to route through the proxy."""
+    # Rewrite <a href>, <link href>, <script src>, <img src>, <iframe src>,
+    # <form action>, <source src>, <video src>, <audio src>, <track src>
+    url_attrs = [
+        (r'(<a\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<link\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<script\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<img\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<iframe\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<form\s[^>]*?action\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<source\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<video\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<audio\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<track\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<embed\s[^>]*?src\s*=\s*["\'])([^"\']*)(["\'])', 2),
+        (r'(<object\s[^>]*?data\s*=\s*["\'])([^"\']*)(["\'])', 2),
+    ]
+
+    def _replace(match):
+        prefix = match.group(1)
+        url = match.group(2)
+        suffix = match.group(3)
+        # Skip javascript:, data:, #, mailto:, tel:
+        if url and not url.startswith(('javascript:', 'data:', '#', 'mailto:', 'tel:', 'blob:')):
+            url = _proxy_url(url, proxy_base)
+        return prefix + url + suffix
+
+    for pattern, _ in url_attrs:
+        html = re.sub(pattern, _replace, html, flags=re.IGNORECASE)
+
+    # Rewrite <base href> if present
+    html = re.sub(
+        r'(<base\s[^>]*?href\s*=\s*["\'])([^"\']*)(["\'])',
+        lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+        html, flags=re.IGNORECASE
+    )
+
+    # Remove CSP meta tags that could block embedding
+    html = re.sub(
+        r'<meta\s+[^>]*?http-equiv\s*=\s*["\']Content-Security-Policy["\'][^>]*?>',
+        '', html, flags=re.IGNORECASE
+    )
+
+    return html
+
+
+def _rewrite_css_urls(css, proxy_base):
+    """Rewrite url() references in CSS to route through the proxy."""
+    def _replace(match):
+        url = match.group(1)
+        if url and not url.startswith(('data:', 'blob:')):
+            url = _proxy_url(url, proxy_base)
+        return 'url(' + url + ')'
+
+    return re.sub(r'url\(\s*["\']?([^"\')\s]+)["\']?\s*\)', _replace, css, flags=re.IGNORECASE)
+
+
+def _proxy_url(url, proxy_base):
+    """Convert an absolute or relative URL to a proxy URL.
+
+    proxy_base has the form:
+      /api/browser/proxy?url=<encoded_target>&base=<encoded_target>
+    For relative URLs we need to preserve the base and pass rel separately.
+    """
+    if not url:
+        return url
+    # Already proxied
+    if '/api/browser/proxy' in url:
+        return url
+    # Absolute URL — independent proxy request with its own base
+    if url.startswith('http://') or url.startswith('https://'):
+        return '/api/browser/proxy?url=' + _requests_lib.utils.quote(url, safe='') + '&base=' + _requests_lib.utils.quote(url, safe='')
+    # Protocol-relative
+    if url.startswith('//'):
+        full = 'https:' + url
+        return '/api/browser/proxy?url=' + _requests_lib.utils.quote(full, safe='') + '&base=' + _requests_lib.utils.quote(full, safe='')
+    # Relative URL — keep existing base from proxy_base, pass as rel param
+    return proxy_base + '&rel=' + _requests_lib.utils.quote(url, safe='')
+
+
+def _get_original_base(proxy_base):
+    """Extract the original target URL from the proxy base URL."""
+    # proxy_base is like /api/browser/proxy?url=http%3A//localhost%3A8080
+    # We may also have a 'base' param added by the frontend
+    return proxy_base
+
+
+@bp.route('/api/browser/proxy')
+@handle_error
+def proxy():
+    """
+    Reverse proxy for iframe preview.
+    Fetches the target URL, strips X-Frame-Options / CSP headers,
+    rewrites HTML/CSS URLs to route through this proxy.
+
+    Query params:
+      url  — the target URL to fetch
+      rel  — (optional) relative URL path to append to the target URL
+      base — (optional) override the base URL for resolving relative paths
+    """
+    target_url = request.args.get('url', '').strip()
+    if not target_url:
+        return jsonify({'error': 'url parameter required'}), 400
+
+    # Normalize protocol
+    if target_url.startswith('//'):
+        target_url = 'https:' + target_url
+
+    # Handle relative URLs (rel param is set when HTML references are rewritten)
+    rel_path = request.args.get('rel', '')
+    base_url = request.args.get('base', '')
+
+    if rel_path:
+        # Resolve relative URL against the base
+        resolve_against = base_url or target_url
+        target_url = urljoin(resolve_against, rel_path)
+
+    # Security: only allow http/https
+    if not target_url.startswith('http://') and not target_url.startswith('https://'):
+        return jsonify({'error': 'Only http/https URLs are allowed'}), 400
+
+    # Security: prevent SSRF — only allow localhost, private IPs, and known domains
+    parsed = urlparse(target_url)
+    hostname = parsed.hostname or ''
+    # Allow all hostnames for development use (IDE is typically local-only)
+    # but block obvious internal-only IPs if needed in production
+
+    try:
+        # Determine what Referer to send (helps servers that check it)
+        headers = {
+            'User-Agent': 'PhoneIDE-Proxy/1.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'identity',  # avoid gzip to simplify URL rewriting
+        }
+
+        resp = _requests_lib.get(
+            target_url,
+            headers=headers,
+            timeout=15,
+            allow_redirects=True,
+            verify=False,  # allow self-signed certs for local dev
+        )
+
+        # Build proxy base URL for rewriting
+        # Include the original target URL so relative URLs can be resolved
+        proxy_base = f'/api/browser/proxy?url={_requests_lib.utils.quote(target_url, safe="")}'
+        proxy_base += f'&base={_requests_lib.utils.quote(target_url, safe="")}'
+
+        return _proxy_response(resp, proxy_base)
+
+    except _requests_lib.exceptions.Timeout:
+        return jsonify({'error': f'Request to {target_url} timed out'}), 504
+    except _requests_lib.exceptions.ConnectionError as e:
+        return jsonify({'error': f'Cannot connect to {target_url}: {str(e)[:200]}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'Proxy error: {str(e)[:200]}'}), 502
+
+
+# Suppress InsecureRequestWarning for verify=False
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

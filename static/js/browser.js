@@ -312,8 +312,12 @@ const BrowserInspector = (() => {
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
             url = 'https://' + url;
         }
-        iframe.src = url;
+        // Route through backend proxy to bypass X-Frame-Options / CSP restrictions
+        const proxyUrl = '/api/browser/proxy?url=' + encodeURIComponent(url);
+        iframe.src = proxyUrl;
         bridgeInjected = false;
+        // Store original URL for external browser button
+        if (urlInput) urlInput.dataset.originalUrl = url;
         return { ok: true, message: '正在导航到: ' + url };
     }
 
@@ -511,10 +515,11 @@ const BrowserInspector = (() => {
             });
         }
 
-        // External browser button
+        // External browser button — use stored original URL
         if (externalBtn && urlInput) {
             externalBtn.addEventListener('click', function () {
-                const url = urlInput.value.trim();
+                // Prefer the stored original URL over the raw input value
+                const url = urlInput.dataset.originalUrl || urlInput.value.trim();
                 if (url) openExternal(url);
                 else if (window.showToast) window.showToast('请先输入网址', 'warning');
             });
@@ -524,7 +529,12 @@ const BrowserInspector = (() => {
         const refreshBtn = document.getElementById('browser-refresh-btn');
         if (refreshBtn && iframe) {
             refreshBtn.addEventListener('click', function () {
-                if (iframe.src) iframe.src = iframe.src;
+                if (iframe.src && !iframe.src.endsWith('about:blank')) {
+                    // Force reload by toggling src
+                    const currentSrc = iframe.src;
+                    iframe.src = 'about:blank';
+                    setTimeout(function () { iframe.src = currentSrc; }, 50);
+                }
             });
         }
 
