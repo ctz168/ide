@@ -295,6 +295,11 @@ def _proxy_response(target_resp, proxy_base):
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_html_urls(text, proxy_base)
+            # Inject a script that intercepts dynamically-created script elements
+            # and rewrites their src to route through the proxy. This handles cases
+            # where JS code creates <script> elements at runtime (e.g. chat.js's
+            # dynamic script loader using document.createElement('script')).
+            text = _inject_script_interceptor(text, proxy_base)
             raw_body = text.encode('utf-8')
             content_type = 'text/html; charset=utf-8'
         except Exception:
@@ -442,6 +447,93 @@ def _rewrite_html_urls(html, proxy_base):
     return html
 
 
+def _inject_script_interceptor(html, proxy_base):
+    """Inject a script into the HTML that intercepts dynamically-created <script>
+    elements and rewrites their src to route through the proxy.
+
+    Many web apps create <script> elements at runtime via document.createElement('script')
+    and set .src to a relative or absolute URL. Since the proxy rewrites HTML at serve
+    time but cannot rewrite dynamically-constructed URLs in JavaScript, we inject an
+    interceptor that catches these at runtime.
+
+    The interceptor uses a MutationObserver on <head> and <body> to catch script
+    elements as they are appended, and rewrites their src attribute to go through
+    the proxy before the browser fetches them.
+    """
+    # Extract the original directory URL from proxy_base
+    original_dir = _extract_base_from_proxy_base(proxy_base)
+    if not original_dir:
+        return html
+
+    # Build the interceptor script
+    interceptor = f"""<script>
+(function() {{
+    var _origCreate = document.createElement.bind(document);
+    var _origAppendChild = Node.prototype.appendChild;
+    var _ORIG_DIR = {repr(original_dir)};
+    var _PROXY_BASE = {repr(proxy_base)};
+
+    function _toProxyUrl(src) {{
+        if (!src || typeof src !== 'string') return src;
+        if (src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('javascript:')) return src;
+        if (src.indexOf('/api/browser/proxy') !== -1) return src;  // already proxied
+        // Resolve relative to original directory first
+        var absUrl;
+        if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('//')) {{
+            absUrl = src;
+        }} else {{
+            absUrl = _ORIG_DIR + src;
+        }}
+        // Build proxy URL
+        var enc = encodeURIComponent(absUrl);
+        var baseEnc = encodeURIComponent(_ORIG_DIR);
+        return _PROXY_BASE + '&rel=' + encodeURIComponent(src);
+    }}
+
+    // Intercept createElement('script') to rewrite src on set
+    document.createElement = function(tag) {{
+        var el = _origCreate(tag);
+        if (tag.toLowerCase() === 'script') {{
+            var _realSrc;
+            Object.defineProperty(el, 'src', {{
+                get: function() {{ return _realSrc; }},
+                set: function(val) {{
+                    _realSrc = _toProxyUrl(val);
+                }},
+                configurable: true
+            }});
+        }}
+        if (tag.toLowerCase() === 'link') {{
+            var _realHref;
+            Object.defineProperty(el, 'href', {{
+                get: function() {{ return _realHref; }},
+                set: function(val) {{
+                    _realHref = _toProxyUrl(val);
+                }},
+                configurable: true
+            }});
+        }}
+        return el;
+    }};
+}})();
+</script>"""
+
+    # Inject right after <head> tag, or before </head> if no <head> tag
+    if '<head>' in html.lower():
+        # Case-insensitive insert after <head>
+        idx = html.lower().index('<head>')
+        # Find the end of the actual <head> tag (may have attributes)
+        end = html.index('>', idx) + 1
+        html = html[:end] + '\n' + interceptor + html[end:]
+    elif '</head>' in html.lower():
+        html = html.replace('</head>', interceptor + '\n</head>')
+    else:
+        # No head tag at all — prepend to body
+        html = interceptor + '\n' + html
+
+    return html
+
+
 def _rewrite_css_urls(css, proxy_base):
     """Rewrite url() references and @import in CSS to route through the proxy."""
     def _replace_url(match):
@@ -463,6 +555,20 @@ def _rewrite_css_urls(css, proxy_base):
     css = re.sub(r'@import\s+(["\'])([^"\']+)(["\'])', _replace_import, css, flags=re.IGNORECASE)
 
     return css
+
+
+def _extract_base_from_proxy_base(proxy_base):
+    """Extract the original target directory URL from a proxy_base string.
+
+    proxy_base format: http://localhost:12345/api/browser/proxy?url=<target>&base=<dir>
+    Returns the <dir> part (the original directory URL on the target server).
+    """
+    parsed = urllib.parse.urlparse(proxy_base)
+    params = urllib.parse.parse_qs(parsed.query)
+    base_urls = params.get('base', [])
+    if base_urls:
+        return base_urls[0]
+    return ''
 
 
 def _rewrite_js_urls(js, proxy_base):
@@ -493,6 +599,30 @@ def _rewrite_js_urls(js, proxy_base):
     js = re.sub(r'(import\s+[^;\n]+?\s+from\s+)(["\'])([^"\']+)(["\'])', _replace_static_import, js)
     # Rewrite simple import "..." statements
     js = re.sub(r'(import\s*)(["\'])([^"\']+)(["\'])', _replace_static_import, js)
+
+    # ── Rewrite JS base URL computation patterns ──
+    # Many SPAs and frameworks use patterns like:
+    #   new URL('.', window.location.href).href
+    #   new URL('./', window.location.href).href
+    # to compute the current directory. When served through our proxy,
+    # window.location.href points to the proxy URL, not the original URL.
+    # Replace these with the actual original directory URL.
+    original_dir = _extract_base_from_proxy_base(proxy_base)
+    if original_dir:
+        def _replace_new_url_base(match):
+            return repr(original_dir)
+
+        # Match: new URL(".", window.location.href).href  (with optional quotes and /)
+        js = re.sub(
+            r'new\s+URL\(\s*["\']\.\/?["\']\s*,\s*window\.location\.href\s*\)\.href',
+            _replace_new_url_base, js
+        )
+        # Also match: new URL(relPath, window.location.href) where relPath is a simple path
+        js = re.sub(
+            r'new\s+URL\(\s*["\']([^"\']*)["\']\s*,\s*window\.location\.href\s*\)',
+            lambda m: f'new URL({repr(m.group(1))}, {repr(original_dir)})',
+            js
+        )
 
     return js
 
