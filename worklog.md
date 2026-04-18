@@ -1,4 +1,22 @@
 ---
+Task ID: proxy-redirect-fix
+Agent: Main
+Task: 修复预览代理重定向导致跨端口JS/CSS全部404的问题
+
+Work Log:
+- 克隆了 ctz168/myagent 仓库用于复现问题
+- 分析 myagent 的 web 前端架构: 纯 vanilla HTML/CSS/JS, 无框架/打包工具
+- myagent 入口: localhost:8767/ → 302 重定向到 /ui/chat/chat_container.html
+- 定位根因: urllib.request.urlopen 自动跟随重定向, 但 proxy() 使用原始 URL 计算 proxy_base
+- 导致 HTML 中相对路径资源 (chat.js, chat.css) 解析到错误路径 (404)
+- 修复: 检测重定向后返回 302 让浏览器跳转到最终 URL 的代理地址
+- 附加修复: self_origin 提前计算, 修复 HTTPError handler 中的 NameError
+
+Stage Summary:
+- 文件: routes/browser.py (31 insertions, 2 deletions)
+- Commit: e9f6a2f
+
+---
 Task ID: 1
 Agent: Main
 Task: Fix proxy mode CSS/JS not loading + reduce editor font size + fix multi-line selection
