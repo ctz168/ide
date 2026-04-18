@@ -310,7 +310,8 @@ const BrowserInspector = (() => {
         if (!iframe) return { error: '预览框架不可用' };
         if (!url) return { error: 'URL 不能为空' };
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
-            url = 'https://' + url;
+            // Use http:// for localhost/local IPs, https:// for public domains
+            url = 'http://' + url;
         }
         // Route through backend proxy to bypass X-Frame-Options / CSP restrictions
         const proxyUrl = '/api/browser/proxy?url=' + encodeURIComponent(url);
