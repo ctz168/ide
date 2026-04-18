@@ -332,6 +332,17 @@ const EditorManager = (() => {
             mdToggleBtn.addEventListener('click', toggleMarkdownPreview);
         }
 
+        // ── Breakpoint Gutter Click ──────────────────────────────
+        editor.on('gutterClick', (cm, n) => {
+            const filePath = currentFilePath;
+            if (!filePath) return;
+            // Toggle breakpoint on line n+1 (1-based)
+            const line = n + 1;
+            if (window.DebuggerUI && DebuggerUI.toggleBreakpoint) {
+                DebuggerUI.toggleBreakpoint(filePath, line);
+            }
+        });
+
         console.log('EditorManager initialized');
     }
 

@@ -15,7 +15,6 @@ const DebugManager = (() => {
     // ── Init ──
     function init() {
         initBottomTabs();
-        initHttpClient();
         interceptConsole();
         interceptErrors();
         interceptNetwork();
@@ -229,58 +228,7 @@ const DebugManager = (() => {
         }
     }
 
-    // ── HTTP Client ──
-    function initHttpClient() {
-        const sendBtn = document.getElementById('http-send');
-        if (!sendBtn) return;
-        sendBtn.addEventListener('click', sendHttpRequest);
-    }
 
-    async function sendHttpRequest() {
-        const method = document.getElementById('http-method');
-        const urlEl = document.getElementById('http-url');
-        const bodyEl = document.getElementById('http-body');
-        const statusEl = document.getElementById('http-status');
-        const responseEl = document.getElementById('http-response');
-
-        const m = method ? method.value : 'GET';
-        const url = urlEl ? urlEl.value.trim() : '';
-        const body = bodyEl ? bodyEl.value : '';
-
-        if (!url) {
-            if (statusEl) statusEl.innerHTML = '<span class="http-status err">请输入 URL</span>';
-            return;
-        }
-
-        if (sendBtn) sendBtn.disabled = true;
-        if (statusEl) statusEl.innerHTML = '<span class="http-status">请求中...</span>';
-        if (responseEl) responseEl.textContent = '';
-
-        try {
-            const origFetch = window.fetch; // use real fetch, not our wrapper
-            const options = { method: m, headers: { 'Content-Type': 'application/json' } };
-            if (['POST', 'PUT', 'PATCH'].includes(m) && body) {
-                options.body = body;
-            }
-            const startTime = performance.now();
-            const resp = await origFetch.call(window, url, options);
-            const duration = Math.round(performance.now() - startTime);
-
-            let text = '';
-            try { text = JSON.stringify(await resp.json(), null, 2); } catch { text = await resp.text(); }
-
-            if (statusEl) {
-                statusEl.innerHTML = '<span class="http-status ' + (resp.ok ? 'ok' : 'err') + '">' +
-                    resp.status + ' ' + resp.statusText + ' (' + duration + 'ms)</span>';
-            }
-            if (responseEl) responseEl.textContent = text;
-        } catch (err) {
-            if (statusEl) statusEl.innerHTML = '<span class="http-status err">错误: ' + escapeHTML(err.message) + '</span>';
-            if (responseEl) responseEl.textContent = err.message;
-        } finally {
-            if (sendBtn) sendBtn.disabled = false;
-        }
-    }
 
     // ── Process Manager ──
     async function refreshProcesses() {

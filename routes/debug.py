@@ -1,479 +1,526 @@
 """
-PhoneIDE - Runtime debugger using sys.settrace().
-Provides breakpoint, step-through, variable inspection, and expression evaluation.
-Only works with Python files. Zero external dependencies.
+PhoneIDE - Python Runtime Debugger using sys.settrace()
+Provides breakpoints, stepping, variable inspection, call stack for Python code execution.
 """
 
 import os
 import sys
-import io
 import json
 import time
-import uuid
 import threading
-import traceback as _traceback
+import traceback
+import linecache
+import bisect
 from flask import Blueprint, jsonify, request, Response
-from utils import handle_error, WORKSPACE, load_config
 
 bp = Blueprint('debug', __name__)
 
-# ── Global Debug Session (singleton – one at a time) ──
-_session = None
-_session_lock = threading.Lock()
-
-
-# ═══════════════════════════════════════════════════════════════
-#  Output Capture – redirects stdout/stderr during debugging
-# ═══════════════════════════════════════════════════════════════
-
-class _OutputCapture(io.StringIO):
-    """Thread-safe capture of stdout / stderr emitted by the debugged program."""
-    def __init__(self, session, stream_type):
-        super().__init__()
-        self._session = session
-        self._stream_type = stream_type
-
-    def write(self, s):
-        if s:
-            self._session.output_lines.append({
-                'type': self._stream_type,
-                'text': s,
-                'time': time.time(),
-            })
-        return super().write(s)
-
-    def flush(self):
-        pass
-
-
-# ═══════════════════════════════════════════════════════════════
-#  DebugSession – the core debugger
-# ═══════════════════════════════════════════════════════════════
+# ==================== Debug Session ====================
 
 class DebugSession:
-    """Lightweight Python debugger built on sys.settrace().
+    """Manages a single debugging session with sys.settrace()."""
 
-    Lifecycle
-    ---------
-    1. Create → idle
-    2. start() → running  (new daemon thread)
-    3. breakpoint hit or step → paused  (thread blocks on Event)
-    4. continue / step → running
-    5. program ends → stopped / error
-    """
+    STATES = ('idle', 'running', 'paused', 'stopped')
 
-    def __init__(self, file_path, breakpoints=None):
-        self.id = uuid.uuid4().hex[:8]
-        self.file_path = os.path.abspath(file_path)
-        self.breakpoints = set()          # {(abs_path, lineno), ...}
-        self.state = 'idle'               # idle | running | paused | stopped | error
-        self.current_file = ''
+    def __init__(self):
+        self.state = 'idle'
+        self.breakpoints = {}       # filename -> set of line numbers
+        self.call_stack = []        # list of (filename, lineno, func_name)
+        self.local_vars = {}        # variable name -> value repr
+        self.current_file = None
         self.current_line = 0
-        self.variables = {}
-        self.call_stack = []
-        self.step_mode = None             # None | step | step_over | step_out
-        self.step_depth = 0
-        self.pause_event = threading.Event()
-        self._current_frame = None
-        self.output_lines = []
-        self.error = None
-        self.thread = None
-        self.created = time.time()
-        self.activity_log = []           # [{action, detail, time}, ...]
+        self.current_func = ''
+        self._pause_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._step_mode = None      # None, 'step_in', 'step_over', 'step_out'
+        self._step_stack_depth = 0
+        self._output_lines = []     # captured stdout/stderr
+        self._lock = threading.Lock()
+        self._thread = None
+        self._listeners = []        # SSE listeners
 
-        # Set initial breakpoints
-        if breakpoints:
-            for bp in breakpoints:
-                f = os.path.abspath(bp.get('file', self.file_path))
-                l = bp.get('line', 0)
-                if l > 0:
-                    self.breakpoints.add((f, l))
-
-        # Determine the workspace/project root for trace filtering
-        try:
-            config = load_config()
-            ws = config.get('workspace', WORKSPACE)
-            project = config.get('project', None)
-            if project:
-                root = os.path.abspath(os.path.join(ws, project))
-            else:
-                root = os.path.abspath(ws)
-            self._trace_root = root
-        except Exception:
-            self._trace_root = os.path.abspath(WORKSPACE)
-
-    # ── start / stop ────────────────────────────────────────────
-
-    def start(self):
-        self.state = 'running'
-        self._log('start', f'开始调试: {os.path.basename(self.file_path)}')
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-
-    def _run(self):
-        old_trace = sys.gettrace()
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        try:
-            sys.settrace(self._trace_func)
-            sys.stdout = _OutputCapture(self, 'stdout')
-            sys.stderr = _OutputCapture(self, 'stderr')
-
-            with open(self.file_path, 'r', encoding='utf-8', errors='replace') as f:
-                source = f.read()
-            code = compile(source, self.file_path, 'exec')
-
-            ns = {
-                '__name__': '__main__',
-                '__file__': self.file_path,
-                '__builtins__': __builtins__,
-            }
-            exec(code, ns)
-
+    def start(self, file_path, args='', cwd=None):
+        """Start debugging a Python file."""
+        with self._lock:
             if self.state == 'running':
-                self.state = 'stopped'
-                self._log('info', '程序正常结束')
-        except SyntaxError as e:
-            self.state = 'error'
-            self.error = f'语法错误: {e}\n文件: {e.filename}, 行: {e.lineno}'
-            self._log('error', self.error)
-        except Exception as e:
-            self.state = 'error'
-            self.error = f'{type(e).__name__}: {e}\n{_traceback.format_exc()}'
-            self._log('error', f'运行时错误: {e}')
-        finally:
-            sys.settrace(old_trace)
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            if self.state == 'paused':
-                self.state = 'stopped'
+                return False, 'Debug session already running'
+            self.state = 'running'
+            self.breakpoints = {}
+            self.call_stack = []
+            self.local_vars = {}
+            self.current_file = None
+            self.current_line = 0
+            self._step_mode = None
+            self._output_lines = []
+            self._stop_event.clear()
+            self._pause_event.clear()
 
-    # ── trace filtering ──────────────────────────────────────────
+        self._thread = threading.Thread(
+            target=self._run_target,
+            args=(file_path, args, cwd),
+            daemon=True
+        )
+        self._thread.start()
+        return True, 'Debug session started'
 
-    def _should_trace(self, filename):
-        if not filename or filename.startswith('<'):
-            return False
-        try:
-            ap = os.path.abspath(filename)
-            return ap.startswith(self._trace_root + os.sep) or ap == self._trace_root
-        except Exception:
-            return False
+    def stop(self):
+        """Stop the debug session."""
+        with self._lock:
+            if self.state in ('idle', 'stopped'):
+                return
+            self.state = 'stopped'
+            self._stop_event.set()
+            self._pause_event.set()  # unblock if paused
 
-    # ── sys.settrace callback ─────────────────────────────────────
+    def resume(self):
+        """Continue execution after a breakpoint/step pause."""
+        with self._lock:
+            if self.state != 'paused':
+                return False
+            self._step_mode = None
+            self.state = 'running'
+        self._pause_event.set()
+        return True
 
-    def _trace_func(self, frame, event, arg):
-        if self.state == 'stopped':
+    def step_in(self):
+        """Step into the next line."""
+        with self._lock:
+            if self.state != 'paused':
+                return False
+            self._step_mode = 'step_in'
+            self.state = 'running'
+        self._pause_event.set()
+        return True
+
+    def step_over(self):
+        """Step over the next line."""
+        with self._lock:
+            if self.state != 'paused':
+                return False
+            self._step_mode = 'step_over'
+            self._step_stack_depth = len(self.call_stack)
+            self.state = 'running'
+        self._pause_event.set()
+        return True
+
+    def step_out(self):
+        """Step out of the current function."""
+        with self._lock:
+            if self.state != 'paused':
+                return False
+            self._step_mode = 'step_out'
+            self._step_stack_depth = len(self.call_stack)
+            self.state = 'running'
+        self._pause_event.set()
+        return True
+
+    def set_breakpoints(self, file_path, lines):
+        """Set breakpoints for a file. Replaces existing breakpoints for that file."""
+        with self._lock:
+            self.breakpoints[file_path] = set(lines)
+        return True
+
+    def add_breakpoint(self, file_path, line):
+        """Add a single breakpoint."""
+        with self._lock:
+            if file_path not in self.breakpoints:
+                self.breakpoints[file_path] = set()
+            self.breakpoints[file_path].add(line)
+        return True
+
+    def remove_breakpoint(self, file_path, line):
+        """Remove a single breakpoint."""
+        with self._lock:
+            if file_path in self.breakpoints:
+                self.breakpoints[file_path].discard(line)
+        return True
+
+    def evaluate(self, expression):
+        """Evaluate an expression in the current frame context."""
+        with self._lock:
+            if self.state != 'paused':
+                return None, 'Not paused'
+            if not self.call_stack:
+                return None, 'No call stack'
+        # We can't directly access frame locals from here since the trace
+        # function runs in the debug thread. We use a special mechanism.
+        result = [None, '']
+        eval_event = threading.Event()
+
+        def _eval_in_frame():
+            try:
+                frame = sys._getframe().f_back
+                # Walk up to find the target frame
+                while frame:
+                    if (frame.f_code.co_filename == self.current_file and
+                            frame.f_lineno == self.current_line):
+                        break
+                    frame = frame.f_back
+                if frame:
+                    result[0] = repr(eval(expression, frame.f_globals, frame.f_locals))
+                else:
+                    result[1] = 'Could not find target frame'
+            except Exception as e:
+                result[1] = str(e)
+            finally:
+                eval_event.set()
+
+        # Schedule eval in the trace thread context
+        self._eval_callback = _eval_in_frame
+        self._eval_event = eval_event
+        self._pause_event.set()  # let trace function run the eval
+        eval_event.wait(timeout=5)
+        self._eval_callback = None
+
+        if result[1]:
+            return None, result[1]
+        return result[0], None
+
+    def get_state(self):
+        """Get current debug state as a dict."""
+        with self._lock:
+            return {
+                'state': self.state,
+                'file': self.current_file,
+                'line': self.current_line,
+                'func': self.current_func,
+                'breakpoints': {k: sorted(v) for k, v in self.breakpoints.items()},
+                'call_stack': list(self.call_stack),
+                'local_vars': dict(self.local_vars),
+                'output': list(self._output_lines),
+            }
+
+    # ── Internal trace function ──
+
+    def _trace_function(self, frame, event, arg):
+        """sys.settrace() callback."""
+        # Check stop
+        if self._stop_event.is_set():
+            self.state = 'stopped'
+            sys.settrace(None)
             return None
 
         filename = frame.f_code.co_filename
         lineno = frame.f_lineno
+        func_name = frame.f_code.co_name
+
+        # Only trace user files (not stdlib/ide)
+        if self._should_ignore(filename):
+            return self._trace_function
 
         if event == 'call':
-            self.call_stack.append({
-                'file': filename, 'line': lineno,
-                'func': frame.f_code.co_name,
-            })
-
+            self._on_call(filename, lineno, func_name)
         elif event == 'line':
-            if not self._should_trace(filename):
-                return self._trace_func
-
-            abs_path = os.path.abspath(filename)
-
-            if (abs_path, lineno) in self.breakpoints:
-                self._pause_at(frame, abs_path, lineno)
-                return self._trace_func
-
-            if self.step_mode == 'step':
-                self._pause_at(frame, abs_path, lineno)
-                return self._trace_func
-
-            elif self.step_mode == 'step_over':
-                if len(self.call_stack) <= self.step_depth:
-                    self._pause_at(frame, abs_path, lineno)
-                    self.step_mode = None
-                    return self._trace_func
-
+            self._on_line(filename, lineno, func_name, frame)
         elif event == 'return':
-            # pop matching entry
+            self._on_return(filename, lineno, func_name, arg)
+
+        return self._trace_function
+
+    def _should_ignore(self, filename):
+        """Skip tracing for non-user files."""
+        if not filename or filename.startswith('<'):
+            return True
+        # Skip standard library
+        if 'site-packages' in filename or '/usr/lib/' in filename:
+            return True
+        return False
+
+    def _on_call(self, filename, lineno, func_name):
+        """Handle function call event."""
+        entry = (filename, lineno, func_name)
+        self.call_stack.append(entry)
+        # If stepping out, check if we've returned enough
+        if self._step_mode == 'step_out':
+            if len(self.call_stack) <= self._step_stack_depth:
+                pass  # Will pause on next line event
+
+    def _on_line(self, filename, lineno, func_name, frame):
+        """Handle line event - check breakpoints and stepping."""
+        with self._lock:
+            self.current_file = filename
+            self.current_line = lineno
+            self.current_func = func_name
+            # Update call stack top
             if self.call_stack:
-                top = self.call_stack[-1]
-                if top['func'] == frame.f_code.co_name and top.get('file') == filename:
-                    self.call_stack.pop()
-                else:
-                    # fallback: pop by index
-                    self.call_stack.pop()
+                self.call_stack[-1] = (filename, lineno, func_name)
 
-            if self.step_mode == 'step_out':
-                if len(self.call_stack) < self.step_depth:
-                    abs_path = os.path.abspath(filename)
-                    self._pause_at(frame, abs_path, lineno)
-                    self.step_mode = None
-                    return self._trace_func
+        # Check if we should evaluate a pending expression
+        if hasattr(self, '_eval_callback') and self._eval_callback:
+            cb = self._eval_callback
+            self._eval_callback = None
+            cb()
+            # Re-pause after eval
+            self._pause_event.clear()
+            self._pause_event.wait()
+            return
 
-        return self._trace_func
-
-    # ── pause / continue / step ──────────────────────────────────
-
-    def _pause_at(self, frame, filepath, lineno):
-        self.state = 'paused'
-        self.current_file = filepath
-        self.current_line = lineno
-        self._current_frame = frame
-
-        # Capture variables (truncate large values)
-        self.variables = {}
-        for name, value in frame.f_locals.items():
-            try:
-                val = repr(value)
-                if len(val) > 500:
-                    val = val[:500] + '...'
-                self.variables[name] = val
-            except Exception:
-                self.variables[name] = '<无法序列化>'
-
-        self._log('breakpoint', f'断点命中: {os.path.basename(filepath)}:{lineno}')
-
-        # Block until continue / step / stop
-        self.pause_event.clear()
-        self.pause_event.wait(timeout=300)  # 5 min max
-
-        if self.pause_event.is_set():
-            self.state = 'running'
-
-    def continue_run(self):
-        if self.state == 'paused':
-            self.step_mode = None
-            self.pause_event.set()
-            self._log('continue', '继续运行')
-            return True
-        return False
-
-    def step(self, mode='step'):
-        if self.state == 'paused':
-            self.step_mode = mode
-            if mode == 'step_over':
-                self.step_depth = len(self.call_stack)
-            elif mode == 'step_out':
-                self.step_depth = max(0, len(self.call_stack) - 1)
-            self.pause_event.set()
-            labels = {'step': '单步执行', 'step_over': '步过', 'step_out': '步出'}
-            self._log('step', labels.get(mode, mode))
-            return True
-        return False
-
-    def stop(self):
-        self.state = 'stopped'
-        self.pause_event.set()
-        self._log('stop', '调试已停止')
-
-    # ── evaluate ─────────────────────────────────────────────────
-
-    def evaluate_expression(self, expression):
-        if self.state != 'paused' or not self._current_frame:
-            return {'error': '未在断点处暂停'}
+        # Collect local variables
         try:
-            result = eval(expression, self._current_frame.f_globals, self._current_frame.f_locals)
-            return {'ok': True, 'result': repr(result)}
-        except SyntaxError:
-            try:
-                exec(expression, self._current_frame.f_globals, self._current_frame.f_locals)
-                return {'ok': True, 'result': '(已执行)'}
-            except Exception as e:
-                return {'error': str(e)}
+            self.local_vars = {k: repr(v) for k, v in frame.f_locals.items()
+                               if not k.startswith('__')}
+        except Exception:
+            self.local_vars = {}
+
+        # Check breakpoints
+        bp_lines = self.breakpoints.get(filename, set())
+        if lineno in bp_lines:
+            self._pause('breakpoint')
+            return
+
+        # Check stepping
+        if self._step_mode == 'step_in':
+            self._pause('step')
+            return
+        elif self._step_mode == 'step_over':
+            if len(self.call_stack) <= self._step_stack_depth:
+                self._pause('step')
+                return
+        elif self._step_mode == 'step_out':
+            if len(self.call_stack) < self._step_stack_depth:
+                self._pause('step')
+                return
+
+    def _on_return(self, filename, lineno, func_name, return_value):
+        """Handle function return event."""
+        if self.call_stack:
+            self.call_stack.pop()
+
+    def _pause(self, reason):
+        """Pause execution and wait for resume/step/stop."""
+        with self._lock:
+            self.state = 'paused'
+        self._pause_event.clear()
+        self._notify_state_change(reason)
+        # Wait for resume/step/stop
+        self._pause_event.wait()
+
+    def _notify_state_change(self, reason=''):
+        """Send state change to SSE listeners."""
+        state = self.get_state()
+        state['reason'] = reason
+        data = json.dumps(state)
+
+    def _run_target(self, file_path, args, cwd):
+        """Run the target file with tracing enabled."""
+        from utils import load_config, shlex_quote
+
+        config = load_config()
+        env = os.environ.copy()
+        venv_path = config.get('venv_path', '')
+        if venv_path and os.path.exists(venv_path):
+            venv_bin = os.path.join(venv_path, 'bin')
+            if os.path.exists(venv_bin):
+                env['PATH'] = venv_bin + ':' + env.get('PATH', '')
+                env['VIRTUAL_ENV'] = venv_path
+
+        # Set working directory
+        if not cwd:
+            cwd = config.get('workspace', os.path.dirname(file_path))
+
+        # Prepare to run
+        old_cwd = os.getcwd()
+        old_argv = sys.argv
+        try:
+            os.chdir(cwd)
+            sys.argv = [file_path] + (args.split() if args else [])
+
+            # Set the trace function
+            sys.settrace(self._trace_function)
+
+            # Run with captured output
+            import io
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            captured_out = io.StringIO()
+
+            class _Writer:
+                def __init__(self, inner, session):
+                    self.inner = inner
+                    self.session = session
+
+                def write(self, data):
+                    self.inner.write(data)
+                    if data:
+                        self.session._output_lines.append(data.rstrip('\n'))
+                        if len(self.session._output_lines) > 500:
+                            self.session._output_lines = self.session._output_lines[-500:]
+
+                def flush(self):
+                    self.inner.flush()
+
+            sys.stdout = _Writer(old_stdout, self)
+            sys.stderr = _Writer(old_stderr, self)
+
+            # Compile and execute
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                code = f.read()
+
+            compiled = compile(code, file_path, 'exec')
+            exec(compiled, {'__name__': '__main__', '__file__': file_path})
+
+        except SystemExit:
+            pass
         except Exception as e:
-            return {'error': str(e)}
+            tb = traceback.format_exc()
+            self._output_lines.append(f'\n{tb}')
+        finally:
+            sys.settrace(None)
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            sys.argv = old_argv
+            os.chdir(old_cwd)
 
-    # ── breakpoints ─────────────────────────────────────────────────
+            with self._lock:
+                if self.state != 'stopped':
+                    self.state = 'stopped'
 
-    def set_breakpoints(self, add=None, remove=None):
-        changed = False
-        if add:
-            for bp in add:
-                f = os.path.abspath(bp.get('file', self.file_path))
-                l = bp.get('line', 0)
-                if l > 0 and (f, l) not in self.breakpoints:
-                    self.breakpoints.add((f, l))
-                    changed = True
-        if remove:
-            for bp in remove:
-                f = os.path.abspath(bp.get('file', self.file_path))
-                l = bp.get('line', 0)
-                if (f, l) in self.breakpoints:
-                    self.breakpoints.discard((f, l))
-                    changed = True
-        if changed:
-            self._log('breakpoint', f'断点更新: 共 {len(self.breakpoints)} 个')
-        return changed
+            self._notify_state_change('finished')
 
-    # ── helpers ────────────────────────────────────────────────────
-
-    def _log(self, action, detail):
-        self.activity_log.append({
-            'action': action, 'detail': detail, 'time': time.time(),
-        })
-        if len(self.activity_log) > 200:
-            self.activity_log = self.activity_log[-200:]
-
-    def get_state_dict(self):
-        bps = sorted(self.breakpoints)
-        return {
-            'state': self.state,
-            'currentFile': self.current_file,
-            'currentLine': self.current_line,
-            'currentFileShort': os.path.basename(self.current_file) if self.current_file else '',
-            'breakpoints': [{'file': f, 'line': l, 'fileShort': os.path.basename(f)} for f, l in bps],
-            'variables': [{'name': n, 'value': v} for n, v in self.variables.items()],
-            'callStack': [
-                {
-                    'index': i,
-                    'file': s['file'], 'fileShort': os.path.basename(s['file']),
-                    'line': s['line'], 'func': s['func'],
-                }
-                for i, s in enumerate(reversed(self.call_stack))
-            ],
-            'activity': [
-                {'action': a['action'], 'detail': a['detail'], 'time': a['time']}
-                for a in self.activity_log[-60:]
-            ],
-            'error': self.error,
-            'outputCount': len(self.output_lines),
-        }
-
-    def get_output_since(self, since_idx=0):
-        return self.output_lines[since_idx:]
+    def cleanup(self):
+        """Clean up session resources."""
+        self.stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
 
 
-# ═══════════════════════════════════════════════════════════════
-#  Session management helpers
-# ═══════════════════════════════════════════════════════════════
+# ==================== Global Session ====================
+
+_session = None
 
 def get_session():
-    with _session_lock:
-        return _session
-
-
-def create_session(file_path, breakpoints=None):
+    """Get or create the global debug session."""
     global _session
-    with _session_lock:
-        if _session and _session.state not in ('stopped', 'error', 'idle'):
-            _session.stop()
-        _session = DebugSession(file_path, breakpoints)
-        _session.start()
-        return _session
+    if _session is None:
+        _session = DebugSession()
+    return _session
 
 
-# ═══════════════════════════════════════════════════════════════
-#  API Routes
-# ═════════════════════════════════════════════════════════════════
+# ==================== API Routes ====================
 
 @bp.route('/api/debug/start', methods=['POST'])
-@handle_error
-def api_debug_start():
+def debug_start():
+    """Start a debug session for a file."""
     data = request.json or {}
     file_path = data.get('file_path', '')
-    breakpoints = data.get('breakpoints', [])
-    if not file_path:
-        return jsonify({'error': 'file_path is required'}), 400
-    if not os.path.isfile(file_path):
-        return jsonify({'error': f'File not found: {file_path}'}), 400
-    session = create_session(file_path, breakpoints)
-    return jsonify({'ok': True, 'session_id': session.id, 'state': session.state})
+    args = data.get('args', '')
+    cwd = data.get('cwd', '')
+
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({'ok': False, 'error': 'File not found: ' + file_path})
+
+    session = get_session()
+    ok, msg = session.start(file_path, args, cwd or None)
+    return jsonify({'ok': ok, 'message': msg, 'state': session.get_state()})
 
 
 @bp.route('/api/debug/stop', methods=['POST'])
-@handle_error
-def api_debug_stop():
+def debug_stop():
+    """Stop the current debug session."""
     session = get_session()
-    if not session:
-        return jsonify({'error': 'No active debug session'})
     session.stop()
-    return jsonify({'ok': True, 'state': session.state})
+    return jsonify({'ok': True, 'state': session.get_state()})
 
 
 @bp.route('/api/debug/continue', methods=['POST'])
-@handle_error
-def api_debug_continue():
+def debug_continue():
+    """Continue execution after a pause."""
     session = get_session()
-    if not session:
-        return jsonify({'error': 'No active debug session'})
-    ok = session.continue_run()
-    return jsonify({'ok': ok, 'state': session.state})
+    ok = session.resume()
+    return jsonify({'ok': ok, 'state': session.get_state()})
 
 
 @bp.route('/api/debug/step', methods=['POST'])
-@handle_error
-def api_debug_step():
+def debug_step():
+    """Step execution. Supports step_in, step_over, step_out."""
     data = request.json or {}
-    mode = data.get('mode', 'step')
+    action = data.get('action', 'step_in')
     session = get_session()
-    if not session:
-        return jsonify({'error': 'No active debug session'})
-    ok = session.step(mode)
-    return jsonify({'ok': ok, 'state': session.state})
+
+    if action == 'step_in':
+        ok = session.step_in()
+    elif action == 'step_over':
+        ok = session.step_over()
+    elif action == 'step_out':
+        ok = session.step_out()
+    else:
+        ok = session.step_in()
+
+    return jsonify({'ok': ok, 'state': session.get_state()})
 
 
 @bp.route('/api/debug/breakpoints', methods=['POST'])
-@handle_error
-def api_debug_breakpoints():
+def debug_set_breakpoints():
+    """Set breakpoints for a file."""
     data = request.json or {}
-    add = data.get('add', [])
-    remove = data.get('remove', [])
+    file_path = data.get('file_path', '')
+    lines = data.get('lines', [])
+    action = data.get('action', 'set')  # set, add, remove
+
     session = get_session()
-    if not session:
-        return jsonify({'error': 'No active debug session'})
-    session.set_breakpoints(add, remove)
-    return jsonify({'ok': True, 'breakpoints': [
-        {'file': f, 'line': l} for f, l in session.breakpoints
-    ]})
+    if action == 'add':
+        session.add_breakpoint(file_path, data.get('line', 0))
+    elif action == 'remove':
+        session.remove_breakpoint(file_path, data.get('line', 0))
+    else:
+        session.set_breakpoints(file_path, lines)
+
+    return jsonify({'ok': True, 'breakpoints': session.get_state().get('breakpoints', {})})
 
 
-@bp.route('/api/debug/state')
-@handle_error
-def api_debug_state():
+@bp.route('/api/debug/state', methods=['GET'])
+def debug_get_state():
+    """Get current debug state (polling endpoint)."""
     session = get_session()
-    if not session:
-        return jsonify({'state': 'no_session'})
-    return jsonify(session.get_state_dict())
+    return jsonify(session.get_state())
 
 
-@bp.route('/api/debug/state/stream')
-def api_debug_state_stream():
-    """SSE endpoint – pushes debug state ~2× per second."""
+@bp.route('/api/debug/state/stream', methods=['GET'])
+def debug_state_stream():
+    """SSE endpoint for real-time debug state updates."""
+    session = get_session()
+
     def generate():
-        last_output_idx = 0
+        last_state = None
         while True:
-            session = get_session()
-            if not session:
-                yield f"data: {json.dumps({'state': 'no_session'})}\n\n"
-                time.sleep(1)
-                continue
+            state = session.get_state()
+            state_json = json.dumps(state)
 
-            state = session.get_state_dict()
-            state['outputLines'] = session.get_output_since(last_output_idx)
-            last_output_idx = len(session.output_lines)
-            yield f"data: {json.dumps(state)}\n\n"
+            if state_json != last_state:
+                last_state = state_json
+                yield f"data: {state_json}\n\n"
 
-            if session.state in ('stopped', 'error'):
-                yield f"data: {json.dumps({'state': session.state, 'done': True})}\n\n"
-                break
+                # If session ended, close stream
+                if state['state'] in ('idle', 'stopped'):
+                    yield f"event: done\ndata: \"debug session ended\"\n\n"
+                    break
 
-            time.sleep(0.5)
+            time.sleep(0.2)
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 @bp.route('/api/debug/evaluate', methods=['POST'])
-@handle_error
-def api_debug_evaluate():
+def debug_evaluate():
+    """Evaluate an expression in the current debug context."""
     data = request.json or {}
     expression = data.get('expression', '')
+
     if not expression:
-        return jsonify({'error': 'expression is required'}), 400
+        return jsonify({'ok': False, 'error': 'Empty expression'})
+
     session = get_session()
-    if not session:
-        return jsonify({'error': 'No active debug session'})
-    result = session.evaluate_expression(expression)
-    session._log('evaluate', f'执行: {expression} → {str(result.get("result", result.get("error", ""))[:100]}')
-    return jsonify(result)
+    result, error = session.evaluate(expression)
+
+    if error:
+        return jsonify({'ok': False, 'error': error})
+    return jsonify({'ok': True, 'result': result})
+
+
+@bp.route('/api/debug/output', methods=['GET'])
+def debug_get_output():
+    """Get captured output from debug session."""
+    session = get_session()
+    state = session.get_state()
+    return jsonify({'output': state.get('output', []), 'state': state['state']})

@@ -1637,6 +1637,88 @@ button, .file-item, .search-result-item, .git-change-item {
     user-select: none;
 }
 
+/* ==================== Debugger Panel ==================== */
+
+/* Debug status badges */
+.debug-status-idle { color: var(--text-muted); background: var(--bg-surface); }
+.debug-status-running { color: var(--bg-primary); background: var(--green); }
+.debug-status-paused { color: var(--bg-primary); background: var(--yellow); animation: pulse-pause 1.5s infinite; }
+.debug-status-stopped { color: var(--bg-primary); background: var(--red); }
+
+@keyframes pulse-pause {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Current line highlight in editor */
+.debug-current-line {
+    background: rgba(249, 226, 175, 0.25) !important;
+    border-left: 3px solid var(--yellow) !important;
+}
+
+/* Breakpoint line highlight */
+.debug-breakpoint-line {
+    background: rgba(243, 139, 168, 0.1) !important;
+}
+
+/* Debug variable rows */
+.debug-var-row {
+    display: flex;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.debug-var-row:active { background: var(--bg-hover); }
+.var-name { color: var(--mauve); font-weight: 600; flex-shrink: 0; width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.var-value { color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Call stack rows */
+.debug-stack-row {
+    display: flex;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.debug-stack-row:active { background: var(--bg-hover); }
+.debug-stack-row.current { background: rgba(137, 180, 250, 0.1); }
+.stack-func { color: var(--green); font-weight: 600; flex-shrink: 0; }
+.stack-loc { color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 8px; }
+
+/* Breakpoint list rows */
+.debug-bp-row {
+    display: flex;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    align-items: center;
+    transition: background 0.15s;
+}
+.debug-bp-row:active { background: var(--bg-hover); }
+.bp-file { color: var(--accent); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-line { color: var(--red); font-weight: 600; flex-shrink: 0; margin-left: 6px; }
+.bp-remove { color: var(--text-muted); flex-shrink: 0; margin-left: 4px; font-size: 10px; padding: 0 4px; cursor: pointer; border-radius: 2px; }
+.bp-remove:hover { color: var(--red); background: rgba(243, 139, 168, 0.2); }
+
+/* Debug empty state */
+.debug-empty { color: var(--text-muted); text-align: center; padding: 12px; font-size: 11px; }
+
+/* Debug output lines */
+.debug-output-line { padding: 1px 0; color: var(--text-primary); }
+
+/* Evaluate input */
+#debug-eval-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2); }
+.debug-eval-line { padding: 2px 0; font-family: var(--font-mono); font-size: 11px; }
+.eval-prompt { color: var(--green); font-weight: bold; margin-right: 6px; }
+.eval-result { color: var(--teal); }
+.eval-error { color: var(--red); font-style: italic; }
+
+/* AI debug activity log */
+.debug-ai-row { display: flex; padding: 2px 8px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.ai-time { color: var(--text-muted); flex-shrink: 0; font-size: 10px; }
+.ai-tool { color: var(--mauve); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ==================== Theme: Claude (Warm Cream) ==================== */
 #project-title {
     font-size: 12px;

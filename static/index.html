@@ -165,7 +165,7 @@
                     <button class="btab" data-btab="console">📋 控制台</button>
                     <button class="btab" data-btab="network">🌐 网络</button>
                     <button class="btab" data-btab="errors">⚠ 错误</button>
-                    <button class="btab" data-btab="http">📡 HTTP</button>
+                    <button class="btab" data-btab="debug">🐛 调试</button>
                     <button class="btab" data-btab="procs">⚙ 进程</button>
                     <button class="btab" data-btab="browser">🔍 预览</button>
                 </div>
@@ -194,25 +194,58 @@
                 <div id="bpanel-errors" class="bpanel">
                     <div id="debug-errors-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;"></div>
                 </div>
-                <!-- HTTP Client -->
-                <div id="bpanel-http" class="bpanel">
-                    <div id="http-client-panel">
-                        <div class="http-row">
-                            <select id="http-method">
-                                <option value="GET">GET</option>
-                                <option value="POST">POST</option>
-                                <option value="PUT">PUT</option>
-                                <option value="PATCH">PATCH</option>
-                                <option value="DELETE">DELETE</option>
-                            </select>
-                            <input type="text" id="http-url" placeholder="http://localhost:1239/api/...">
-                            <button id="http-send">发送</button>
+                <!-- Debugger -->
+                <div id="bpanel-debug" class="bpanel" style="flex-direction:column;">
+                    <!-- Debug Toolbar -->
+                    <div id="debug-toolbar" style="display:flex;align-items:center;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;">
+                        <span id="debug-status-text" class="debug-status-idle" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:var(--radius-sm);flex-shrink:0;">⏸ 就绪</span>
+                        <span id="debug-position" style="font-size:10px;color:var(--text-muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">&nbsp;</span>
+                        <button id="debug-btn-start" title="开始调试" style="padding:3px 8px;border:none;background:var(--green);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:pointer;">▶ 开始</button>
+                        <button id="debug-btn-stop" title="停止" style="padding:3px 8px;border:none;background:var(--red);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;font-weight:600;cursor:pointer;" disabled>⏹ 停止</button>
+                        <button id="debug-btn-continue" title="继续" style="padding:3px 8px;border:none;background:var(--accent);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;" disabled>▶ 继续</button>
+                        <button id="debug-btn-step-in" title="步进" style="padding:3px 8px;border:none;background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;" disabled>⤓</button>
+                        <button id="debug-btn-step-over" title="步过" style="padding:3px 8px;border:none;background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;" disabled>⤏</button>
+                        <button id="debug-btn-step-out" title="步出" style="padding:3px 8px;border:none;background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;" disabled>↩</button>
+                    </div>
+                    <!-- Debug Content: two-column layout -->
+                    <div id="debug-content" style="display:flex;flex:1;overflow:hidden;min-height:0;">
+                        <!-- Left column: variables + call stack -->
+                        <div id="debug-left-col" style="width:50%;display:flex;flex-direction:column;border-right:1px solid var(--border);">
+                            <!-- Variables -->
+                            <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+                                <div style="padding:3px 8px;font-size:10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);flex-shrink:0;">局部变量</div>
+                                <div id="debug-variables" style="flex:1;overflow-y:auto;padding:2px 0;font-family:var(--font-mono);font-size:11px;"></div>
+                            </div>
+                            <!-- Call Stack -->
+                            <div style="display:flex;flex-direction:column;height:120px;border-top:1px solid var(--border);">
+                                <div style="padding:3px 8px;font-size:10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);flex-shrink:0;">调用栈</div>
+                                <div id="debug-callstack" style="flex:1;overflow-y:auto;padding:2px 0;font-family:var(--font-mono);font-size:11px;"></div>
+                            </div>
                         </div>
-                        <div class="http-row">
-                            <textarea id="http-body" placeholder='请求体 (JSON)' rows="3" style="width:100%;"></textarea>
+                        <!-- Right column: breakpoints + output + AI log -->
+                        <div id="debug-right-col" style="width:50%;display:flex;flex-direction:column;">
+                            <!-- Breakpoints -->
+                            <div style="display:flex;flex-direction:column;height:80px;border-bottom:1px solid var(--border);">
+                                <div style="padding:3px 8px;font-size:10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);flex-shrink:0;">断点</div>
+                                <div id="debug-breakpoint-list" style="flex:1;overflow-y:auto;padding:2px 0;font-family:var(--font-mono);font-size:11px;"></div>
+                            </div>
+                            <!-- Output -->
+                            <div style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+                                <div style="padding:3px 8px;font-size:10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);flex-shrink:0;">输出</div>
+                                <div id="debug-output" style="flex:1;overflow-y:auto;padding:4px 8px;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-all;"></div>
+                            </div>
+                            <!-- AI Debug Activity Log -->
+                            <div style="display:flex;flex-direction:column;height:100px;border-top:1px solid var(--border);">
+                                <div style="padding:3px 8px;font-size:10px;color:var(--text-muted);font-weight:600;border-bottom:1px solid var(--border);flex-shrink:0;">AI 调试活动</div>
+                                <div id="debug-ai-log" style="flex:1;overflow-y:auto;padding:2px 0;font-size:11px;"></div>
+                            </div>
                         </div>
-                        <div id="http-status"></div>
-                        <div id="http-response"></div>
+                    </div>
+                    <!-- Evaluate input bar -->
+                    <div id="debug-eval-bar" style="display:flex;align-items:center;gap:4px;padding:4px 8px;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg-tertiary);">
+                        <span style="color:var(--green);font-family:var(--font-mono);font-size:12px;font-weight:bold;flex-shrink:0;">&gt;&gt;&gt;</span>
+                        <input type="text" id="debug-eval-input" placeholder="输入表达式求值... (暂停时可用)" style="flex:1;padding:4px 8px;border:1px solid var(--border);background:var(--bg-primary);color:var(--text-primary);border-radius:var(--radius-sm);font-size:12px;font-family:var(--font-mono);outline:none;">
+                        <button id="debug-eval-btn" style="padding:4px 10px;border:none;background:var(--accent);color:var(--bg-primary);border-radius:var(--radius-sm);font-size:11px;cursor:pointer;">求值</button>
                     </div>
                 </div>
                 <!-- Browser Preview -->
@@ -487,6 +520,7 @@
     <script src="/js/chat.js"></script>
     <script src="/js/editor.js"></script>
     <script src="/js/debug.js"></script>
+    <script src="/js/debugger.js"></script>
     <script src="/js/app.js"></script>
 </body>
 </html>

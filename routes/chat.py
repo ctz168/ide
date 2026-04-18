@@ -43,7 +43,7 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
 
 ## Available Tools
-You have **26 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **34 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
 ### File & Code Tools (19)
@@ -55,7 +55,7 @@ For multi-step tasks, think step by step and use tools in sequence.
 - `install_package` / `list_packages` -- Python/npm package management
 - `web_search` / `web_fetch` -- Search the web and fetch page content
 
-### Browser Debugging Tools (7) -- NEW
+### Browser Debugging Tools (9)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
 - `browser_navigate` -- Open a URL in the preview (must be same-origin, e.g. localhost)
 - `browser_evaluate` -- Execute JavaScript expressions in the page and get results
@@ -74,6 +74,26 @@ The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You ca
 4. Use `browser_click` / `browser_input` to interact
 5. Use `browser_evaluate` for custom JS (e.g. get scroll position, check state)
 6. Use `browser_console` to check for errors after interactions
+
+### Python Runtime Debugging Tools (8) -- NEW
+You can debug Python code execution in real-time:
+- `debug_start` -- Start a debugging session for a Python file
+- `debug_stop` -- Stop the current debug session
+- `debug_set_breakpoints` -- Set breakpoints (list of line numbers) for a file
+- `debug_continue` -- Continue execution after a pause
+- `debug_step` -- Step through code (step_in, step_over, step_out)
+- `debug_inspect` -- Get current variable values and call stack
+- `debug_evaluate` -- Evaluate a Python expression in the current frame
+- `debug_stack` -- Get the current call stack
+
+**Debugging Workflow:**
+1. Use `debug_start` with the file path to begin debugging
+2. Use `debug_set_breakpoints` to set breakpoints at specific lines
+3. Use `debug_continue` to run until a breakpoint is hit
+4. Use `debug_inspect` to see variables and call stack at the current line
+5. Use `debug_evaluate` to evaluate expressions (e.g. check variable values)
+6. Use `debug_step` with action "step_in"/"step_over"/"step_out" to step through code
+7. Use `debug_stop` when done debugging
 
 ## Important Rules
 1. Always use absolute paths when referencing files
@@ -774,6 +794,97 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Python Runtime Debugging Tools ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_start',
+            'description': 'Start a debugging session for a Python file. The file must exist. This begins tracing execution with sys.settrace().',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'file_path': {'type': 'string', 'description': 'Absolute path to the Python file to debug'},
+                    'breakpoints': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Optional list of line numbers to set as initial breakpoints', 'default': []},
+                },
+                'required': ['file_path'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_stop',
+            'description': 'Stop the current debug session.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_set_breakpoints',
+            'description': 'Set breakpoints for a file. Replaces all existing breakpoints for that file.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'file_path': {'type': 'string', 'description': 'Absolute path to the file'},
+                    'lines': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'List of line numbers to set as breakpoints'},
+                },
+                'required': ['file_path', 'lines'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_continue',
+            'description': 'Continue execution after a pause. Runs until the next breakpoint or program end.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_step',
+            'description': 'Step through code. Actions: step_in (next line, enter functions), step_over (next line in same function), step_out (run until returning from current function).',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'action': {'type': 'string', 'enum': ['step_in', 'step_over', 'step_out'], 'description': 'Stepping action', 'default': 'step_in'},
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_inspect',
+            'description': 'Get current debug state including file, line number, function name, local variables, and call stack.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_evaluate',
+            'description': 'Evaluate a Python expression in the current debug frame context. Returns the result as a string. Only works when paused.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'expression': {'type': 'string', 'description': 'Python expression to evaluate (e.g. "len(data)", "x + y", "type(result)")'},
+                },
+                'required': ['expression'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'debug_stack',
+            'description': 'Get the current call stack as a list of (filename, line, function_name) entries.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
 ]
 
 # ==================== Security Helpers ====================
@@ -1315,6 +1426,101 @@ def _tool_browser_page_info(args):
     result = wait_browser_result(cmd_id, timeout=10)
     return _format_browser_result(result)
 
+def _tool_debug_start(args):
+    from routes.debug import get_session
+    file_path = args.get('file_path', '')
+    breakpoints = args.get('breakpoints', [])
+    if not file_path or not os.path.isfile(file_path):
+        return f'Error: File not found: {file_path}'
+    session = get_session()
+    if breakpoints:
+        session.set_breakpoints(file_path, breakpoints)
+    ok, msg = session.start(file_path)
+    return msg if ok else f'Error: {msg}'
+
+def _tool_debug_stop(args):
+    from routes.debug import get_session
+    session = get_session()
+    session.stop()
+    return 'Debug session stopped'
+
+def _tool_debug_set_breakpoints(args):
+    from routes.debug import get_session
+    file_path = args.get('file_path', '')
+    lines = args.get('lines', [])
+    if not file_path:
+        return 'Error: file_path is required'
+    session = get_session()
+    session.set_breakpoints(file_path, lines)
+    return f'Breakpoints set for {os.path.basename(file_path)}: lines {lines}'
+
+def _tool_debug_continue(args):
+    from routes.debug import get_session
+    session = get_session()
+    ok = session.resume()
+    if ok:
+        return 'Continuing execution...'
+    return 'Error: Not paused'
+
+def _tool_debug_step(args):
+    from routes.debug import get_session
+    action = args.get('action', 'step_in')
+    session = get_session()
+    if action == 'step_over':
+        ok = session.step_over()
+    elif action == 'step_out':
+        ok = session.step_out()
+    else:
+        ok = session.step_in()
+    if ok:
+        return f'Stepping ({action})...'
+    return 'Error: Not paused'
+
+def _tool_debug_inspect(args):
+    from routes.debug import get_session
+    session = get_session()
+    state = session.get_state()
+    if state['state'] != 'paused':
+        return f'Session is {state["state"]}, not paused. Use debug_continue or debug_step first.'
+    result = f'File: {os.path.basename(state.get("file", "?"))}\n'
+    result += f'Line: {state.get("line", 0)} in {state.get("func", "?")}()\n\n'
+    result += 'Local Variables:\n'
+    variables = state.get('local_vars', {})
+    if variables:
+        for name, value in variables.items():
+            result += f'  {name} = {value}\n'
+    else:
+        result += '  (no variables)\n'
+    result += f'\nCall Stack ({len(state.get("call_stack", []))} frames):\n'
+    for i, entry in enumerate(reversed(state.get('call_stack', []))):
+        fname = os.path.basename(entry[0]) if entry[0] else '?'
+        result += f'  [{i}] {entry[2]}() at {fname}:{entry[1]}\n'
+    return result
+
+def _tool_debug_evaluate(args):
+    from routes.debug import get_session
+    expression = args.get('expression', '')
+    if not expression:
+        return 'Error: expression is required'
+    session = get_session()
+    result, error = session.evaluate(expression)
+    if error:
+        return f'Error: {error}'
+    return str(result)
+
+def _tool_debug_stack(args):
+    from routes.debug import get_session
+    session = get_session()
+    state = session.get_state()
+    stack = state.get('call_stack', [])
+    if not stack:
+        return 'Call stack is empty'
+    result = f'Call Stack ({len(stack)} frames):\n'
+    for i, entry in enumerate(reversed(stack)):
+        fname = os.path.basename(entry[0]) if entry[0] else '?'
+        result += f'  [{i}] {entry[2]}() at {fname}:{entry[1]}\n'
+    return result
+
 _TOOL_HANDLERS = {
     'read_file': _tool_read_file,
     'write_file': _tool_write_file,
@@ -1344,6 +1550,14 @@ _TOOL_HANDLERS = {
     'browser_console': _tool_browser_console,
     'browser_cookies': _tool_browser_cookies,
     'browser_page_info': _tool_browser_page_info,
+    'debug_start': _tool_debug_start,
+    'debug_stop': _tool_debug_stop,
+    'debug_set_breakpoints': _tool_debug_set_breakpoints,
+    'debug_continue': _tool_debug_continue,
+    'debug_step': _tool_debug_step,
+    'debug_inspect': _tool_debug_inspect,
+    'debug_evaluate': _tool_debug_evaluate,
+    'debug_stack': _tool_debug_stack,
 }
 
 def execute_agent_tool(name, arguments):
