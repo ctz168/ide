@@ -26,6 +26,9 @@ const ChatManager = (() => {
     let taskActivityBadge = null;       // badge element on #btn-chat
 
     // ── Constants ──────────────────────────────────────────────────
+    const MSG_BACKUP_KEY = 'phoneide_chat_backup'; // localStorage key for crash recovery
+    const MSG_BACKUP_INTERVAL = 3000; // save backup every 3s during streaming
+    let _backupTimer = null;
     const KNOWN_TOOLS = [
         'read_file', 'write_file', 'execute_code', 'search_files',
         'list_files', 'git_status', 'git_diff', 'terminal', 'install_package',
@@ -91,6 +94,55 @@ const ChatManager = (() => {
 4. **Expected outcome** - What the result should look like
 
 Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
+
+    // ── Chat Message Backup (crash/refresh recovery) ───────────
+    // During streaming, messages are only saved to backend after completion.
+    // We periodically save to localStorage so nothing is lost on refresh/close.
+
+    function backupMessages() {
+        if (messages.length === 0) return;
+        try {
+            localStorage.setItem(MSG_BACKUP_KEY, JSON.stringify({
+                messages: messages,
+                convId: currentConvId,
+                timestamp: Date.now()
+            }));
+        } catch (e) { /* storage full — ignore */ }
+    }
+
+    function restoreBackup() {
+        try {
+            const raw = localStorage.getItem(MSG_BACKUP_KEY);
+            if (!raw) return null;
+            const data = JSON.parse(raw);
+            // Only restore if backup is less than 24 hours old
+            if (data.timestamp && Date.now() - data.timestamp > 24 * 60 * 60 * 1000) {
+                localStorage.removeItem(MSG_BACKUP_KEY);
+                return null;
+            }
+            return data;
+        } catch (e) {
+            localStorage.removeItem(MSG_BACKUP_KEY);
+            return null;
+        }
+    }
+
+    function clearBackup() {
+        localStorage.removeItem(MSG_BACKUP_KEY);
+        stopBackupTimer();
+    }
+
+    function startBackupTimer() {
+        stopBackupTimer();
+        _backupTimer = setInterval(backupMessages, MSG_BACKUP_INTERVAL);
+    }
+
+    function stopBackupTimer() {
+        if (_backupTimer) {
+            clearInterval(_backupTimer);
+            _backupTimer = null;
+        }
+    }
 
     // ── Helpers ────────────────────────────────────────────────────
 
@@ -927,6 +979,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     // ── API: Load History ──────────────────────────────────────────
 
     async function loadHistory() {
+        // First check localStorage backup (for crash/refresh recovery)
+        const backup = restoreBackup();
+        if (backup && backup.messages && backup.messages.length > 0) {
+            // Restore from backup — it has more recent data than backend
+            if (backup.convId) {
+                currentConvId = backup.convId;
+            }
+            renderMessages(backup.messages);
+            return backup.messages;
+        }
+
+        // No backup — load from backend
         try {
             const resp = await fetch('/api/chat/history');
             if (!resp.ok) throw new Error(`Failed to load history: ${resp.statusText}`);
@@ -992,6 +1056,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         let currentToolEl = null;
         let lastToolName = null;
         let hasError = false;
+
+        // Start periodic backup during reconnection streaming
+        startBackupTimer();
 
         currentAbortController = new AbortController();
         const signal = currentAbortController.signal;
@@ -1121,6 +1188,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         if (currentStreamEl && streamBuffer) {
                             finalizedEl = finalizeStreamMessage();
                         }
+                        // Task completed — backend saved history, clear local backup
+                        clearBackup();
                         const totalDuration = Date.now() - streamingStartTime;
                         const tokensUsed = estimateTokens(streamBuffer);
                         let summary = `Completed in ${formatDuration(totalDuration)}`;
@@ -1160,6 +1229,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             hideTaskActivityBadge();
             stopTaskStatusPolling();
             autoResizeInput();
+
+            // Stop backup timer — backend has saved the history on completion
+            stopBackupTimer();
 
             const sendBtn = document.getElementById('chat-send');
             if (sendBtn) {
@@ -1317,6 +1389,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         let currentToolEl = null;
         let lastToolName = null;
         let hasError = false;
+
+        // Start periodic backup during streaming
+        startBackupTimer();
 
         // Create abort controller
         currentAbortController = new AbortController();
@@ -1566,6 +1641,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         messages = [];
         lastUserMessage = null;
         renderMessages([]);
+        clearBackup();
 
         // Focus input
         const input = document.getElementById('chat-input');
@@ -2742,6 +2818,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             currentConvId = conv.id;
             messages = conv.messages || [];
             renderMessages(messages);
+            clearBackup(); // Clear any stale backup when loading a saved conversation
             showToast('已加载会话: ' + truncate(conv.title || 'New Chat', 30), 'success');
         } catch (err) {
             showToast('加载会话失败: ' + err.message, 'error');
