@@ -1413,3 +1413,5 @@ const GitManager = (() => {
         get branches() { return branchData; }
     };
 })();
+
+window.GitManager = GitManager;
