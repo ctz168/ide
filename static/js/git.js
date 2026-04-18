@@ -867,6 +867,11 @@ const GitManager = (() => {
             const isUntracked = statusLower.includes('untracked') || statusLower === 'untracked' || status === '?';
             const isDeleted = statusLower.includes('deleted');
 
+            // Detect binary file extensions
+            const ext = (path.split('.').pop() || '').toLowerCase();
+            const binaryExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg', 'mp3', 'mp4', 'wav', 'zip', 'tar', 'gz', '7z', 'rar', 'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'woff', 'woff2', 'ttf', 'eot', 'otf'];
+            const isBinary = binaryExts.includes(ext);
+
             html += `
                 <div class="git-change-item" data-path="${escapeAttr(path)}" data-status="${escapeAttr(status)}">
                     <div class="git-change-row">
@@ -874,7 +879,8 @@ const GitManager = (() => {
                         <span class="git-change-path">${escapedPath}</span>
                     </div>
                     <div class="git-change-actions">
-                        <button class="git-action-btn" data-action="diff" data-path="${escapeAttr(path)}" title="差异">📋</button>
+                        ${!isBinary ? `<button class="git-action-btn" data-action="diff" data-path="${escapeAttr(path)}" title="差异">📋</button>` : ''}
+                        ${!isDeleted ? `<button class="git-action-btn" data-action="open" data-path="${escapeAttr(path)}" title="打开文件">📄</button>` : ''}
                         ${!isUntracked && !isDeleted ? `<button class="git-action-btn" data-action="restore" data-path="${escapeAttr(path)}" title="回退修改">↩</button>` : ''}
                         <button class="git-action-btn" data-action="ignore" data-path="${escapeAttr(path)}" title="添加到 .gitignore">🚫</button>
                         ${!isDeleted ? `<button class="git-action-btn git-action-danger" data-action="delete" data-path="${escapeAttr(path)}" title="删除文件">🗑</button>` : ''}
@@ -891,6 +897,7 @@ const GitManager = (() => {
                 const action = btn.dataset.action;
                 const path = btn.dataset.path;
                 if (action === 'diff') diff(path);
+                else if (action === 'open') openGitFile(path);
                 else if (action === 'restore') restoreFile(path);
                 else if (action === 'ignore') addToGitignore(path);
                 else if (action === 'delete') deleteGitFile(path);
@@ -1028,9 +1035,7 @@ const GitManager = (() => {
 
         items.push({ label: '查看差异', action: () => diff(path) });
         items.push({ label: '暂存文件', action: () => addFiles(path) });
-        items.push({ label: '打开文件', action: () => {
-            if (window.FileManager) window.FileManager.openFile(path);
-        }});
+        items.push({ label: '打开文件', action: () => openGitFile(path) });
 
         // Restore/Revert — only for modified/staged files (not untracked or deleted)
         if (!isUntracked && !isDeleted) {
@@ -1075,6 +1080,36 @@ const GitManager = (() => {
 
     function removeChangeContextMenu() {
         document.querySelectorAll('.context-menu').forEach(m => m.remove());
+    }
+
+    // ── API: Open File from Git Changes ─────────────────────────
+
+    /**
+     * Open a file from the git changes list.
+     * Resolves the path relative to the git root (project dir) and opens it via FileManager.
+     */
+    async function openGitFile(filepath) {
+        const gitCwd = getGitCwd();
+        // Build path relative to workspace: project_dir/file_path
+        const fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
+
+        // Detect binary files
+        const ext = (filepath.split('.').pop() || '').toLowerCase();
+        const binaryExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg', 'mp3', 'mp4', 'wav', 'zip', 'tar', 'gz', '7z', 'rar', 'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'woff', 'woff2', 'ttf', 'eot', 'otf'];
+        if (binaryExts.includes(ext)) {
+            showToast(`无法预览二进制文件: ${filepath.split('/').pop()}`, 'info');
+            return;
+        }
+
+        if (window.FileManager && typeof window.FileManager.openFile === 'function') {
+            try {
+                await window.FileManager.openFile(fullPath);
+            } catch (err) {
+                showToast('打开文件失败: ' + err.message, 'error');
+            }
+        } else {
+            showToast('文件管理器不可用', 'error');
+        }
     }
 
     // ── API: Add to .gitignore ────────────────────────────────────
@@ -1139,13 +1174,15 @@ const GitManager = (() => {
     async function deleteGitFile(filepath) {
         const confirmed = await confirmDialog(
             '删除文件',
-            `确定要删除 "${filepath}" 吗？此操作不可撤销。`
+            `确定要删除 "${filepath.split('/').pop()}" 吗？\n路径: ${filepath}\n\n此操作不可撤销。`
         );
         if (!confirmed) return;
 
         // Resolve path relative to project dir (for /api/files/* which uses WORKSPACE as base)
         const gitCwd = getGitCwd();
-        const fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
+        let fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
+        // Ensure no leading slash (would break os.path.join in backend)
+        if (fullPath.startsWith('/')) fullPath = fullPath.replace(/^\/+/,");
 
         try {
             const resp = await fetch('/api/files/delete', {
@@ -1159,7 +1196,7 @@ const GitManager = (() => {
             }
 
             gitLogSimple(`rm ${filepath}`, null);
-            showToast(`已删除 ${filepath}`, 'success');
+            showToast(`已删除 ${filepath.split('/').pop()}`, 'success');
             await refresh();
 
             // Refresh file list
@@ -1370,6 +1407,7 @@ const GitManager = (() => {
         gitInit,
         restoreFile,
         checkoutCommit,
+        openGitFile,
         addToGitignore,
         deleteGitFile,
 
