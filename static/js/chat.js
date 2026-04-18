@@ -2126,10 +2126,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                     <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="128000" step="256" value="${m.max_tokens || '4096'}">
                                 </label>
                                 <label class="llm-reasoning-label"><span>推理模式</span>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" class="llm-reasoning" data-idx="${idx}" ${m.reasoning !== false ? 'checked' : ''}>
-                                        <span class="toggle-slider"></span>
-                                    </label>
+                                    <input type="checkbox" class="llm-reasoning" data-idx="${idx}" ${m.reasoning !== false ? 'checked' : ''}>
                                 </label>
                             </div>
                         </div>
@@ -2541,42 +2538,32 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 white-space: nowrap;
                 font-size: 11px;
             }
-            .toggle-switch {
-                position: relative;
-                display: inline-block;
-                width: 36px;
-                height: 20px;
+            .llm-reasoning-label input[type="checkbox"] {
+                appearance: none;
+                -webkit-appearance: none;
+                width: 16px;
+                height: 16px;
+                border: 2px solid var(--border);
+                border-radius: 3px;
                 flex-shrink: 0;
-            }
-            .toggle-switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            .toggle-slider {
-                position: absolute;
                 cursor: pointer;
-                inset: 0;
-                background: var(--border);
-                border-radius: 20px;
-                transition: 0.2s;
+                position: relative;
+                transition: 0.15s;
             }
-            .toggle-slider::before {
+            .llm-reasoning-label input[type="checkbox"]:checked {
+                background: var(--accent);
+                border-color: var(--accent);
+            }
+            .llm-reasoning-label input[type="checkbox"]:checked::after {
                 content: '';
                 position: absolute;
-                height: 14px;
-                width: 14px;
-                left: 3px;
-                bottom: 3px;
-                background: white;
-                border-radius: 50%;
-                transition: 0.2s;
-            }
-            .toggle-switch input:checked + .toggle-slider {
-                background: var(--accent);
-            }
-            .toggle-switch input:checked + .toggle-slider::before {
-                transform: translateX(16px);
+                left: 4px;
+                top: 1px;
+                width: 5px;
+                height: 9px;
+                border: solid white;
+                border-width: 0 2px 2px 0;
+                transform: rotate(45deg);
             }
             .llm-add-model-btn {
                 width: 100%;
