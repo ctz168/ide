@@ -6,13 +6,16 @@ Provides command queue for AI tools to control the preview iframe.
 import json
 import uuid
 import time
+import ssl
 import threading
 import webbrowser
 import subprocess
 import re
+import urllib.request
+import urllib.error
+import urllib.parse
 from urllib.parse import urlparse, urljoin, urlencode
 
-import requests as _requests_lib
 from flask import Blueprint, jsonify, request, Response, make_response
 from utils import handle_error
 
@@ -203,9 +206,47 @@ _PASS_HEADERS = {
     'access-control-allow-credentials',
 }
 
+# SSL context that doesn't verify certs (for local dev with self-signed certs)
+_SSL_CONTEXT = ssl.create_default_context()
+_SSL_CONTEXT.check_hostname = False
+_SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+
+class _ProxyResponse:
+    """Lightweight wrapper to mimic requests.Response interface for _proxy_response."""
+    def __init__(self, raw_body, status_code, headers):
+        self.content = raw_body
+        self.status_code = status_code
+        self.headers = _CaseInsensitiveDict(headers)
+        # Try to detect encoding from content-type
+        ct = headers.get('Content-Type', '')
+        self.encoding = 'utf-8'
+        if 'charset=' in ct:
+            for part in ct.split(';'):
+                part = part.strip()
+                if part.lower().startswith('charset='):
+                    self.encoding = part.split('=', 1)[1].strip().strip('"').strip("'")
+                    break
+
+
+class _CaseInsensitiveDict:
+    """Minimal case-insensitive dict for response headers."""
+    def __init__(self, source=None):
+        self._store = {}
+        if source:
+            for k, v in source.items():
+                self._store[k.lower()] = (k, v)
+
+    def get(self, key, default=None):
+        item = self._store.get(key.lower())
+        return item[1] if item else default
+
+    def items(self):
+        return [(k, v) for k, (_, v) in self._store.items()]
+
 
 def _proxy_response(target_resp, proxy_base):
-    """Build a Flask Response from a requests Response, rewriting HTML if needed."""
+    """Build a Flask Response from a target response, rewriting HTML if needed."""
     content_type = target_resp.headers.get('content-type', '')
     raw_body = target_resp.content
 
@@ -320,19 +361,17 @@ def _proxy_url(url, proxy_base):
         return url
     # Absolute URL — independent proxy request with its own base
     if url.startswith('http://') or url.startswith('https://'):
-        return '/api/browser/proxy?url=' + _requests_lib.utils.quote(url, safe='') + '&base=' + _requests_lib.utils.quote(url, safe='')
+        return '/api/browser/proxy?url=' + urllib.parse.quote(url, safe='') + '&base=' + urllib.parse.quote(url, safe='')
     # Protocol-relative
     if url.startswith('//'):
         full = 'https:' + url
-        return '/api/browser/proxy?url=' + _requests_lib.utils.quote(full, safe='') + '&base=' + _requests_lib.utils.quote(full, safe='')
+        return '/api/browser/proxy?url=' + urllib.parse.quote(full, safe='') + '&base=' + urllib.parse.quote(full, safe='')
     # Relative URL — keep existing base from proxy_base, pass as rel param
-    return proxy_base + '&rel=' + _requests_lib.utils.quote(url, safe='')
+    return proxy_base + '&rel=' + urllib.parse.quote(url, safe='')
 
 
 def _get_original_base(proxy_base):
     """Extract the original target URL from the proxy base URL."""
-    # proxy_base is like /api/browser/proxy?url=http%3A//localhost%3A8080
-    # We may also have a 'base' param added by the frontend
     return proxy_base
 
 
@@ -374,39 +413,39 @@ def proxy():
     parsed = urlparse(target_url)
     hostname = parsed.hostname or ''
     # Allow all hostnames for development use (IDE is typically local-only)
-    # but block obvious internal-only IPs if needed in production
 
     try:
-        # Determine what Referer to send (helps servers that check it)
-        headers = {
-            'User-Agent': 'PhoneIDE-Proxy/1.0',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'identity',  # avoid gzip to simplify URL rewriting
-        }
+        # Fetch target URL using urllib
+        req = urllib.request.Request(target_url, method='GET')
+        req.add_header('User-Agent', 'PhoneIDE-Proxy/1.0')
+        req.add_header('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+        req.add_header('Accept-Encoding', 'identity')  # avoid gzip to simplify URL rewriting
 
-        resp = _requests_lib.get(
-            target_url,
-            headers=headers,
-            timeout=15,
-            allow_redirects=True,
-            verify=False,  # allow self-signed certs for local dev
-        )
+        raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
+        raw_body = raw_resp.read()
+        status_code = raw_resp.status
+        resp_headers = dict(raw_resp.headers.items())
 
         # Build proxy base URL for rewriting
-        # Include the original target URL so relative URLs can be resolved
-        proxy_base = f'/api/browser/proxy?url={_requests_lib.utils.quote(target_url, safe="")}'
-        proxy_base += f'&base={_requests_lib.utils.quote(target_url, safe="")}'
+        proxy_base = f'/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
+        proxy_base += f'&base={urllib.parse.quote(target_url, safe="")}'
 
-        return _proxy_response(resp, proxy_base)
+        wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
+        return _proxy_response(wrapped, proxy_base)
 
-    except _requests_lib.exceptions.Timeout:
-        return jsonify({'error': f'Request to {target_url} timed out'}), 504
-    except _requests_lib.exceptions.ConnectionError as e:
-        return jsonify({'error': f'Cannot connect to {target_url}: {str(e)[:200]}'}), 502
+    except urllib.error.HTTPError as e:
+        # For HTTP errors, still try to return the error page through our proxy
+        try:
+            raw_body = e.read()
+            resp_headers = dict(e.headers.items()) if e.headers else {}
+            proxy_base = f'/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
+            proxy_base += f'&base={urllib.parse.quote(target_url, safe="")}'
+            wrapped = _ProxyResponse(raw_body, e.code, resp_headers)
+            return _proxy_response(wrapped, proxy_base)
+        except Exception:
+            return jsonify({'error': f'HTTP {e.code} for {target_url}'}), e.code
+    except urllib.error.URLError as e:
+        reason = str(e.reason) if e.reason else 'Unknown error'
+        return jsonify({'error': f'Cannot connect to {target_url}: {reason[:200]}'}), 502
     except Exception as e:
         return jsonify({'error': f'Proxy error: {str(e)[:200]}'}), 502
-
-
-# Suppress InsecureRequestWarning for verify=False
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
