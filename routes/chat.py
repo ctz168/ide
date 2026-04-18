@@ -57,21 +57,22 @@ For multi-step tasks, think step by step and use tools in sequence.
 
 ### Browser Debugging Tools (9)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
-- `browser_navigate` -- Open a URL in the preview (must be same-origin, e.g. localhost)
-- `browser_evaluate` -- Execute JavaScript expressions in the page and get results
-- `browser_inspect` -- Get detailed info about a DOM element (tag, attributes, styles, position, visibility)
-- `browser_query_all` -- List all elements matching a CSS selector with summary info
-- `browser_click` -- Simulate clicking an element
-- `browser_input` -- Simulate typing text into an input/textarea
-- `browser_console` -- Get captured console.log/warn/error output from the page
-- `browser_cookies` -- Read cookies of the preview page
-- `browser_page_info` -- Get page title, URL, viewport, and scroll position
+- `browser_navigate` -- Navigate the preview iframe to any URL (same-origin pages allow full DOM inspection; cross-origin pages load if permitted but DOM access is blocked)
+- `browser_evaluate` -- Execute JavaScript expressions in the page and get results (same-origin only)
+- `browser_inspect` -- Get detailed info about a DOM element (same-origin only)
+- `browser_query_all` -- List all elements matching a CSS selector with summary info (same-origin only)
+- `browser_click` -- Simulate clicking an element (same-origin only)
+- `browser_input` -- Simulate typing text into an input/textarea (same-origin only)
+- `browser_console` -- Get captured console.log/warn/error output from the page (same-origin only)
+- `browser_cookies` -- Read cookies of the preview page (same-origin only)
+- `browser_page_info` -- Get page title, URL, viewport, and scroll position (same-origin only)
+- `browser_open_external` -- Open a URL in the system/default browser (works for any URL including cross-origin)
 
 **Browser Debugging Workflow:**
-1. Use `browser_navigate` to open the target page (e.g. http://localhost:8080)
-2. Use `browser_page_info` to verify the page loaded
-3. Use `browser_inspect` or `browser_query_all` to examine elements
-4. Use `browser_click` / `browser_input` to interact
+1. Use `browser_navigate` to open the target page (same-origin for debugging, cross-origin for preview)
+2. If the page is cross-origin and you need full interaction, use `browser_open_external` instead
+3. Use `browser_page_info` to verify the page loaded
+4. For same-origin pages: use `browser_inspect`/`browser_query_all` to examine, `browser_click`/`browser_input` to interact
 5. Use `browser_evaluate` for custom JS (e.g. get scroll position, check state)
 6. Use `browser_console` to check for errors after interactions
 
@@ -107,8 +108,8 @@ You can debug Python code execution in real-time:
 9. Respect the workspace boundary - all file operations are scoped to the workspace
 10. When running shell commands, be cautious with destructive operations
 11. For browser tools, the preview must be on the "Preview" tab with a page loaded
-12. Browser tools only work with same-origin pages (localhost). Cross-origin pages will fail
-13. After clicking or inputting, wait a moment before inspecting results
+12. Browser DOM tools (inspect, click, input, evaluate, etc.) only work with same-origin pages (localhost). Cross-origin pages will load visually but DOM access is blocked by the browser's security policy
+13. Use `browser_open_external` to open any URL in the system browser when iframe access is not needed
 
 ## Workspace
 Current workspace: {WORKSPACE}
@@ -625,7 +626,9 @@ AGENT_TOOLS = [
         'function': {
             'name': 'browser_navigate',
             'description': (
-                'Navigate the built-in preview iframe to a URL. The page must be same-origin (e.g. localhost). '
+                'Navigate the built-in preview iframe to a URL. Supports any URL (http/https). '
+                'Same-origin pages (localhost) allow full DOM inspection via other browser tools. '
+                'Cross-origin pages will load if the server permits, but DOM access tools will fail. '
                 'Returns success/error status. Use this first before other browser tools.'
             ),
             'parameters': {
@@ -633,7 +636,7 @@ AGENT_TOOLS = [
                 'properties': {
                     'url': {
                         'type': 'string',
-                        'description': 'URL to navigate to (e.g. "http://localhost:8080")',
+                        'description': 'URL to navigate to (e.g. "http://localhost:8080", "https://example.com")',
                     },
                 },
                 'required': ['url'],
@@ -791,6 +794,27 @@ AGENT_TOOLS = [
                 'type': 'object',
                 'properties': {},
                 'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_open_external',
+            'description': (
+                'Open a URL in the system/default browser. Use this for cross-origin pages '
+                'that cannot be inspected in the preview iframe, or when you want the user to see '
+                'a page in their actual browser. Works with any URL.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'url': {
+                        'type': 'string',
+                        'description': 'URL to open in the system browser',
+                    },
+                },
+                'required': ['url'],
             },
         },
     },
@@ -1426,6 +1450,28 @@ def _tool_browser_page_info(args):
     result = wait_browser_result(cmd_id, timeout=10)
     return _format_browser_result(result)
 
+def _tool_browser_open_external(args):
+    import urllib.request as _urllib_req
+    url = args.get('url', '')
+    if not url:
+        return 'Error: URL is required'
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+    try:
+        result = _urllib_req.urlopen(
+            _urllib_req.Request('http://localhost:' + str(os.environ.get('PORT', 1239)) + '/api/browser/open-external',
+                               data=json.dumps({'url': url}).encode(),
+                               headers={'Content-Type': 'application/json'},
+                               method='POST'),
+            timeout=10
+        )
+        data = json.loads(result.read())
+        if data.get('ok'):
+            return f'Opened in system browser: {url}'
+        return f'Error: {data.get("error", "unknown")}'
+    except Exception as e:
+        return f'Error: {e}'
+
 def _tool_debug_start(args):
     from routes.debug import get_session
     file_path = args.get('file_path', '')
@@ -1562,6 +1608,7 @@ _TOOL_HANDLERS = {
     'browser_console': _tool_browser_console,
     'browser_cookies': _tool_browser_cookies,
     'browser_page_info': _tool_browser_page_info,
+    'browser_open_external': _tool_browser_open_external,
     'debug_start': _tool_debug_start,
     'debug_stop': _tool_debug_stop,
     'debug_set_breakpoints': _tool_debug_set_breakpoints,

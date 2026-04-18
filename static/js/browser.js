@@ -5,7 +5,8 @@
  *   Backend AI tool → create_browser_command() → frontend polls /api/browser/poll
  *   → frontend executes in iframe → frontend POSTs /api/browser/result → tool returns
  *
- * Same-origin only: the preview iframe must load a page from the same origin (localhost).
+ * Supports any URL. Same-origin pages (localhost) allow full DOM inspection;
+ * cross-origin pages will load if permitted by the server, but DOM access will fail.
  */
 const BrowserInspector = (() => {
     'use strict';
@@ -308,9 +309,37 @@ const BrowserInspector = (() => {
     function navigate(url) {
         if (!iframe) return { error: '预览框架不可用' };
         if (!url) return { error: 'URL 不能为空' };
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            url = 'https://' + url;
+        }
         iframe.src = url;
         bridgeInjected = false;
         return { ok: true, message: '正在导航到: ' + url };
+    }
+
+    async function openExternal(url) {
+        if (!url) return;
+        try {
+            const origFetch = window._origFetch || window.fetch.bind(window);
+            const resp = await origFetch('/api/browser/open-external', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+            const data = await resp.json();
+            if (data.ok) {
+                if (window.showToast) window.showToast('已在外部浏览器中打开', 'success', 1500);
+            } else {
+                if (window.showToast) window.showToast('打开失败: ' + (data.error || ''), 'error');
+            }
+        } catch (e) {
+            // Fallback: try window.open
+            try {
+                window.open(url, '_blank');
+            } catch (ex) {
+                if (window.showToast) window.showToast('无法打开外部浏览器', 'error');
+            }
+        }
     }
 
     function getPageInfo() {
@@ -466,6 +495,7 @@ const BrowserInspector = (() => {
 
         // Navigate / Go button
         const goBtn = document.getElementById('browser-go-btn');
+        const externalBtn = document.getElementById('browser-external-btn');
         const urlInput = document.getElementById('browser-url-input');
         if (goBtn && urlInput) {
             goBtn.addEventListener('click', function () {
@@ -478,6 +508,15 @@ const BrowserInspector = (() => {
                     const url = urlInput.value.trim();
                     if (url) navigate(url);
                 }
+            });
+        }
+
+        // External browser button
+        if (externalBtn && urlInput) {
+            externalBtn.addEventListener('click', function () {
+                const url = urlInput.value.trim();
+                if (url) openExternal(url);
+                else if (window.showToast) window.showToast('请先输入网址', 'warning');
             });
         }
 
@@ -530,6 +569,7 @@ const BrowserInspector = (() => {
         getCookies,
         getConsoleLogs,
         navigate,
+        openExternal,
         getPageInfo,
         renderIframeLogs,
         get bridgeInjected() { return bridgeInjected; },

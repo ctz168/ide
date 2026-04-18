@@ -7,6 +7,8 @@ import json
 import uuid
 import time
 import threading
+import webbrowser
+import subprocess
 
 from flask import Blueprint, jsonify, request
 from utils import handle_error
@@ -145,3 +147,31 @@ def browser_status():
         'claimed': claimed,
         'total': pending + claimed,
     })
+
+
+@bp.route('/api/browser/open-external', methods=['POST'])
+@handle_error
+def open_external():
+    """Open a URL in the system/default browser."""
+    data = request.json or {}
+    url = data.get('url', '').strip()
+    if not url:
+        return jsonify({'error': 'URL is required'}), 400
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+    try:
+        # Try webbrowser first (works on desktop)
+        opened = webbrowser.open(url)
+        if opened:
+            return jsonify({'ok': True, 'message': f'Opened in browser: {url}'})
+        # Fallback: subprocess (works on Termux / Android)
+        try:
+            subprocess.Popen(['xdg-open', url], stderr=subprocess.DEVNULL)
+        except Exception:
+            try:
+                subprocess.Popen(['termux-open-url', url], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        return jsonify({'ok': True, 'message': f'Opened: {url}'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
