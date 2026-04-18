@@ -322,9 +322,25 @@ class DebugSession:
         # Prepare to run
         old_cwd = os.getcwd()
         old_argv = sys.argv
+        old_signal = None
         try:
             os.chdir(cwd)
             sys.argv = [file_path] + (args.split() if args else [])
+
+            # Monkey-patch signal.signal to work in non-main thread.
+            # Python's signal module only works in the main thread, but many
+            # programs call signal.signal() without checking. We make it a
+            # no-op in the debug thread so the target code doesn't crash.
+            import signal as _signal_mod
+            if threading.current_thread() is not threading.main_thread():
+                old_signal = _signal_mod.signal
+                def _safe_signal(sig, handler):
+                    try:
+                        return old_signal(sig, handler)
+                    except ValueError:
+                        # signal only works in main thread — silently ignore
+                        return handler
+                _signal_mod.signal = _safe_signal
 
             # Set the trace function
             sys.settrace(self._trace_function)
@@ -371,6 +387,9 @@ class DebugSession:
             sys.stderr = old_stderr
             sys.argv = old_argv
             os.chdir(old_cwd)
+            # Restore original signal.signal if we patched it
+            if old_signal is not None:
+                _signal_mod.signal = old_signal
 
             with self._lock:
                 if self.state != 'stopped':
