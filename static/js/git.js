@@ -531,7 +531,7 @@ const GitManager = (() => {
     // ── API: Commit ────────────────────────────────────────────────
 
     /**
-     * Commit staged changes
+     * Stage all changes and commit
      * @param {string} message - commit message
      */
     async function commit(message) {
@@ -546,6 +546,9 @@ const GitManager = (() => {
         }
 
         try {
+            // Auto stage all changes before commit
+            await addAll();
+
             const gitCwd = getGitCwd();
             const resp = await fetch('/api/git/commit', {
                 method: 'POST',
