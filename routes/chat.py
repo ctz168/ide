@@ -2360,8 +2360,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     'role': 'assistant',
                     'content': delta_content or None,
                 }
-                if current_tool_calls:
-                    response_message['tool_calls'] = current_tool_calls
+                # Filter out empty/invalid tool calls (some models send blanks)
+                valid_tool_calls = [tc for tc in current_tool_calls
+                                    if tc.get('function', {}).get('name', '').strip()]
+                if valid_tool_calls:
+                    response_message['tool_calls'] = valid_tool_calls
                 break  # success — exit retry loop
 
             except urllib.error.HTTPError as e:
@@ -2448,11 +2451,34 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         content = response_message.get('content', '') or ''
         tool_calls_raw = response_message.get('tool_calls', [])
 
+        # Handle completely empty response (no content, no tool calls)
+        if not content.strip() and not tool_calls_raw:
+            # Try auto-retry for empty responses (up to 3 times)
+            empty_retries = getattr(run_agent_loop_stream, '_empty_retry', 0) + 1
+            run_agent_loop_stream._empty_retry = empty_retries
+            if empty_retries <= 3:
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'Model returned empty response, auto-retrying ({empty_retries}/3)...'})}\n\n"
+                print(f'[LLM] Empty response detected (iteration {total_iterations}), retrying ({empty_retries}/3)')
+                time.sleep(1)
+                continue  # retry the same iteration
+            else:
+                run_agent_loop_stream._empty_retry = 0
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Model returned empty response 3 times in a row. This may be caused by: 1) max_tokens too low for reasoning models, 2) API issue, 3) Model overloaded. Please try again or adjust settings.'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                return
+        # Reset empty retry counter on successful response
+        run_agent_loop_stream._empty_retry = 0
+
         if content:
             final_content = accumulated_text.strip() if accumulated_text.strip() else content
 
         # If no tool calls, we're done
         if not tool_calls_raw:
+            # Don't save empty assistant message to history
+            if not final_content.strip():
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Model returned an empty final response.'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                return
             loop_completed_normally = True
             break
 
