@@ -15,13 +15,14 @@ const GitManager = (() => {
      * Get the current git working directory.
      * Prefers the project path from ProjectManager (always correct),
      * falls back to FileManager.currentPath.
+     * Returns a path relative to WORKSPACE (e.g. 'myrepo'), or '' if no project.
      */
     function getGitCwd() {
         // Prefer project path from ProjectManager — this is the authoritative source
         if (window.ProjectManager) {
             const proj = window.ProjectManager.getCurrentProject();
             if (proj && proj.project) {
-                return proj.project;
+                return proj.project.replace(/^\//, '');
             }
         }
         // Fallback: use FileManager's current navigation path
@@ -1089,11 +1090,14 @@ const GitManager = (() => {
             return;
         }
 
+        // Resolve paths relative to project dir (for /api/files/* which uses WORKSPACE as base)
+        const gitignorePath = gitCwd ? (gitCwd + '/.gitignore') : '.gitignore';
+
         try {
             const resp = await fetch('/api/files/read', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: '.gitignore' })
+                body: JSON.stringify({ path: gitignorePath })
             });
             let content = '';
             if (resp.ok) {
@@ -1113,10 +1117,10 @@ const GitManager = (() => {
             if (content && !content.endsWith('\n')) content += '\n';
             content += pattern + '\n';
 
-            const writeResp = await fetch('/api/files/write', {
+            const writeResp = await fetch('/api/files/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: '.gitignore', content })
+                body: JSON.stringify({ path: gitignorePath, content })
             });
             if (!writeResp.ok) {
                 throw new Error('写入 .gitignore 失败');
@@ -1143,11 +1147,15 @@ const GitManager = (() => {
         );
         if (!confirmed) return;
 
+        // Resolve path relative to project dir (for /api/files/* which uses WORKSPACE as base)
+        const gitCwd = getGitCwd();
+        const fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
+
         try {
             const resp = await fetch('/api/files/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: filepath })
+                body: JSON.stringify({ path: fullPath })
             });
             if (!resp.ok) {
                 const errData = await resp.json().catch(() => ({}));
