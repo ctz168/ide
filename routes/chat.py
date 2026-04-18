@@ -1748,8 +1748,11 @@ def execute_agent_tool(name, arguments):
 # ==================== LLM Integration ====================
 def _build_api_messages(messages, llm_config):
     """Convert chat history to API format with system prompt."""
-    sys_prompt = llm_config.get('system_prompt', '')
-    if not sys_prompt:
+    custom_prompt = llm_config.get('system_prompt', '').strip()
+    if custom_prompt and custom_prompt != DEFAULT_SYSTEM_PROMPT.strip():
+        # User has a custom system prompt — prepend the default tool documentation
+        sys_prompt = DEFAULT_SYSTEM_PROMPT + '\n\n## Additional Instructions from User\n' + custom_prompt
+    else:
         sys_prompt = DEFAULT_SYSTEM_PROMPT
 
     # Inject project-aware workspace info
