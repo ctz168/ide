@@ -1961,7 +1961,7 @@ def _compress_context(messages, max_tokens=None):
     summary_parts = []
     for msg in older:
         role = msg.get('role', '')
-        content = msg.get('content', '')
+        content = msg.get('content') or ''
         if role == 'user':
             summary_parts.append(f'[User]: {content[:200]}')
         elif role == 'assistant':
@@ -1977,7 +1977,7 @@ def _compress_context(messages, max_tokens=None):
     compressed_recent = []
     for msg in recent:
         if msg.get('role') == 'tool':
-            content = msg.get('content', '')
+            content = msg.get('content') or ''
             if len(content) > 3000:
                 msg = dict(msg, content=content[:3000] + '\n[truncated for context]')
         compressed_recent.append(msg)
@@ -2309,6 +2309,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             context.append(tool_msg)
             history.append(tool_msg)
 
+            # Save after each tool so refresh mid-iteration preserves partial progress
+            save_chat_history(history)
+            if conv_id:
+                save_conversation(conv_id, history)
+
             # Compress context if needed
             context = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
@@ -2337,7 +2342,10 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 @bp.route('/api/chat/history', methods=['GET'])
 def get_chat_history():
     history = load_chat_history()
-    return jsonify({'messages': history})
+    # Also return the most recent conv_id so the frontend can resume the conversation
+    convs = load_conversations()
+    latest_conv_id = convs[0]['id'] if convs else None
+    return jsonify({'messages': history, 'conv_id': latest_conv_id})
 
 @bp.route('/api/chat/clear', methods=['POST'])
 def clear_chat_history():

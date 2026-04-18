@@ -995,6 +995,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
             const data = await resp.json();
             const msgs = data.messages || [];
+            // Restore currentConvId from backend so subsequent messages
+            // continue the same conversation instead of creating a new one
+            if (data.conv_id && !currentConvId) {
+                currentConvId = data.conv_id;
+            }
             renderMessages(msgs);
             return msgs;
         } catch (err) {
@@ -1060,6 +1065,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         currentAbortController = new AbortController();
         const signal = currentAbortController.signal;
+        let lastToolArgs = {};
 
         try {
             const resp = await fetch('/api/chat/task/stream', { signal });
@@ -1130,14 +1136,26 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             parsed.args
                         );
                         lastToolName = parsed.tool || parsed.name || null;
+                        lastToolArgs = parsed.args || {};
                         setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
                     } else if (eventType === 'tool_result') {
                         const ok = parsed.ok !== false && parsed.error === undefined;
+                        const toolResultStr = parsed.result || parsed.output || parsed.error || '';
                         finalizeToolResult(
                             currentToolEl,
-                            parsed.result || parsed.output || parsed.error || '',
+                            toolResultStr,
                             ok
                         );
+                        // Save tool result to messages[] so backup includes it
+                        messages.push({
+                            role: 'tool',
+                            tool: lastToolName || 'unknown',
+                            name: lastToolName || 'unknown',
+                            content: toolResultStr,
+                            ok: ok,
+                            args: lastToolArgs || {},
+                            time: new Date().toISOString()
+                        });
                         iterationCount++;
                         updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
                         setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
@@ -1166,6 +1184,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             }
                         }
                         lastToolName = null;
+                        lastToolArgs = {};
                         forceScrollToBottom();
                     } else if (eventType === 'thinking') {
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
@@ -1386,6 +1405,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         iterationCount = 0;
         let currentToolEl = null;
         let lastToolName = null;
+        let lastToolArgs = {};
         let hasError = false;
 
         // Start periodic backup during streaming
@@ -1481,15 +1501,27 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             parsed.args
                         );
                         lastToolName = parsed.tool || parsed.name || null;
+                        lastToolArgs = parsed.args || {};
                         setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
                     } else if (eventType === 'tool_result') {
                         // Tool execution completed
                         const ok = parsed.ok !== false && parsed.error === undefined;
+                        const toolResultStr = parsed.result || parsed.output || parsed.error || '';
                         finalizeToolResult(
                             currentToolEl,
-                            parsed.result || parsed.output || parsed.error || '',
+                            toolResultStr,
                             ok
                         );
+                        // Save tool result to messages[] so backup includes it
+                        messages.push({
+                            role: 'tool',
+                            tool: lastToolName || 'unknown',
+                            name: lastToolName || 'unknown',
+                            content: toolResultStr,
+                            ok: ok,
+                            args: lastToolArgs || {},
+                            time: new Date().toISOString()
+                        });
                         iterationCount++;
                         updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
                         setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
@@ -1520,6 +1552,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             }
                         }
                         lastToolName = null;
+                        lastToolArgs = {};
                         forceScrollToBottom();
                     } else if (eventType === 'thinking') {
                         // Status / thinking message
@@ -1703,6 +1736,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         iterationCount = 0;
         let currentToolEl = null;
         let lastToolName = null;
+        let lastToolArgs = {};
         let hasError = false;
 
         // Start periodic backup during streaming
@@ -1790,14 +1824,26 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             parsed.args
                         );
                         lastToolName = parsed.tool || parsed.name || null;
+                        lastToolArgs = parsed.args || {};
                         setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
                     } else if (eventType === 'tool_result') {
                         const ok = parsed.ok !== false && parsed.error === undefined;
+                        const toolResultStr = parsed.result || parsed.output || parsed.error || '';
                         finalizeToolResult(
                             currentToolEl,
-                            parsed.result || parsed.output || parsed.error || '',
+                            toolResultStr,
                             ok
                         );
+                        // Save tool result to messages[] so backup includes it
+                        messages.push({
+                            role: 'tool',
+                            tool: lastToolName || 'unknown',
+                            name: lastToolName || 'unknown',
+                            content: toolResultStr,
+                            ok: ok,
+                            args: lastToolArgs || {},
+                            time: new Date().toISOString()
+                        });
                         iterationCount++;
                         updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
                         setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
@@ -1826,6 +1872,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             }
                         }
                         lastToolName = null;
+                        lastToolArgs = {};
                         forceScrollToBottom();
                     } else if (eventType === 'thinking') {
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
