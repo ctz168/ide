@@ -124,7 +124,7 @@ print(f'[MOCK] Started on http://127.0.0.1:8767/')
 # ═══════════════════════════════════════════════════
 ide_proc = subprocess.Popen(
     [sys.executable, 'server.py'],
-    cwd='/home/z/my-project',
+    cwd='/home/z/my-project/ide',
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 )
 for _ in range(30):

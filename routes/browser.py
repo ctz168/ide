@@ -444,84 +444,215 @@ def _rewrite_html_urls(html, proxy_base):
     # JavaScript URL construction and relative path resolution.
     # (Previously we injected <base> but it caused more harm than good.)
 
+    # Rewrite URLs inside inline event handlers (onclick, onload, onerror, etc.)
+    # Catches patterns like: onclick="window.location.href='/ui/index.html'"
+    # Must use separate patterns for double-quoted and single-quoted attributes
+    # because the inner JS code may contain the other type of quote.
+    def _rewrite_event_handlers_dq(match):
+        """Double-quoted event handler: onclick="..." (content may have single quotes)."""
+        attr_prefix = match.group(1)
+        handler_body = match.group(2)
+        # Rewrite navigation URLs inside the handler body
+        handler_body = re.sub(
+            r"((?:window\.)?location\.href\s*=\s*['\"])([^'\"]+)(['\"])",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"((?:window\.)?location\.assign\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"((?:window\.)?location\.replace\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"(window\.open\s*\(\s*['\"])([^'\"]+)(['\"])",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        return attr_prefix + handler_body + '"'
+
+    def _rewrite_event_handlers_sq(match):
+        """Single-quoted event handler: onclick='...' (content may have double quotes)."""
+        attr_prefix = match.group(1)
+        handler_body = match.group(2)
+        handler_body = re.sub(
+            r"((?:window\.)?location\.href\s*=\s*['\"])([^'\"]+)(['\"])",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"((?:window\.)?location\.assign\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"((?:window\.)?location\.replace\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        handler_body = re.sub(
+            r"(window\.open\s*\(\s*['\"])([^'\"]+)(['\"])",
+            lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+            handler_body
+        )
+        return attr_prefix + handler_body + "'"
+
+    # Double-quoted: onclick="..."
+    html = re.sub(
+        r'((?:on\w+)\s*=\s*")([^"]*)(")',
+        _rewrite_event_handlers_dq, html, flags=re.IGNORECASE
+    )
+    # Single-quoted: onclick='...'
+    html = re.sub(
+        r"((?:on\w+)\s*=\s*')([^']*)(')",
+        _rewrite_event_handlers_sq, html, flags=re.IGNORECASE
+    )
+
     return html
 
 
 def _inject_script_interceptor(html, proxy_base):
-    """Inject a script into the HTML that intercepts dynamically-created <script>
-    elements and rewrites their src to route through the proxy.
+    """Inject a script into the HTML that intercepts dynamically-created elements
+    and JavaScript-driven navigation, rewriting URLs to route through the proxy.
 
-    Many web apps create <script> elements at runtime via document.createElement('script')
-    and set .src to a relative or absolute URL. Since the proxy rewrites HTML at serve
-    time but cannot rewrite dynamically-constructed URLs in JavaScript, we inject an
-    interceptor that catches these at runtime.
+    Three layers of client-side interception:
+    1. document.createElement('script'/'link') — rewrite src/href on set
+    2. Navigation APIs — Location.prototype.href/assign/replace, window.open
+       + HTMLAnchorElement.prototype.href — intercept dynamically created <a> href
+    3. Document-level click listener — safety net for unrewritten <a> clicks
+       (covers innerHTML-inserted anchors, and any <a> the server missed)
 
-    The interceptor uses a MutationObserver on <head> and <body> to catch script
-    elements as they are appended, and rewrites their src attribute to go through
-    the proxy before the browser fetches them.
+    Also fixes _toProxyUrl to use new URL(src, base) instead of string
+    concatenation, which caused double-slash errors for root-relative paths
+    like /ui/index.html when appended to a directory base URL.
     """
     # Extract the original directory URL from proxy_base
     original_dir = _extract_base_from_proxy_base(proxy_base)
     if not original_dir:
         return html
 
-    # Build the interceptor script
-    interceptor = f"""<script>
-(function() {{
-    var _origCreate = document.createElement.bind(document);
-    var _ORIG_DIR = {repr(original_dir)};
-    var _PROXY_BASE = {repr(proxy_base)};
-
-    // Save original property descriptors so we can call the real setter
-    // which properly updates both the IDL attribute AND the DOM content attribute.
-    // Without calling the original setter, the content attribute stays empty
-    // and the browser won't fetch the script when appendChild is called.
-    var _scriptSrcDesc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
-    var _linkHrefDesc = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
-
-    function _toProxyUrl(src) {{
-        if (!src || typeof src !== 'string') return src;
-        if (src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('javascript:')) return src;
-        if (src.indexOf('/api/browser/proxy') !== -1) return src;  // already proxied
-        // Build proxy URL — resolve relative URLs against original directory
-        var absUrl;
-        if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('//')) {{
-            absUrl = src;
-        }} else {{
-            absUrl = _ORIG_DIR + src;
-        }}
-        // For relative URLs, use the rel param so the proxy can resolve correctly
-        // For absolute URLs pointing to the original server, still route through proxy
-        return _PROXY_BASE + '&rel=' + encodeURIComponent(absUrl);
-    }}
-
-    // Intercept createElement('script') to rewrite src on set
-    document.createElement = function(tag) {{
-        var el = _origCreate(tag);
-        if (tag.toLowerCase() === 'script' && _scriptSrcDesc) {{
-            Object.defineProperty(el, 'src', {{
-                get: function() {{ return _scriptSrcDesc.get.call(this); }},
-                set: function(val) {{
-                    var rewritten = _toProxyUrl(val);
-                    _scriptSrcDesc.set.call(this, rewritten);
-                }},
-                configurable: true
-            }});
-        }}
-        if (tag.toLowerCase() === 'link' && _linkHrefDesc) {{
-            Object.defineProperty(el, 'href', {{
-                get: function() {{ return _linkHrefDesc.get.call(this); }},
-                set: function(val) {{
-                    var rewritten = _toProxyUrl(val);
-                    _linkHrefDesc.set.call(this, rewritten);
-                }},
-                configurable: true
-            }});
-        }}
-        return el;
-    }};
-}})();
-</script>"""
+    # Build the interceptor script — use string concatenation to avoid
+    # f-string brace-escaping issues with deeply nested JavaScript.
+    _orig_dir_js = repr(original_dir)
+    _proxy_base_js = repr(proxy_base)
+    interceptor = (
+        "<script>\n"
+        "(function() {\n"
+        "    var _origCreate = document.createElement.bind(document);\n"
+        "    var _ORIG_DIR = " + _orig_dir_js + ";\n"
+        "    var _PROXY_BASE = " + _proxy_base_js + ";\n"
+        "\n"
+        "    var _scriptSrcDesc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');\n"
+        "    var _linkHrefDesc = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');\n"
+        "\n"
+        "    // Fixed _toProxyUrl: use new URL(src, base) for correct resolution.\n"
+        "    // Previously _ORIG_DIR + src caused double-slash for root-relative paths\n"
+        "    // like /ui/index.html -> http://host/dir//ui/index.html\n"
+        "    function _toProxyUrl(src) {\n"
+        "        if (!src || typeof src !== 'string') return src;\n"
+        "        if (src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('javascript:') ||\n"
+        "            src.startsWith('#') || src.startsWith('mailto:') || src.startsWith('tel:')) return src;\n"
+        "        if (src.indexOf('/api/browser/proxy') !== -1) return src;  // already proxied\n"
+        "        var absUrl;\n"
+        "        try {\n"
+        "            absUrl = new URL(src, _ORIG_DIR).href;\n"
+        "        } catch(e) {\n"
+        "            absUrl = _ORIG_DIR + src;\n"
+        "        }\n"
+        "        return _PROXY_BASE + '&rel=' + encodeURIComponent(absUrl);\n"
+        "    }\n"
+        "\n"
+        "    // --- Layer 1: Intercept createElement('script'/'link') to rewrite src/href ---\n"
+        "    document.createElement = function(tag) {\n"
+        "        var el = _origCreate(tag);\n"
+        "        if (tag.toLowerCase() === 'script' && _scriptSrcDesc) {\n"
+        "            Object.defineProperty(el, 'src', {\n"
+        "                get: function() { return _scriptSrcDesc.get.call(this); },\n"
+        "                set: function(val) { _scriptSrcDesc.set.call(this, _toProxyUrl(val)); },\n"
+        "                configurable: true\n"
+        "            });\n"
+        "        }\n"
+        "        if (tag.toLowerCase() === 'link' && _linkHrefDesc) {\n"
+        "            Object.defineProperty(el, 'href', {\n"
+        "                get: function() { return _linkHrefDesc.get.call(this); },\n"
+        "                set: function(val) { _linkHrefDesc.set.call(this, _toProxyUrl(val)); },\n"
+        "                configurable: true\n"
+        "            });\n"
+        "        }\n"
+        "        return el;\n"
+        "    };\n"
+        "\n"
+        "    // --- Layer 2a: Intercept navigation APIs ---\n"
+        "    // Location.prototype.href setter — catches window.location.href = '/path'\n"
+        "    var _origHrefDesc = Object.getOwnPropertyDescriptor(Location.prototype, 'href');\n"
+        "    if (_origHrefDesc) {\n"
+        "        Object.defineProperty(Location.prototype, 'href', {\n"
+        "            get: function() { return _origHrefDesc.get.call(this); },\n"
+        "            set: function(val) { _origHrefDesc.set.call(this, _toProxyUrl(val)); },\n"
+        "            configurable: true\n"
+        "        });\n"
+        "    }\n"
+        "\n"
+        "    // Location.prototype.assign — catches window.location.assign('/path')\n"
+        "    var _origAssign = Location.prototype.assign;\n"
+        "    Location.prototype.assign = function(url) {\n"
+        "        return _origAssign.call(this, _toProxyUrl(url));\n"
+        "    };\n"
+        "\n"
+        "    // Location.prototype.replace — catches window.location.replace('/path')\n"
+        "    var _origReplace = Location.prototype.replace;\n"
+        "    Location.prototype.replace = function(url) {\n"
+        "        return _origReplace.call(this, _toProxyUrl(url));\n"
+        "    };\n"
+        "\n"
+        "    // window.open — catches window.open('/path')\n"
+        "    var _origOpen = window.open;\n"
+        "    window.open = function(url) {\n"
+        "        if (url && typeof url === 'string') {\n"
+        "            arguments[0] = _toProxyUrl(url);\n"
+        "        }\n"
+        "        return _origOpen.apply(this, arguments);\n"
+        "    };\n"
+        "\n"
+        "    // --- Layer 2b: HTMLAnchorElement.prototype.href setter ---\n"
+        "    // Catches dynamically created <a> elements where JS sets a.href = '/path'\n"
+        "    var _anchorHrefDesc = Object.getOwnPropertyDescriptor(HTMLAnchorElement.prototype, 'href');\n"
+        "    if (_anchorHrefDesc) {\n"
+        "        Object.defineProperty(HTMLAnchorElement.prototype, 'href', {\n"
+        "            get: function() { return _anchorHrefDesc.get.call(this); },\n"
+        "            set: function(val) { _anchorHrefDesc.set.call(this, _toProxyUrl(val)); },\n"
+        "            configurable: true\n"
+        "        });\n"
+        "    }\n"
+        "\n"
+        "    // --- Layer 3: Document-level click listener ---\n"
+        "    // Safety net for <a> clicks that were NOT rewritten by the server or\n"
+        "    // intercepted by the setter above (e.g. innerHTML-inserted anchors).\n"
+        "    // Uses getAttribute('href') to get the raw attribute value, NOT the\n"
+        "    // resolved el.href (which would be wrong in the proxy context).\n"
+        "    document.addEventListener('click', function(e) {\n"
+        "        var el = e.target;\n"
+        "        while (el && el.tagName !== 'A') el = el.parentElement;\n"
+        "        if (el && el.tagName === 'A') {\n"
+        "            var attrHref = el.getAttribute('href');\n"
+        "            if (attrHref && !attrHref.startsWith('data:') && !attrHref.startsWith('blob:') &&\n"
+        "                !attrHref.startsWith('javascript:') && !attrHref.startsWith('#') &&\n"
+        "                !attrHref.startsWith('mailto:') && !attrHref.startsWith('tel:') &&\n"
+        "                attrHref.indexOf('/api/browser/proxy') === -1) {\n"
+        "                e.preventDefault();\n"
+        "                e.stopPropagation();\n"
+        "                // Use raw attribute value, not resolved URL\n"
+        "                window.location.href = _toProxyUrl(attrHref);\n"
+        "            }\n"
+        "        }\n"
+        "    }, true);  // capture phase to intercept before any other handler\n"
+        "})();\n"
+        "</script>"
+    )
 
     # Inject right after <head> tag, or before </head> if no <head> tag
     if '<head>' in html.lower():
@@ -628,6 +759,36 @@ def _rewrite_js_urls(js, proxy_base):
             lambda m: f'new URL({repr(m.group(1))}, {repr(original_dir)})',
             js
         )
+
+    # ── Rewrite navigation URLs in JS ──
+    # Catches static string arguments to window.location.href/assign/replace
+    # and window.open, routing them through the proxy instead of navigating
+    # directly on the IDE server's origin (which would 404).
+
+    # window.location.href = '/path' or location.href = '/path'
+    js = re.sub(
+        r"((?:window\.)?location\.href\s*=\s*['\"])([^'\"]+)(['\"])",
+        lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+        js
+    )
+    # window.location.assign('/path') or location.assign('/path')
+    js = re.sub(
+        r"((?:window\.)?location\.assign\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+        lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+        js
+    )
+    # window.location.replace('/path') or location.replace('/path')
+    js = re.sub(
+        r"((?:window\.)?location\.replace\s*\(\s*['\"])([^'\"]+)(['\"]\s*\))",
+        lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+        js
+    )
+    # window.open('/path')
+    js = re.sub(
+        r"(window\.open\s*\(\s*['\"])([^'\"]+)(['\"])",
+        lambda m: m.group(1) + _proxy_url(m.group(2), proxy_base) + m.group(3),
+        js
+    )
 
     return js
 
