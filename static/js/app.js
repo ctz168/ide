@@ -1393,9 +1393,10 @@ const AppManager = (() => {
 
             const data = await resp.json();
 
-            // Show current version
+            // Show current version — prefer short commit hash
             if (versionEl) {
-                versionEl.textContent = '当前版本: ' + (data.current_version || 'unknown') + '  本地 commit: ' + (data.local_sha || 'unknown');
+                const sha = data.local_sha && data.local_sha !== 'unknown' ? data.local_sha : (data.current_version || 'unknown');
+                versionEl.textContent = '当前版本: ' + sha;
             }
 
             if (data.update_available) {
@@ -1421,7 +1422,8 @@ const AppManager = (() => {
             } else {
                 if (statusEl) statusEl.textContent = '代码已是最新';
                 if (versionEl) {
-                    versionEl.textContent = 'Current version: ' + (data.current_version || data.latest_tag || 'latest');
+                    const sha = data.local_sha && data.local_sha !== 'unknown' ? data.local_sha : (data.current_version || data.latest_tag || 'latest');
+                    versionEl.textContent = '当前版本: ' + sha + '  (已是最新)';
                 }
             }
         } catch (err) {
