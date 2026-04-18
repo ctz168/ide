@@ -1094,11 +1094,7 @@ const GitManager = (() => {
         const gitignorePath = gitCwd ? (gitCwd + '/.gitignore') : '.gitignore';
 
         try {
-            const resp = await fetch('/api/files/read', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: gitignorePath })
-            });
+            const resp = await fetch(`/api/files/read?path=${encodeURIComponent(gitignorePath)}`);
             let content = '';
             if (resp.ok) {
                 const data = await resp.json();
