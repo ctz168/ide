@@ -957,10 +957,10 @@ html, body {
 .CodeMirror {
     height: 100% !important;
     font-family: var(--font-mono) !important;
-    font-size: 11px !important;
+    font-size: 10px !important;
     line-height: 1.5 !important;
     background: var(--bg-primary) !important;
-    touch-action: pan-y pan-x pinch-zoom;
+    touch-action: manipulation;
     -webkit-user-select: text;
     user-select: text;
 }
@@ -973,7 +973,7 @@ html, body {
 
 .CodeMirror-linenumber {
     color: var(--text-muted) !important;
-    font-size: 10px !important;
+    font-size: 9px !important;
     padding: 0 2px 0 4px !important;
     min-width: 20px !important;
     width: 20px !important;

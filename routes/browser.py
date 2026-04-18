@@ -496,25 +496,37 @@ def _rewrite_js_urls(js, proxy_base):
 
 
 def _proxy_url(url, proxy_base):
-    """Convert an absolute or relative URL to a proxy URL.
+    """Convert an absolute or relative URL to an absolute proxy URL.
 
     proxy_base has the form:
-      /api/browser/proxy?url=<encoded_target>&base=<encoded_dir>
-    For relative URLs we need to preserve the base and pass rel separately.
+      http://localhost:12345/api/browser/proxy?url=<encoded_target>&base=<encoded_dir>
+    Always returns absolute URLs to avoid interference from <base> tag injection.
     """
     if not url:
         return url
-    # Already proxied
+    # Already proxied (and hopefully absolute)
     if '/api/browser/proxy' in url:
         return url
-    # Absolute URL — independent proxy request with its own base
+
+    # Extract origin from proxy_base for constructing absolute proxy URLs
+    origin = ''
+    if proxy_base.startswith('http://') or proxy_base.startswith('https://'):
+        idx = proxy_base.find('/', 8)  # after http(s)://
+        if idx > 0:
+            origin = proxy_base[:idx]
+
+    # Absolute URL — construct independent absolute proxy URL
     if url.startswith('http://') or url.startswith('https://'):
-        return '/api/browser/proxy?url=' + urllib.parse.quote(url, safe='') + '&base=' + urllib.parse.quote(url, safe='')
+        proxy = '/api/browser/proxy?url=' + urllib.parse.quote(url, safe='') + '&base=' + urllib.parse.quote(url, safe='')
+        return (origin + proxy) if origin else proxy
+
     # Protocol-relative
     if url.startswith('//'):
         full = 'https:' + url
-        return '/api/browser/proxy?url=' + urllib.parse.quote(full, safe='') + '&base=' + urllib.parse.quote(full, safe='')
-    # Relative URL — keep existing base from proxy_base, pass as rel param
+        proxy = '/api/browser/proxy?url=' + urllib.parse.quote(full, safe='') + '&base=' + urllib.parse.quote(full, safe='')
+        return (origin + proxy) if origin else proxy
+
+    # Relative URL — proxy_base already absolute, just append rel param
     return proxy_base + '&rel=' + urllib.parse.quote(url, safe='')
 
 
@@ -580,7 +592,9 @@ def proxy():
             dir_path = '/'
         dir_url = f'{parsed.scheme}://{parsed.netloc}{dir_path}'
 
-        proxy_base = f'/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
+        # Use absolute proxy_base to prevent <base> tag from hijacking rewritten URLs
+        self_origin = request.host_url.rstrip('/')
+        proxy_base = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
         proxy_base += f'&base={urllib.parse.quote(dir_url, safe="")}'
 
         wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
@@ -591,7 +605,7 @@ def proxy():
         try:
             raw_body = e.read()
             resp_headers = dict(e.headers.items()) if e.headers else {}
-            proxy_base = f'/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
+            proxy_base = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
             proxy_base += f'&base={urllib.parse.quote(target_url, safe="")}'
             wrapped = _ProxyResponse(raw_body, e.code, resp_headers)
             return _proxy_response(wrapped, proxy_base)
