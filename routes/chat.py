@@ -9,9 +9,12 @@ import time
 import shutil
 import subprocess
 import fnmatch
+import threading
+import queue
 import urllib.request
 import urllib.error
 import urllib.parse
+from collections import deque
 
 # Custom redirect handler that follows 307/308 for POST requests
 class _PostRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -37,6 +40,22 @@ from routes.git import git_cmd
 from routes.browser import create_browser_command, wait_browser_result
 
 bp = Blueprint('chat', __name__)
+
+# ==================== Global Active Task State ====================
+_active_task = {
+    'running': False,
+    'conv_id': None,
+    'message': None,
+    'model_index': None,
+    'started_at': None,
+    'event_queue': None,       # queue.Queue for broadcasting events to subscribers
+    'event_buffer': None,      # deque-based ring buffer of last 100 raw SSE event strings
+    'subscribers': 0,          # count of active SSE subscribers
+    'lock': threading.Lock(),
+    'thread': None,            # background thread running the agent loop
+}
+
+RING_BUFFER_SIZE = 100
 
 # ==================== System Prompt ====================
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
@@ -2381,7 +2400,7 @@ def send_chat_message():
 
 @bp.route('/api/chat/send/stream', methods=['POST'])
 def send_chat_stream():
-    """SSE streaming agent endpoint. Streams text, tool execution, and status in real-time."""
+    """SSE streaming agent endpoint. Runs agent in background thread, broadcasts events."""
     data = request.json
     message = data.get('message', '').strip()
     conv_id = data.get('conv_id')  # optional conversation id
@@ -2405,12 +2424,130 @@ def send_chat_stream():
     print(f'[CHAT] send_chat_stream called')
     print(f'[CHAT] LLM config: name={llm_config.get("name")}, api_type={llm_config.get("api_type")}, model={llm_config.get("model")}, api_base={llm_config.get("api_base")}, api_key={"***"+llm_config.get("api_key","")[-6:] if llm_config.get("api_key") else "EMPTY"}')
 
-    def generate():
+    # Set up the global active task state
+    with _active_task['lock']:
+        if _active_task['running']:
+            return jsonify({'error': 'A task is already running'}), 409
+
+        event_queue = queue.Queue()
+        event_buffer = deque(maxlen=RING_BUFFER_SIZE)
+
+        _active_task['running'] = True
+        _active_task['conv_id'] = conv_id
+        _active_task['message'] = message
+        _active_task['model_index'] = model_index
+        _active_task['started_at'] = time.time()
+        _active_task['event_queue'] = event_queue
+        _active_task['event_buffer'] = event_buffer
+        _active_task['subscribers'] = 1
+
+    def _run_agent():
+        """Background thread: runs the agent loop and puts events into queue + buffer."""
         try:
             for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id):
-                yield sse_event
+                event_queue.put(sse_event)
+                with _active_task['lock']:
+                    _active_task['event_buffer'].append(sse_event)
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            err_event = f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            event_queue.put(err_event)
+            with _active_task['lock']:
+                _active_task['event_buffer'].append(err_event)
+        finally:
+            # Signal completion
+            event_queue.put(None)
+
+    # Start the agent in a background thread
+    agent_thread = threading.Thread(target=_run_agent, daemon=True)
+    agent_thread.start()
+    with _active_task['lock']:
+        _active_task['thread'] = agent_thread
+
+    def generate():
+        """Read from the shared queue and yield SSE events to this client."""
+        q = None
+        try:
+            with _active_task['lock']:
+                q = _active_task['event_queue']
+            while True:
+                try:
+                    event = q.get(timeout=30)
+                except queue.Empty:
+                    yield "data: {\"type\":\"keepalive\"}\n\n"
+                    continue
+                if event is None:  # sentinel = done
+                    break
+                yield event
+        except GeneratorExit:
+            pass
+        finally:
+            with _active_task['lock']:
+                _active_task['subscribers'] -= 1
+                if _active_task['subscribers'] <= 0:
+                    _active_task['running'] = False
+                    _active_task['conv_id'] = None
+                    _active_task['message'] = None
+                    _active_task['started_at'] = None
+                    _active_task['event_queue'] = None
+                    _active_task['event_buffer'] = None
+                    _active_task['thread'] = None
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@bp.route('/api/chat/task/status', methods=['GET'])
+def get_task_status():
+    """Check if there is an active running task."""
+    with _active_task['lock']:
+        if _active_task['running']:
+            return jsonify({
+                'running': True,
+                'conv_id': _active_task['conv_id'],
+                'started_at': _active_task['started_at'],
+                'elapsed': time.time() - _active_task['started_at'] if _active_task['started_at'] else 0,
+            })
+        return jsonify({'running': False})
+
+
+@bp.route('/api/chat/task/stream', methods=['GET'])
+def task_reconnect_stream():
+    """Reconnect to a running task. First sends buffered events, then subscribes to live events."""
+    with _active_task['lock']:
+        if not _active_task['running']:
+            return jsonify({'error': 'No active task'}), 404
+
+        q = _active_task['event_queue']
+        # Snapshot the ring buffer for catch-up
+        buffered = list(_active_task['event_buffer'])
+        _active_task['subscribers'] += 1
+
+    def generate():
+        try:
+            # First replay all buffered (historical) events
+            for event in buffered:
+                yield event
+
+            # Then subscribe to live events
+            while True:
+                try:
+                    event = q.get(timeout=30)
+                except queue.Empty:
+                    yield "data: {\"type\":\"keepalive\"}\n\n"
+                    continue
+                if event is None:  # sentinel = done
+                    break
+                # Only yield if it's not already in the buffer (i.e., it's a new event)
+                yield event
+        except GeneratorExit:
+            pass
+        finally:
+            with _active_task['lock']:
+                _active_task['subscribers'] -= 1
+                if _active_task['subscribers'] <= 0 and not _active_task['running']:
+                    # Clean up if no more subscribers and task ended
+                    _active_task['event_queue'] = None
+                    _active_task['event_buffer'] = None
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

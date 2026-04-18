@@ -21,6 +21,9 @@ const ChatManager = (() => {
     let planContent = '';               // stored plan markdown for editing
     let lastPlanMsgEl = null;           // reference to plan message element for actions
     let currentConvId = null;           // current conversation id (null = unsaved new chat)
+    let isReconnecting = false;         // true when reconnecting to a running task
+    let taskStatusInterval = null;      // interval for polling task status
+    let taskActivityBadge = null;       // badge element on #btn-chat
 
     // ── Constants ──────────────────────────────────────────────────
     const KNOWN_TOOLS = [
@@ -879,6 +882,335 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
     }
 
+    // ── Task Status & Reconnection ────────────────────────────────
+
+    /**
+     * Check if a task is running on the backend, and if so, reconnect to it.
+     * Called on init / page load.
+     */
+    async function checkAndRecoverTask() {
+        try {
+            const resp = await fetch('/api/chat/task/status');
+            if (!resp.ok) return;
+
+            const data = await resp.json();
+            if (data.running) {
+                // A task is running on the backend, show reconnect notification
+                const elapsed = Math.round(data.elapsed || 0);
+                const elapsedStr = elapsed >= 60
+                    ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+                    : `${elapsed}s`;
+                addMessage('system', `🔄 A task is still running (started ${elapsedStr} ago). Reconnecting...`);
+                showToast('Reconnecting to running task...', 'info', 3000);
+                await reconnectTask(data.conv_id);
+            }
+        } catch (err) {
+            console.warn('ChatManager: checkAndRecoverTask error:', err.message);
+        }
+    }
+
+    /**
+     * Reconnect to a running task by subscribing to /api/chat/task/stream.
+     * Replays buffered events then receives live events.
+     */
+    async function reconnectTask(convId) {
+        if (isProcessing) return;
+
+        isReconnecting = true;
+        isProcessing = true;
+
+        // Restore conversation id if provided
+        if (convId) {
+            currentConvId = convId;
+        }
+
+        setProcessing(true);
+        hideTurnIndicator();
+
+        streamingStartTime = Date.now();
+        iterationCount = 0;
+        let currentToolEl = null;
+        let lastToolName = null;
+        let hasError = false;
+
+        currentAbortController = new AbortController();
+        const signal = currentAbortController.signal;
+
+        try {
+            const resp = await fetch('/api/chat/task/stream', { signal });
+
+            if (!resp.ok) {
+                if (resp.status === 404) {
+                    // Task already finished
+                    addMessage('system', 'Task has already completed.');
+                    showToast('Task already completed', 'info');
+                    return;
+                }
+                throw new Error(`Reconnect failed: ${resp.status} ${resp.statusText}`);
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let caughtUp = false;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const rawData = line.substring(6).trim();
+                    if (!rawData || rawData === '[DONE]') continue;
+
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(rawData);
+                    } catch (_) {
+                        continue;
+                    }
+
+                    const eventType = parsed.type || '';
+
+                    if (eventType === 'keepalive') {
+                        continue;
+                    } else if (eventType === 'reconnected') {
+                        // Skip — this is just a signal
+                        continue;
+                    }
+
+                    // Once we see the first non-buffer event after buffered data, we're caught up
+                    if (!caughtUp && eventType !== 'thinking') {
+                        caughtUp = true;
+                    }
+
+                    if (eventType === 'text') {
+                        hideTyping();
+                        if (!currentStreamEl) {
+                            startStreamingMessage();
+                        }
+                        appendStreamChunk(parsed.content || parsed.text || '');
+                    } else if (eventType === 'tool_start') {
+                        hideTyping();
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        currentToolEl = showToolProgress(
+                            parsed.tool || parsed.name || 'unknown',
+                            parsed.args
+                        );
+                        lastToolName = parsed.tool || parsed.name || null;
+                        setExecuteStatus(`Running ${parsed.tool || parsed.name || 'tool'}...`);
+                    } else if (eventType === 'tool_result') {
+                        const ok = parsed.ok !== false && parsed.error === undefined;
+                        finalizeToolResult(
+                            currentToolEl,
+                            parsed.result || parsed.output || parsed.error || '',
+                            ok
+                        );
+                        iterationCount++;
+                        updateTurnIndicator(iterationCount, parsed.max_iterations || 0);
+                        setExecuteStatus(`Turn ${iterationCount}${parsed.max_iterations ? '/' + parsed.max_iterations : ''}`);
+                        currentToolEl = null;
+                        if (window.FileManager && lastToolName) {
+                            const fileTools = ['write_file', 'edit_file', 'create_directory', 'delete_path', 'install_package'];
+                            if (fileTools.includes(lastToolName)) {
+                                window.FileManager.refresh();
+                            }
+                        }
+                        if (window.DebuggerUI && lastToolName) {
+                            const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
+                                'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
+                                'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
+                                'browser_click', 'browser_input', 'browser_console', 'browser_page_info', 'server_logs'];
+                            if (debugTools.includes(lastToolName)) {
+                                try {
+                                    document.dispatchEvent(new CustomEvent('debug:ai_activity', {
+                                        detail: {
+                                            tool: lastToolName,
+                                            args: parsed.args || {},
+                                            result: (parsed.result || parsed.output || '') || '',
+                                        }
+                                    }));
+                                } catch(e) {}
+                            }
+                        }
+                        lastToolName = null;
+                        forceScrollToBottom();
+                    } else if (eventType === 'thinking') {
+                        setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
+                        hideTyping();
+                        showTyping();
+                    } else if (eventType === 'error') {
+                        hasError = true;
+                        hideTyping();
+                        setExecuteStatus('');
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        const errMsg = parsed.content || parsed.message || parsed.error || rawData;
+                        addMessage('error', errMsg, { retryable: true });
+                    } else if (eventType === 'done') {
+                        hideTyping();
+                        let finalizedEl = null;
+                        if (currentStreamEl && streamBuffer) {
+                            finalizedEl = finalizeStreamMessage();
+                        }
+                        const totalDuration = Date.now() - streamingStartTime;
+                        const tokensUsed = estimateTokens(streamBuffer);
+                        let summary = `Completed in ${formatDuration(totalDuration)}`;
+                        if (parsed.iterations) {
+                            summary += ` · ${parsed.iterations} iteration(s)`;
+                        }
+                        summary += ` · ~${tokensUsed} tokens`;
+                        setExecuteStatus(summary);
+                        playCompletionSound();
+                        showToast('✅ Task completed successfully!', 'success', 3000);
+                    }
+                }
+            }
+
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                hideTyping();
+                if (currentStreamEl && streamBuffer) {
+                    finalizeStreamMessage();
+                }
+                addMessage('system', 'Task reconnection stopped.');
+            } else {
+                hideTyping();
+                if (currentStreamEl && streamBuffer) {
+                    finalizeStreamMessage();
+                }
+                addMessage('error', err.message, { retryable: true });
+                hasError = true;
+            }
+        } finally {
+            currentAbortController = null;
+            isReconnecting = false;
+            isProcessing = false;
+            hideStopButton();
+            hideTyping();
+            hideTurnIndicator();
+            hideTaskActivityBadge();
+            stopTaskStatusPolling();
+            autoResizeInput();
+
+            const sendBtn = document.getElementById('chat-send');
+            if (sendBtn) {
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send';
+                sendBtn.style.display = '';
+            }
+            const inputEl = document.getElementById('chat-input');
+            if (inputEl) {
+                inputEl.disabled = false;
+            }
+        }
+    }
+
+    // ── Task Activity Badge (on #btn-chat) ────────────────────────
+
+    /**
+     * Show an animated badge on #btn-chat to indicate a running task
+     * when the sidebar is closed.
+     */
+    function showTaskActivityBadge() {
+        if (taskActivityBadge) return;
+
+        // Inject the CSS for the badge animation
+        if (!document.getElementById('task-badge-style')) {
+            const style = document.createElement('style');
+            style.id = 'task-badge-style';
+            style.textContent = `
+                .task-activity-badge {
+                    position: absolute;
+                    top: 4px;
+                    right: 4px;
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 50%;
+                    background: #22c55e;
+                    border: 2px solid var(--bg-primary, #fff);
+                    animation: task-badge-pulse 1.5s ease-in-out infinite;
+                    z-index: 10;
+                    pointer-events: none;
+                }
+                @keyframes task-badge-pulse {
+                    0%, 100% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.5; transform: scale(1.3); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const chatBtn = document.getElementById('btn-chat');
+        if (!chatBtn) return;
+
+        // Make sure the button is positioned relatively
+        const btnStyle = window.getComputedStyle(chatBtn);
+        if (btnStyle.position === 'static') {
+            chatBtn.style.position = 'relative';
+        }
+
+        taskActivityBadge = document.createElement('span');
+        taskActivityBadge.className = 'task-activity-badge';
+        chatBtn.appendChild(taskActivityBadge);
+    }
+
+    function hideTaskActivityBadge() {
+        if (taskActivityBadge) {
+            taskActivityBadge.remove();
+            taskActivityBadge = null;
+        }
+    }
+
+    /**
+     * Start polling /api/chat/task/status periodically to show/hide
+     * the activity badge and detect task completion.
+     */
+    function startTaskStatusPolling() {
+        stopTaskStatusPolling();
+        taskStatusInterval = setInterval(async () => {
+            try {
+                const resp = await fetch('/api/chat/task/status');
+                if (!resp.ok) {
+                    hideTaskActivityBadge();
+                    stopTaskStatusPolling();
+                    return;
+                }
+                const data = await resp.json();
+                if (data.running) {
+                    // Only show badge if sidebar is closed
+                    const sidebar = document.getElementById('sidebar-right');
+                    const isOpen = sidebar && (sidebar.classList.contains('open') || sidebar.style.display !== 'none');
+                    if (!isOpen && !isProcessing) {
+                        showTaskActivityBadge();
+                    } else {
+                        hideTaskActivityBadge();
+                    }
+                } else {
+                    hideTaskActivityBadge();
+                    stopTaskStatusPolling();
+                }
+            } catch (_) {
+                // Ignore errors in polling
+            }
+        }, 5000);
+    }
+
+    function stopTaskStatusPolling() {
+        if (taskStatusInterval) {
+            clearInterval(taskStatusInterval);
+            taskStatusInterval = null;
+        }
+    }
+
     // ── API: Send Message (SSE Streaming) ──────────────────────────
 
     /**
@@ -943,6 +1275,15 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             });
 
             if (!resp.ok) {
+                // Handle 409: a task is already running on the backend
+                if (resp.status === 409) {
+                    addMessage('system', 'A task is already running. Waiting for it to finish...');
+                    showToast('A task is already running', 'warning');
+                    // Start polling so the user can see when it's done
+                    startTaskStatusPolling();
+                    setProcessing(false);
+                    return;
+                }
                 const errBody = await resp.text().catch(() => '');
                 // Build detailed error info
                 const detail = [
@@ -2549,6 +2890,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         wireEvents();
         await loadHistory();
         autoResizeInput();
+        // Check for a running task and reconnect if needed
+        await checkAndRecoverTask();
+        // Start polling for task status (for the activity badge)
+        startTaskStatusPolling();
         console.log('ChatManager: initialized (SSE streaming enabled)');
     }
 

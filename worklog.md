@@ -20,3 +20,29 @@ Stage Summary:
 - Multi-line selection: touch-action changed to manipulation
 - Breakpoints: confirmed working (gutter + DebuggerUI integration verified)
 - Server restarted successfully on port 12345
+
+---
+Task ID: 2
+Agent: Main
+Task: Implement task persistence and recovery for the AI assistant
+
+Work Log:
+- Added `threading`, `queue`, and `collections.deque` imports to routes/chat.py
+- Added global `_active_task` state dict at module level with lock-protected fields
+- Modified `send_chat_stream` to run agent loop in a background thread instead of inline generator
+- Agent loop events are now broadcast via `queue.Queue` and buffered in a `deque` ring buffer (last 100 events)
+- Added `GET /api/chat/task/status` endpoint to check if a task is running (returns running state, conv_id, elapsed time)
+- Added `GET /api/chat/task/stream` endpoint for task reconnection — replays buffered events first, then subscribes to live queue events
+- Modified subscriber counting: task state is cleaned up when subscriber count drops to 0
+- Frontend: Added `checkAndRecoverTask()` function called on init to detect running tasks and auto-reconnect
+- Frontend: Added `reconnectTask()` function that connects to `/api/chat/task/stream` and processes SSE events identically to `sendMessage`
+- Frontend: Added animated green activity badge on `#btn-chat` button when task is running and sidebar is closed
+- Frontend: Added `startTaskStatusPolling()` / `stopTaskStatusPolling()` for periodic task status checks (every 5s)
+- Frontend: Added 409 (conflict) handling in `sendMessage` when a task is already running on backend
+- Frontend: Modified `init()` to call `checkAndRecoverTask()` and `startTaskStatusPolling()` on page load
+
+Stage Summary:
+- Backend: routes/chat.py — task persistence via background thread + queue broadcasting + ring buffer
+- Backend: New endpoints: `/api/chat/task/status` (GET) and `/api/chat/task/stream` (GET)
+- Frontend: static/js/chat.js — auto-reconnect on page load, activity badge on chat button, task status polling
+- Architecture: Agent runs independently in background thread; frontend can disconnect/reconnect without losing progress
