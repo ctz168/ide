@@ -17,6 +17,7 @@ const TerminalManager = (() => {
     let currentCmdBlock = null;     // current command block container
     let dragStartY = 0;            // touch/mouse Y at drag start
     let dragStartHeight = 0;        // panel height at drag start
+    let onProcessComplete = null;   // callback after streamed process finishes
 
     // ── Constants ──────────────────────────────────────────────────
     const MIN_PANEL_HEIGHT = 100;
@@ -132,8 +133,10 @@ const TerminalManager = (() => {
         showPanel();
 
         try {
+            const cmdDisplay = `${compiler} ${file_path}${args ? ' ' + args : ''}`;
+            startCmdBlock(cmdDisplay);
             appendOutput(`─────────────────────────────────────────`, 'status');
-            appendOutput(`$ ${compiler} ${file_path}${args ? ' ' + args : ''}`, 'system');
+            appendOutput(`$ ${cmdDisplay}`, 'system');
             appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
 
             const body = { file_path, compiler };
@@ -511,6 +514,12 @@ const TerminalManager = (() => {
         currentProcId = null;
         pollSince = 0;
         setRunningState(false);
+        // Execute post-complete callback if registered
+        if (onProcessComplete) {
+            const cb = onProcessComplete;
+            onProcessComplete = null;
+            try { cb(); } catch (_e) {}
+        }
         // Auto-focus back to input after process completes
         const si = document.getElementById('shell-input');
         if (si) si.focus();
@@ -676,8 +685,9 @@ const TerminalManager = (() => {
                 window.ChatManager.sendMessage(msg);
                 // Open chat sidebar if closed
                 const sidebar = document.getElementById('sidebar-right');
-                if (sidebar && sidebar.classList.contains('hidden')) {
-                    document.getElementById('toggle-right')?.click();
+                if (sidebar && !sidebar.classList.contains('open')) {
+                    const chatBtn = document.getElementById('btn-chat');
+                    if (chatBtn) chatBtn.click();
                 }
             }
         });
@@ -1282,8 +1292,17 @@ const TerminalManager = (() => {
                 showToast('虚拟环境已创建', 'success');
             }
 
-            // Refresh venv info
-            await loadVenvInfo();
+            // Refresh venv info after process completes
+            if (data.proc_id) {
+                onProcessComplete = () => {
+                    loadVenvInfo().then(() => {
+                        showToast('虚拟环境已创建', 'success');
+                    });
+                };
+            } else {
+                await loadVenvInfo();
+                showToast('虚拟环境已创建', 'success');
+            }
             return data;
         } catch (err) {
             appendOutput(`Error: ${err.message}`, 'error');
@@ -1337,11 +1356,40 @@ const TerminalManager = (() => {
     }
 
     /**
-     * Import requirements.txt
+     * Import requirements.txt — show confirm, close left sidebar, run pip install
      */
     async function importRequirements() {
+        // Confirm dialog
+        if (window.showConfirmDialog) {
+            const confirmed = await new Promise(resolve => {
+                window.showConfirmDialog(
+                    '导入依赖包',
+                    '将按照 requirements.txt 安装所有依赖包，安装过程将在控制台显示。\n\n是否继续？',
+                    resolve
+                );
+            });
+            if (!confirmed) return;
+        }
+
+        // Close left sidebar to reveal console
+        const sidebarLeft = document.getElementById('sidebar-left');
+        if (sidebarLeft && sidebarLeft.classList.contains('open')) {
+            const closeBtn = document.getElementById('btn-menu');
+            if (closeBtn) closeBtn.click();
+        }
+
+        // Expand console panel
         showPanel();
-        appendOutput('$ pip install -r requirements.txt...', 'status');
+        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT));
+
+        // Start command block for AI forward button
+        startCmdBlock('pip install -r requirements.txt');
+
+        appendOutput('正在按照 requirements.txt 安装依赖包...', 'info');
+        appendOutput('─────────────────────────────────────────', 'status');
+        appendOutput('$ pip install -r requirements.txt', 'system');
+        appendOutput(`[info] Time: ${new Date().toLocaleString()}`, 'info');
+
         try {
             const resp = await fetch('/api/run/execute', {
                 method: 'POST',
