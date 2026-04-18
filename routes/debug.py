@@ -309,11 +309,47 @@ class DebugSession:
         config = load_config()
         env = os.environ.copy()
         venv_path = config.get('venv_path', '')
+
+        # Auto-detect virtual environment if not explicitly configured
+        if not venv_path:
+            # Check common venv locations relative to the file being debugged
+            file_dir = os.path.dirname(file_path)
+            for candidate in [
+                os.path.join(file_dir, 'venv'),
+                os.path.join(file_dir, '.venv'),
+                os.path.join(file_dir, 'env'),
+                os.path.join(file_dir, '.env'),
+                # Also check workspace root
+                os.path.join(config.get('workspace', WORKSPACE), 'venv'),
+                os.path.join(config.get('workspace', WORKSPACE), '.venv'),
+            ]:
+                if os.path.isdir(candidate) and os.path.isfile(os.path.join(candidate, 'bin', 'python')):
+                    venv_path = candidate
+                    break
+
+        venv_site_packages = None
         if venv_path and os.path.exists(venv_path):
             venv_bin = os.path.join(venv_path, 'bin')
             if os.path.exists(venv_bin):
                 env['PATH'] = venv_bin + ':' + env.get('PATH', '')
                 env['VIRTUAL_ENV'] = venv_path
+            # Detect venv site-packages and add to sys.path
+            venv_lib = os.path.join(venv_path, 'lib')
+            if os.path.isdir(venv_lib):
+                # Find python3.x/site-packages under lib/
+                for entry in os.listdir(venv_lib):
+                    sp = os.path.join(venv_lib, entry, 'site-packages')
+                    if os.path.isdir(sp):
+                        venv_site_packages = sp
+                        break
+            # Also try the exact Python version path
+            if not venv_site_packages:
+                for sp in [
+                    os.path.join(venv_path, 'lib', f'python{sys.version_info.major}.{sys.version_info.minor}', 'site-packages'),
+                ]:
+                    if os.path.isdir(sp):
+                        venv_site_packages = sp
+                        break
 
         # Set working directory
         if not cwd:
@@ -323,9 +359,27 @@ class DebugSession:
         old_cwd = os.getcwd()
         old_argv = sys.argv
         old_signal = None
+        old_path = None
         try:
             os.chdir(cwd)
             sys.argv = [file_path] + (args.split() if args else [])
+
+            # Add venv site-packages to sys.path so imports work in exec()
+            if venv_site_packages and venv_site_packages not in sys.path:
+                old_path = sys.path.copy()
+                sys.path.insert(0, venv_site_packages)
+
+            # Add file directory and workspace to sys.path for local imports
+            file_dir = os.path.dirname(os.path.abspath(file_path))
+            if file_dir not in sys.path:
+                if old_path is None:
+                    old_path = sys.path.copy()
+                sys.path.insert(0, file_dir)
+            workspace = config.get('workspace', WORKSPACE)
+            if workspace and workspace not in sys.path:
+                if old_path is None:
+                    old_path = sys.path.copy()
+                sys.path.insert(0, workspace)
 
             # Monkey-patch signal.signal to work in non-main thread.
             # Python's signal module only works in the main thread, but many
@@ -387,6 +441,9 @@ class DebugSession:
             sys.stderr = old_stderr
             sys.argv = old_argv
             os.chdir(old_cwd)
+            # Restore original sys.path if we added venv site-packages
+            if old_path is not None:
+                sys.path[:] = old_path
             # Restore original signal.signal if we patched it
             if old_signal is not None:
                 _signal_mod.signal = old_signal
