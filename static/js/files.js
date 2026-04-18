@@ -201,7 +201,7 @@ const FileManager = (() => {
     /**
      * Save the current file (overwrite)
      */
-    async function saveFile() {
+    async function saveFile(silent) {
         // If no file is open, treat as Save As
         if (!currentFilePath) {
             return saveAs();
@@ -211,7 +211,7 @@ const FileManager = (() => {
         if (window.EditorManager && typeof window.EditorManager.getContent === 'function') {
             content = window.EditorManager.getContent();
         } else {
-            safeToast('Editor not available', 'error');
+            if (!silent) safeToast('Editor not available', 'error');
             return;
         }
 
@@ -232,7 +232,7 @@ const FileManager = (() => {
             if (window.EditorManager && typeof window.EditorManager.markClean === 'function') {
                 window.EditorManager.markClean();
             }
-            safeToast(`Saved ${currentFileName}`, 'success');
+            if (!silent) safeToast(`Saved ${currentFileName}`, 'success');
 
             // Auto-refresh git status to reflect changes
             if (window.GitManager && typeof window.GitManager.refreshStatus === 'function') {
@@ -241,7 +241,7 @@ const FileManager = (() => {
 
             return data;
         } catch (err) {
-            safeToast(`Error saving file: ${err.message}`, 'error');
+            if (!silent) safeToast(`Error saving file: ${err.message}`, 'error');
             console.warn('[FileManager] Error saving file:', err.message);
         }
     }

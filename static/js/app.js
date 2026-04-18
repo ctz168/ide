@@ -1055,16 +1055,22 @@ const AppManager = (() => {
     function initAutoSave() {
         let saveTimer = null;
         document.addEventListener('editor:change', () => {
+            // Capture the file path and content AT THE TIME of change, not when timer fires
+            // This prevents race conditions when switching tabs during debounce period
+            const filePathAtChange = window.EditorManager ? EditorManager.getCurrentFile() : null;
+            const contentAtChange = window.EditorManager ? EditorManager.getContent() : null;
+
             clearTimeout(saveTimer);
             saveTimer = setTimeout(async () => {
-                if (window.EditorManager && EditorManager.isDirty() && window.FileManager) {
-                    const currentFile = EditorManager.getCurrentFile();
-                    if (currentFile) {
-                        try {
-                            await FileManager.saveFile();
-                            // Subtle: no toast for auto-save
-                        } catch (e) {}
-                    }
+                // Verify the file is still the same one that was changed
+                const currentFile = window.EditorManager ? EditorManager.getCurrentFile() : null;
+                if (filePathAtChange && contentAtChange !== null &&
+                    filePathAtChange === currentFile &&
+                    window.EditorManager.isDirty() &&
+                    window.FileManager) {
+                    try {
+                        await FileManager.saveFile(true);
+                    } catch (e) {}
                 }
             }, 1500);
         });

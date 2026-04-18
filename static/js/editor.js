@@ -12,6 +12,7 @@ const EditorManager = (() => {
     let dirty = false;               // unsaved changes flag
     let statusBar = null;            // cursor position status bar element
     let _historySize = 0;            // last known history size for dirty detection
+    let _switching = false;          // guard: suppress change events during tab switch
     
     // ── Multi-Select State ──────────────────────────────────────────
     let multiSelectMode = false;     // whether multi-select is active
@@ -295,6 +296,8 @@ const EditorManager = (() => {
 
         // Track changes for dirty state
         editor.on('change', () => {
+            // Suppress events during programmatic content loads (tab switch)
+            if (_switching) return;
             if (!dirty) {
                 markDirty();
             }
@@ -551,7 +554,9 @@ const EditorManager = (() => {
                 if (path === activeTab) {
                     // Tab is active, update editor content directly
                     if (editor) {
+                        _switching = true;
                         editor.setValue(content);
+                        _switching = false;
                         editor.clearHistory();
                         _historySize = 0;
                         markClean();
@@ -564,6 +569,28 @@ const EditorManager = (() => {
 
         // Save current tab state before opening new one
         saveCurrentTabState();
+
+        // Auto-save current dirty file to disk before opening new tab
+        if (dirty && activeTab) {
+            const savePath = activeTab;
+            const saveContent = editor ? editor.getValue() : '';
+            fetch('/api/files/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: savePath.replace(/^\/workspace\/?/, ''),
+                    content: saveContent
+                })
+            }).then(resp => {
+                if (resp.ok && tabs[savePath]) {
+                    tabs[savePath].dirty = false;
+                    renderTabs();
+                    if (window.GitManager && typeof window.GitManager.refreshStatus === 'function') {
+                        window.GitManager.refreshStatus().catch(() => {});
+                    }
+                }
+            }).catch(() => {});
+        }
 
         // Determine mode
         let mode = currentMode;
@@ -602,7 +629,9 @@ const EditorManager = (() => {
         activeTab = path;
 
         if (editor) {
+            _switching = true;
             editor.setValue(tabs[path].content);
+            _switching = false;
             editor.clearHistory();
             _historySize = 0;
             setMode(mode);
@@ -626,8 +655,40 @@ const EditorManager = (() => {
     function switchTab(path) {
         if (!path || !tabs[path] || path === activeTab) return;
 
-        // Save current tab state
+        // Save current tab state (captures content for tab restoration)
         saveCurrentTabState();
+
+        // Auto-save current dirty file to disk before switching (fire-and-forget)
+        // Must capture filePath and content HERE before we change activeTab/currentFilePath
+        if (dirty && activeTab) {
+            const savePath = activeTab;
+            const saveContent = editor ? editor.getValue() : '';
+            // Fire async save — don't await, don't affect tab switching
+            fetch('/api/files/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: savePath.replace(/^\/workspace\/?/, ''),
+                    content: saveContent
+                })
+            }).then(resp => {
+                if (resp.ok) {
+                    // Mark tab as clean after successful disk save
+                    if (tabs[savePath]) {
+                        tabs[savePath].dirty = false;
+                        // Update tab UI if still visible
+                        if (savePath === activeTab && window.EditorManager) {
+                            window.EditorManager.markClean();
+                        }
+                        renderTabs();
+                    }
+                    // Refresh git status
+                    if (window.GitManager && typeof window.GitManager.refreshStatus === 'function') {
+                        window.GitManager.refreshStatus().catch(() => {});
+                    }
+                }
+            }).catch(() => {});
+        }
 
         // Load new tab state
         const tab = tabs[path];
@@ -636,7 +697,9 @@ const EditorManager = (() => {
         currentMode = tab.mode;
 
         if (editor) {
+            _switching = true;
             editor.setValue(tab.content);
+            _switching = false;
             if (tab.history) {
                 editor.setHistory(tab.history);
             } else {
@@ -689,7 +752,9 @@ const EditorManager = (() => {
             } else {
                 // No more tabs - show empty editor
                 if (editor) {
+                    _switching = true;
                     editor.setValue('');
+                    _switching = false;
                     editor.clearHistory();
                     _historySize = 0;
                     currentMode = 'text/plain';
@@ -769,7 +834,9 @@ const EditorManager = (() => {
         // Preserve scroll position where possible
         const scrollInfo = editor.getScrollInfo();
 
+        _switching = true;
         editor.setValue(value);
+        _switching = false;
         editor.clearHistory();
         _historySize = 0;
         markClean();
