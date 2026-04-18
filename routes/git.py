@@ -264,8 +264,13 @@ def git_commit():
     cwd = resolve_cwd()
     r = git_cmd(f'commit -m {shlex_quote(message)}', cwd=cwd)
     if not r['ok']:
-        return jsonify({'error': r['stderr']}), 500
-    return jsonify({'ok': True})
+        # git often puts the error in stdout (e.g. "nothing to commit"),
+        # fallback to stderr, then to a generic message
+        err_msg = (r['stderr'] or r['stdout'] or '').strip()
+        if not err_msg:
+            err_msg = f'Commit failed (exit code {r.get("code", "?")})'
+        return jsonify({'error': err_msg}), 500
+    return jsonify({'ok': True, 'stdout': r.get('stdout', '')})
 
 
 @bp.route('/api/git/push', methods=['POST'])
