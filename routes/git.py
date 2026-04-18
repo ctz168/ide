@@ -273,6 +273,48 @@ def git_commit():
     return jsonify({'ok': True, 'stdout': r.get('stdout', '')})
 
 
+@bp.route('/api/git/delete-file', methods=['POST'])
+@handle_error
+def git_delete_file():
+    """Delete a file from the working tree using git rm (or plain rm for untracked).
+
+    Accepts:
+        - filepath: file path as reported by git status (relative to repo root)
+    """
+    data = request.json or {}
+    filepath = data.get('filepath', '')
+    if not filepath:
+        return jsonify({'error': 'File path required'}), 400
+
+    cwd = resolve_cwd()
+
+    # Determine if the file is tracked by git
+    check = git_cmd(f'ls-files --error-unmatch -- {shlex_quote(filepath)}', cwd=cwd)
+    if check['ok']:
+        # File is tracked — use git rm
+        r = git_cmd(f'rm -f -- {shlex_quote(filepath)}', cwd=cwd)
+    else:
+        # File is untracked — just delete from filesystem
+        import os
+        full = os.path.join(cwd, filepath)
+        if os.path.exists(full):
+            if os.path.isdir(full):
+                import shutil
+                shutil.rmtree(full)
+            else:
+                os.remove(full)
+            r = {'ok': True, 'stdout': '', 'stderr': ''}
+        else:
+            return jsonify({'error': f'File not found: {filepath}'}), 404
+
+    if not r['ok']:
+        err_msg = (r['stderr'] or r['stdout'] or '').strip()
+        if not err_msg:
+            err_msg = 'Delete failed'
+        return jsonify({'error': err_msg}), 500
+    return jsonify({'ok': True})
+
+
 @bp.route('/api/git/push', methods=['POST'])
 @handle_error
 def git_push():

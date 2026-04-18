@@ -1178,17 +1178,12 @@ const GitManager = (() => {
         );
         if (!confirmed) return;
 
-        // Resolve path relative to project dir (for /api/files/* which uses WORKSPACE as base)
-        const gitCwd = getGitCwd();
-        let fullPath = gitCwd ? (gitCwd + '/' + filepath) : filepath;
-        // Ensure no leading slash (would break os.path.join in backend)
-        if (fullPath.startsWith('/')) fullPath = fullPath.replace(/^\/+/, '');
-
+        // Use git-specific delete endpoint which resolves paths relative to git root
         try {
-            const resp = await fetch('/api/files/delete', {
+            const resp = await fetch('/api/git/delete-file', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: fullPath })
+                body: JSON.stringify({ filepath })
             });
             if (!resp.ok) {
                 const errData = await resp.json().catch(() => ({}));
