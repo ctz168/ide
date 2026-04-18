@@ -18,17 +18,35 @@ const DebugManager = (() => {
         interceptConsole();
         interceptErrors();
         interceptNetwork();
-        processRefreshTimer = setInterval(() => {
-            if (activeTab === 'procs') refreshProcesses();
-        }, 3000);
+        _ensureProcessTimer();
 
-        // When tab becomes visible again, refresh process list
-        // (browser throttles setInterval in background tabs)
+        // When tab becomes visible again, always refresh process list
+        // (browser throttles/cancels setInterval in background tabs)
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && activeTab === 'procs') {
+            if (!document.hidden) {
+                // Ensure the timer is alive (browser may have cancelled it)
+                _ensureProcessTimer();
+                // Always refresh immediately, regardless of which tab is active
                 refreshProcesses();
             }
         });
+
+        // Page Lifecycle 'resume' for mobile WebView
+        document.addEventListener('resume', () => {
+            _ensureProcessTimer();
+            refreshProcesses();
+        }, { passive: true });
+    }
+
+    /**
+     * Ensure the process refresh timer is running.
+     * Called on init and after visibility restore to handle timer cancellation.
+     */
+    function _ensureProcessTimer() {
+        if (processRefreshTimer) clearInterval(processRefreshTimer);
+        processRefreshTimer = setInterval(() => {
+            if (activeTab === 'procs') refreshProcesses();
+        }, 3000);
     }
 
     // ── Bottom Tab Switching ──

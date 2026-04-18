@@ -405,11 +405,21 @@ const TerminalManager = (() => {
     // ── Output Polling (Fallback) ──────────────────────────────────
 
     /**
+     * Consecutive 'not-running' count from polling.
+     * Only after RECOVER_NOT_RUNNING_THRESHOLD consecutive false readings
+     * do we consider the process truly stopped. This prevents premature cleanup
+     * when the page is backgrounded and SSE drops or fetches are throttled.
+     */
+    let _consecutiveNotRunning = 0;
+    const RECOVER_NOT_RUNNING_THRESHOLD = 3;
+
+    /**
      * Start polling for output (fallback when SSE is unavailable)
      * @param {string} procId - process ID to poll
      */
     function startPolling(procId) {
         stopPolling();
+        _consecutiveNotRunning = 0;
         pollOutput(procId);
     }
 
@@ -425,13 +435,13 @@ const TerminalManager = (() => {
             const resp = await fetch(url);
 
             if (!resp.ok) {
-                // Process may have ended
-                if (resp.status === 404 || resp.status === 410) {
-                    appendOutput('Process completed', 'info');
-                    cleanupProcess();
-                    return;
+                // Don't assume process is dead on a single HTTP error —
+                // it might be a transient network issue (e.g. throttled in background tab)
+                console.warn('Output poll HTTP error:', resp.status);
+                if (isRunning && currentProcId) {
+                    pollTimer = setTimeout(() => pollOutput(procId), POLL_INTERVAL * 2);
                 }
-                throw new Error(`Poll failed: ${resp.statusText}`);
+                return;
             }
 
             const data = await resp.json();
@@ -456,14 +466,26 @@ const TerminalManager = (() => {
                 pollSince++;
             }
 
-            // Check if process has exited
+            // Check if process has exited — use consecutive-failure tolerance
             if (data.exited || data.done || data.finished || !data.running) {
-                const exitCode = data.exit_code !== undefined ? data.exit_code : 0;
-                const type = parseInt(exitCode, 10) === 0 ? 'info' : 'error';
-                appendOutput(`Process exited with code ${exitCode}`, type);
-                cleanupProcess();
+                _consecutiveNotRunning++;
+                if (_consecutiveNotRunning >= RECOVER_NOT_RUNNING_THRESHOLD) {
+                    const exitCode = data.exit_code !== undefined ? data.exit_code : 0;
+                    const type = parseInt(exitCode, 10) === 0 ? 'info' : 'error';
+                    appendOutput(`Process exited with code ${exitCode}`, type);
+                    cleanupProcess();
+                    _consecutiveNotRunning = 0;
+                    return;
+                }
+                // Not yet confirmed — keep polling to double-check
+                if (isRunning && currentProcId) {
+                    pollTimer = setTimeout(() => pollOutput(procId), POLL_INTERVAL);
+                }
                 return;
             }
+
+            // Process is still running — reset counter
+            _consecutiveNotRunning = 0;
 
             // Continue polling if still running
             if (isRunning && currentProcId) {
@@ -471,7 +493,7 @@ const TerminalManager = (() => {
             }
 
         } catch (err) {
-            // On error, retry a few times then give up
+            // On network error, don't give up — the tab might just be throttled
             console.warn('Output poll error:', err.message);
             if (isRunning && currentProcId) {
                 pollTimer = setTimeout(() => pollOutput(procId), POLL_INTERVAL * 2);
@@ -535,8 +557,8 @@ const TerminalManager = (() => {
     /**
      * When the tab is backgrounded, SSE connections drop and setTimeout/setInterval
      * get throttled. When the tab becomes visible again, we need to:
-     * 1. Check if a process is still running on the backend
-     * 2. Re-establish SSE streaming if so
+     * 1. ALWAYS check backend for running processes (even if our local state says nothing is running)
+     * 2. Re-establish SSE streaming if a process is still alive
      * 3. Otherwise, show the process has completed
      */
     let _visibilityHandler = null;
@@ -546,77 +568,89 @@ const TerminalManager = (() => {
 
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
-                // Tab just became visible again
+                // Tab just became visible again — always recover from backend
                 _recoverRunState();
             }
         });
+
+        // Also handle Page Lifecycle 'resume' event (mobile WebView)
+        document.addEventListener('resume', () => {
+            _recoverRunState();
+        }, { passive: true });
     }
 
     async function _recoverRunState() {
-        // If we think nothing is running, check backend for running processes
-        if (!isRunning && !currentProcId) {
-            // No state to recover — nothing was running
-            return;
-        }
-
-        // If isRunning=false but currentProcId exists, the SSE may have disconnected
-        // while tab was backgrounded. Check if process is still alive.
-        const procIdToCheck = currentProcId;
-        if (!procIdToCheck) return;
-
         try {
-            const resp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procIdToCheck)}&since=0`);
-            if (!resp.ok) {
-                // Process definitely gone
-                if (!isRunning) {
-                    currentProcId = null;
+            // ALWAYS check backend for running processes, regardless of local state.
+            // This is critical because cleanupProcess() may have already cleared
+            // currentProcId and isRunning when SSE dropped during background.
+            const resp = await fetch('/api/run/processes');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const processes = data.processes || [];
+            const runningProcs = processes.filter(p => p.running !== false);
+
+            if (runningProcs.length === 0) {
+                // No running processes on backend either — clean up local state
+                if (currentProcId && isRunning) {
+                    cleanupProcess();
                 }
                 return;
             }
 
-            const data = await resp.json();
-
-            if (data.running) {
-                // Process is still running! Re-establish connection
-                if (!isRunning) {
-                    setRunningState(true);
-                }
-                // Append any output we missed
-                const lines = data.outputs || [];
-                if (Array.isArray(lines)) {
-                    for (const line of lines) {
-                        const text = typeof line === 'string' ? line : (line.text || line.content || '');
-                        const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
-                        const type = rawType === 'error' ? 'error' :
-                                    rawType === 'status' ? 'system' :
-                                    rawType === 'stderr' ? 'stderr' : 'stdout';
-                        appendOutput(text, type);
-                    }
-                    pollSince = data.since !== undefined ? data.since : lines.length;
-                }
-                // Re-connect SSE for live streaming
-                streamOutput(procIdToCheck);
-            } else {
-                // Process has finished while we were away — show remaining output
-                const lines = data.outputs || [];
-                if (Array.isArray(lines)) {
-                    for (const line of lines) {
-                        const text = typeof line === 'string' ? line : (line.text || line.content || '');
-                        const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
-                        const type = rawType === 'error' ? 'error' :
-                                    rawType === 'status' ? 'system' :
-                                    rawType === 'stderr' ? 'stderr' : 'stdout';
-                        appendOutput(text, type);
-                    }
-                }
-                appendOutput('─────────────────────────────────────────', 'status');
-                appendOutput('[info] Process completed while tab was backgrounded', 'info');
-                cleanupProcess();
+            // Found running processes on backend — find the one we should track
+            // Prefer the one we were tracking before
+            let targetProc = null;
+            if (currentProcId) {
+                targetProc = runningProcs.find(p => p.id === currentProcId);
             }
+            // If our old proc is gone but others are running, pick the latest
+            if (!targetProc) {
+                targetProc = runningProcs[runningProcs.length - 1];
+            }
+
+            if (!targetProc) return;
+
+            const procId = targetProc.id;
+
+            // Update local state to match reality
+            if (procId !== currentProcId) {
+                currentProcId = procId;
+                appendOutput(`[info] Reconnected to process ${procId}`, 'info');
+            }
+            if (!isRunning) {
+                setRunningState(true);
+            }
+
+            // Fetch any output we missed while backgrounded
+            try {
+                const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=0`);
+                if (outResp.ok) {
+                    const outData = await outResp.json();
+                    const lines = outData.outputs || [];
+                    if (Array.isArray(lines) && lines.length > 0) {
+                        for (const line of lines) {
+                            const text = typeof line === 'string' ? line : (line.text || line.content || '');
+                            const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
+                            const type = rawType === 'error' ? 'error' :
+                                        rawType === 'status' ? 'system' :
+                                        rawType === 'stderr' ? 'stderr' : 'stdout';
+                            appendOutput(text, type);
+                        }
+                        pollSince = outData.since !== undefined ? outData.since : lines.length;
+                    }
+                }
+            } catch (outErr) {
+                console.warn('TerminalManager: failed to fetch missed output:', outErr.message);
+            }
+
+            // Re-connect SSE for live streaming
+            streamOutput(procId);
+
         } catch (err) {
             console.warn('TerminalManager: visibility recovery error:', err.message);
-            // On error, try to reconnect SSE anyway
-            if (isRunning && currentProcId) {
+            // On error, try to reconnect SSE with whatever state we have
+            if (currentProcId) {
                 streamOutput(currentProcId);
             }
         }
