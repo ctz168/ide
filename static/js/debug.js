@@ -21,6 +21,14 @@ const DebugManager = (() => {
         processRefreshTimer = setInterval(() => {
             if (activeTab === 'procs') refreshProcesses();
         }, 3000);
+
+        // When tab becomes visible again, refresh process list
+        // (browser throttles setInterval in background tabs)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && activeTab === 'procs') {
+                refreshProcesses();
+            }
+        });
     }
 
     // ── Bottom Tab Switching ──

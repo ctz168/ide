@@ -530,6 +530,98 @@ const TerminalManager = (() => {
         if (si) si.focus();
     }
 
+    // ── Visibility Recovery (tab minimize/restore) ──────────────
+
+    /**
+     * When the tab is backgrounded, SSE connections drop and setTimeout/setInterval
+     * get throttled. When the tab becomes visible again, we need to:
+     * 1. Check if a process is still running on the backend
+     * 2. Re-establish SSE streaming if so
+     * 3. Otherwise, show the process has completed
+     */
+    let _visibilityHandler = null;
+    function initVisibilityHandler() {
+        if (_visibilityHandler) return;
+        _visibilityHandler = true;
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                // Tab just became visible again
+                _recoverRunState();
+            }
+        });
+    }
+
+    async function _recoverRunState() {
+        // If we think nothing is running, check backend for running processes
+        if (!isRunning && !currentProcId) {
+            // No state to recover — nothing was running
+            return;
+        }
+
+        // If isRunning=false but currentProcId exists, the SSE may have disconnected
+        // while tab was backgrounded. Check if process is still alive.
+        const procIdToCheck = currentProcId;
+        if (!procIdToCheck) return;
+
+        try {
+            const resp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procIdToCheck)}&since=0`);
+            if (!resp.ok) {
+                // Process definitely gone
+                if (!isRunning) {
+                    currentProcId = null;
+                }
+                return;
+            }
+
+            const data = await resp.json();
+
+            if (data.running) {
+                // Process is still running! Re-establish connection
+                if (!isRunning) {
+                    setRunningState(true);
+                }
+                // Append any output we missed
+                const lines = data.outputs || [];
+                if (Array.isArray(lines)) {
+                    for (const line of lines) {
+                        const text = typeof line === 'string' ? line : (line.text || line.content || '');
+                        const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
+                        const type = rawType === 'error' ? 'error' :
+                                    rawType === 'status' ? 'system' :
+                                    rawType === 'stderr' ? 'stderr' : 'stdout';
+                        appendOutput(text, type);
+                    }
+                    pollSince = data.since !== undefined ? data.since : lines.length;
+                }
+                // Re-connect SSE for live streaming
+                streamOutput(procIdToCheck);
+            } else {
+                // Process has finished while we were away — show remaining output
+                const lines = data.outputs || [];
+                if (Array.isArray(lines)) {
+                    for (const line of lines) {
+                        const text = typeof line === 'string' ? line : (line.text || line.content || '');
+                        const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
+                        const type = rawType === 'error' ? 'error' :
+                                    rawType === 'status' ? 'system' :
+                                    rawType === 'stderr' ? 'stderr' : 'stdout';
+                        appendOutput(text, type);
+                    }
+                }
+                appendOutput('─────────────────────────────────────────', 'status');
+                appendOutput('[info] Process completed while tab was backgrounded', 'info');
+                cleanupProcess();
+            }
+        } catch (err) {
+            console.warn('TerminalManager: visibility recovery error:', err.message);
+            // On error, try to reconnect SSE anyway
+            if (isRunning && currentProcId) {
+                streamOutput(currentProcId);
+            }
+        }
+    }
+
     // ── Keyboard / Viewport Handling (Mobile) ──────────────────
 
     let keyboardOpen = false;
@@ -1090,6 +1182,7 @@ const TerminalManager = (() => {
         loadVenvInfo();
         setRunningState(false);
         initKeyboardHandler();
+        initVisibilityHandler();
 
         // Print startup banner with system info
         printStartupBanner();
