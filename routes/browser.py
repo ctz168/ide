@@ -568,6 +568,8 @@ def proxy():
 
     parsed = urlparse(target_url)
     hostname = parsed.hostname or ''
+    # Compute self_origin early so it's available in all exception handlers
+    self_origin = request.host_url.rstrip('/')
 
     try:
         # Fetch target URL using urllib
@@ -582,6 +584,35 @@ def proxy():
         req.add_header('Host', hostname)
 
         raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
+
+        # ── Redirect handling ──
+        # If the server redirected (e.g. / → /ui/chat/chat_container.html),
+        # we MUST use the final URL for computing proxy_base. Otherwise relative
+        # URLs in the HTML (e.g. <script src="chat.js">) would be resolved
+        # against the original URL's directory (/) instead of the actual page
+        # directory (/ui/chat/), causing all JS/CSS to 404.
+        final_url = getattr(raw_resp, 'url', None) or target_url
+        if final_url != target_url:
+            # Safety: avoid infinite redirect loops
+            if '/api/browser/proxy' not in final_url:
+                # Drain and close the response — we'll let the browser re-fetch
+                # via the proxy URL for the final (non-redirecting) URL.
+                try:
+                    raw_resp.read()
+                except Exception:
+                    pass
+                try:
+                    raw_resp.close()
+                except Exception:
+                    pass
+                new_proxy = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(final_url, safe="")}'
+                print(f'[PROXY] Redirect: {target_url} → {final_url}')
+                resp = make_response('', 302)
+                resp.headers['Location'] = new_proxy
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
+            # Already a proxy URL (loop detected) — fall through and serve normally
+
         raw_body = raw_resp.read()
         status_code = raw_resp.status
         resp_headers = dict(raw_resp.headers.items())
@@ -601,8 +632,6 @@ def proxy():
             dir_path = '/'
         dir_url = f'{parsed.scheme}://{parsed.netloc}{dir_path}'
 
-        # Use absolute proxy_base to prevent <base> tag from hijacking rewritten URLs
-        self_origin = request.host_url.rstrip('/')
         proxy_base = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
         proxy_base += f'&base={urllib.parse.quote(dir_url, safe="")}'
 
