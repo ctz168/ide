@@ -43,7 +43,7 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
 
 ## Available Tools
-You have **34 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **38 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
 ### File & Code Tools (19)
@@ -55,7 +55,7 @@ For multi-step tasks, think step by step and use tools in sequence.
 - `install_package` / `list_packages` -- Python/npm package management
 - `web_search` / `web_fetch` -- Search the web and fetch page content
 
-### Browser Debugging Tools (9)
+### Browser Debugging Tools (10)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
 - `browser_navigate` -- Navigate the preview iframe to any URL (same-origin pages allow full DOM inspection; cross-origin pages load if permitted but DOM access is blocked)
 - `browser_evaluate` -- Execute JavaScript expressions in the page and get results (same-origin only)
@@ -76,7 +76,7 @@ The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You ca
 5. Use `browser_evaluate` for custom JS (e.g. get scroll position, check state)
 6. Use `browser_console` to check for errors after interactions
 
-### Python Runtime Debugging Tools (8) -- NEW
+### Python Runtime Debugging Tools (8)
 You can debug Python code execution in real-time:
 - `debug_start` -- Start a debugging session for a Python file
 - `debug_stop` -- Stop the current debug session
@@ -96,6 +96,35 @@ You can debug Python code execution in real-time:
 6. Use `debug_step` with action "step_in"/"step_over"/"step_out" to step through code
 7. Use `debug_stop` when done debugging
 
+### Server & Environment Tool (1)
+- `server_logs` -- Read IDE server logs to check for backend errors, startup issues, or runtime exceptions
+
+## Testing & Debugging Workflow (CRITICAL)
+**After every code modification, you MUST test and verify your changes work correctly.** This is not optional — it is a required part of your workflow.
+
+### Step-by-Step Testing Process:
+1. **Modify Code** -- Make your changes using `edit_file` or `write_file`
+2. **Run/Execute** -- For Python files: use `run_command` to execute the file and check output for errors. For web apps: start the server if not running
+3. **Check Backend Errors** -- Use `server_logs` to check if the IDE server has any errors related to your changes
+4. **Frontend Verification (for web apps)** -- Use `browser_navigate` to load the page in the preview, then:
+   - Use `browser_page_info` to verify the page loaded correctly
+   - Use `browser_console` to check for JavaScript errors
+   - Use `browser_inspect` / `browser_query_all` to verify UI elements exist and are correct
+   - Use `browser_click` / `browser_input` to test interactive functionality
+5. **Iterate** -- If errors are found, analyze them, fix the code, and re-test
+
+### Error Handling Strategy:
+- If `run_command` output shows a traceback/error → fix the code and re-run
+- If `browser_console` shows JS errors → find and fix the frontend bug
+- If `server_logs` shows server errors → investigate and fix the backend issue
+- If `browser_page_info` returns an error or page fails to load → check server status, fix routing/code
+- For complex bugs: use Python debugger (`debug_start` → `debug_set_breakpoints` → `debug_continue` → `debug_inspect`)
+
+### What NOT to do:
+- NEVER modify code and report it as done without testing
+- NEVER assume your changes work without verification
+- NEVER skip error checking after running commands
+
 ## Important Rules
 1. Always use absolute paths when referencing files
 2. Before writing a file, read it first to understand existing content
@@ -110,6 +139,9 @@ You can debug Python code execution in real-time:
 11. For browser tools, the preview must be on the "Preview" tab with a page loaded
 12. Browser DOM tools (inspect, click, input, evaluate, etc.) only work with same-origin pages (localhost). Cross-origin pages will load visually but DOM access is blocked by the browser's security policy
 13. Use `browser_open_external` to open any URL in the system browser when iframe access is not needed
+14. **ALWAYS test your code changes** — run the code, check for errors, and verify the fix works before reporting completion
+15. **Use `server_logs` after backend changes** to check for server-side errors
+16. **Use browser tools after frontend changes** to verify the UI renders and functions correctly
 
 ## Workspace
 Current workspace: {WORKSPACE}
@@ -909,6 +941,29 @@ AGENT_TOOLS = [
             'parameters': {'type': 'object', 'properties': {}, 'required': []},
         },
     },
+    # ── Server & Environment Tools ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'server_logs',
+            'description': (
+                'Read IDE server logs to check for backend errors, startup issues, request failures, '
+                'or runtime exceptions. Returns the most recent log lines. Essential for debugging '
+                'backend problems after code modifications.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'count': {
+                        'type': 'integer',
+                        'description': 'Number of most recent log lines to return. Default: 50',
+                        'default': 50,
+                    },
+                },
+                'required': [],
+            },
+        },
+    },
 ]
 
 # ==================== Security Helpers ====================
@@ -1579,6 +1634,42 @@ def _tool_debug_stack(args):
         result += f'  [{i}] {entry[2]}() at {fname}:{entry[1]}\n'
     return result
 
+def _tool_server_logs(args):
+    count = args.get('count', 50)
+    try:
+        import urllib.request as _urllib_req
+        port = os.environ.get('PORT', '1239')
+        req_data = json.dumps({'count': count}).encode()
+        req = _urllib_req.Request(
+            f'http://localhost:{port}/api/server/logs',
+            data=req_data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with _urllib_req.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        lines = data.get('lines', [])
+        source = data.get('source', 'unknown')
+        total = data.get('total', 0)
+        if not lines:
+            return f'No server logs found (source: {source}, total in file: {total})'
+        # Highlight error lines
+        result_lines = []
+        for line in lines:
+            if 'ERROR' in line or 'Traceback' in line or 'Exception' in line:
+                result_lines.append(f'  >> {line}')
+            elif 'WARNING' in line or 'WARN' in line:
+                result_lines.append(f'  !> {line}')
+            else:
+                result_lines.append(f'     {line}')
+        header = f'Server logs (last {len(lines)} of {total} lines, source: {source}):'
+        error_count = sum(1 for l in lines if 'ERROR' in l or 'Traceback' in l or 'Exception' in l)
+        if error_count:
+            header += f' [! {error_count} error(s) found]'
+        return header + '\n' + '\n'.join(result_lines)
+    except Exception as e:
+        return f'Error reading server logs: {e}'
+
 _TOOL_HANDLERS = {
     'read_file': _tool_read_file,
     'write_file': _tool_write_file,
@@ -1617,6 +1708,7 @@ _TOOL_HANDLERS = {
     'debug_inspect': _tool_debug_inspect,
     'debug_evaluate': _tool_debug_evaluate,
     'debug_stack': _tool_debug_stack,
+    'server_logs': _tool_server_logs,
 }
 
 def execute_agent_tool(name, arguments):

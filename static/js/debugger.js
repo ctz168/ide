@@ -449,6 +449,26 @@ const DebuggerUI = (() => {
                 summary = '求值: ' + (act.args.expression || '');
             } else if (act.tool === 'debug_stop') {
                 summary = '停止调试';
+            } else if (act.tool === 'debug_stack') {
+                summary = '查看调用栈';
+            } else if (act.tool === 'browser_navigate') {
+                summary = '浏览页面: ' + ((act.args.url || '').substring(0, 50));
+            } else if (act.tool === 'browser_console') {
+                summary = '查看控制台';
+            } else if (act.tool === 'browser_evaluate') {
+                summary = '执行JS: ' + ((act.args.expression || '').substring(0, 40));
+            } else if (act.tool === 'browser_inspect') {
+                summary = '检查元素: ' + (act.args.selector || '');
+            } else if (act.tool === 'browser_click') {
+                summary = '点击: ' + (act.args.selector || '');
+            } else if (act.tool === 'browser_input') {
+                summary = '输入: ' + (act.args.selector || '');
+            } else if (act.tool === 'browser_page_info') {
+                summary = '页面信息';
+            } else if (act.tool === 'browser_query_all') {
+                summary = '查询元素: ' + (act.args.selector || '');
+            } else if (act.tool === 'server_logs') {
+                summary = '查看服务器日志';
             } else {
                 summary = act.tool;
             }

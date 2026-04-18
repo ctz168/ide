@@ -33,6 +33,7 @@ const ChatManager = (() => {
         'browser_open_external',
         'debug_start', 'debug_stop', 'debug_set_breakpoints', 'debug_continue',
         'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
+        'server_logs',
     ];
 
     const TOOL_ICONS = {
@@ -74,6 +75,7 @@ const ChatManager = (() => {
         debug_inspect:       '🔎',
         debug_evaluate:      '⚡',
         debug_stack:         '📚',
+        server_logs:         '📋',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"
@@ -1020,6 +1022,24 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             const fileTools = ['write_file', 'edit_file', 'create_directory', 'delete_path', 'install_package'];
                             if (fileTools.includes(lastToolName)) {
                                 window.FileManager.refresh();
+                            }
+                        }
+                        // Dispatch AI debug activity event for debugger UI
+                        if (window.DebuggerUI && lastToolName) {
+                            const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
+                                'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
+                                'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
+                                'browser_click', 'browser_input', 'browser_console', 'browser_page_info', 'server_logs'];
+                            if (debugTools.includes(lastToolName)) {
+                                try {
+                                    document.dispatchEvent(new CustomEvent('debug:ai_activity', {
+                                        detail: {
+                                            tool: lastToolName,
+                                            args: parsed.args || {},
+                                            result: (parsed.result || parsed.output || '') || '',
+                                        }
+                                    }));
+                                } catch(e) {}
                             }
                         }
                         lastToolName = null;
