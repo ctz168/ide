@@ -1043,31 +1043,37 @@ def _tool_write_file(args):
     path = _validate_path(args['path'])
     content = args['content']
     create_dirs = args.get('create_dirs', True)
-    if create_dirs:
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    return f'File written successfully: {path} ({os.path.getsize(path)} bytes)'
+    try:
+        if create_dirs:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return f'File written successfully: {path} ({os.path.getsize(path)} bytes)'
+    except Exception as e:
+        return f'Error writing file {path}: {e}'
 
 def _tool_edit_file(args):
     path = _validate_path(args['path'])
     old_text = args['old_text']
     new_text = args['new_text']
-    if not os.path.isfile(path):
-        return f'Error: File not found: {path}'
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    count = content.count(old_text)
-    if count == 0:
-        return f'Error: old_text not found in file. Make sure the text matches exactly (including whitespace).'
-    if count > 1:
-        return f'Warning: old_text found {count} times. All occurrences will be replaced. Use more context to be specific.\nReplacements made: {count}'
-    new_content = content.replace(old_text, new_text)
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(new_content)
-    return f'Edited file: {path} ({count} replacement(s) made)'
+    try:
+        if not os.path.isfile(path):
+            return f'Error: File not found: {path}'
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        count = content.count(old_text)
+        if count == 0:
+            return f'Error: old_text not found in file. Make sure the text matches exactly (including whitespace).'
+        if count > 1:
+            return f'Warning: old_text found {count} times. All occurrences will be replaced. Use more context to be specific.\nReplacements made: {count}'
+        new_content = content.replace(old_text, new_text)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+        return f'Edited file: {path} ({count} replacement(s) made)'
+    except Exception as e:
+        return f'Error editing file {path}: {e}'
 
 def _tool_list_directory(args):
     path = _validate_path(args.get('path', WORKSPACE))
@@ -1102,8 +1108,13 @@ def _tool_search_files(args):
     except re.error as e:
         return f'Error: Invalid regex pattern: {e}'
     results = []
-    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', '.svn'}
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', '.svn', 'bower_components', '.next', 'dist', 'build'}
+    search_start = time.time()
+    SEARCH_TIMEOUT = 30  # seconds
     for root, dirs, files in os.walk(search_path):
+        if time.time() - search_start > SEARCH_TIMEOUT:
+            results.append(f'[Search timed out after {SEARCH_TIMEOUT}s, showing {len(results)} of potentially more results]')
+            break
         dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith('.')]
         for fname in files:
             if len(results) >= max_results:
@@ -1433,6 +1444,9 @@ def _format_browser_result(result):
     if not isinstance(result, dict):
         return str(result) if result else '(no result)'
     if result.get('error'):
+        # Downgrade timeout errors to warnings so the model keeps trying
+        if 'timed out' in result['error']:
+            return f"Warning: {result['error']} The preview panel may not be active. Try browser_page_info to check."
         return f"Error: {result['error']}"
     # Remove 'ok' key for cleaner output
     info = {k: v for k, v in result.items() if k != 'ok'}
@@ -1566,11 +1580,28 @@ def _tool_debug_start(args):
     if breakpoints:
         session.set_breakpoints(file_path, breakpoints)
     ok, msg = session.start(file_path)
-    return msg if ok else f'Error: {msg}'
+    if not ok:
+        return f'Error: {msg}'
+    # Wait up to 10s for the session to reach paused/stopped/idle state
+    for _ in range(50):
+        time.sleep(0.2)
+        state = session.get_state().get('state', '')
+        if state in ('paused', 'stopped', 'idle'):
+            break
+    state = session.get_state()
+    state_name = state.get('state', 'unknown')
+    if state_name == 'paused':
+        return f'{msg}\nPaused at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
+    if state_name == 'stopped':
+        return f'{msg}\nProgram finished. Check output for results.'
+    return f'{msg}\nSession is {state_name}. Use debug_inspect to check status.'
 
 def _tool_debug_stop(args):
     from routes.debug import get_session
     session = get_session()
+    state = session.get_state()
+    if state['state'] in ('idle', 'stopped'):
+        return 'No active debug session to stop'
     session.stop()
     return 'Debug session stopped'
 
@@ -1593,9 +1624,21 @@ def _tool_debug_continue(args):
     from routes.debug import get_session
     session = get_session()
     ok = session.resume()
-    if ok:
-        return 'Continuing execution...'
-    return 'Error: Not paused'
+    if not ok:
+        return 'Error: Not paused'
+    # Wait up to 30s for next pause/stop
+    for _ in range(150):
+        time.sleep(0.2)
+        state = session.get_state().get('state', '')
+        if state in ('paused', 'stopped', 'idle'):
+            break
+    state = session.get_state()
+    state_name = state.get('state', 'running')
+    if state_name == 'paused':
+        return f'Paused at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
+    if state_name == 'stopped':
+        return 'Program finished. Check output for results.'
+    return f'Still running after 30s. Use debug_inspect to check status.'
 
 def _tool_debug_step(args):
     from routes.debug import get_session
@@ -1607,9 +1650,21 @@ def _tool_debug_step(args):
         ok = session.step_out()
     else:
         ok = session.step_in()
-    if ok:
-        return f'Stepping ({action})...'
-    return 'Error: Not paused'
+    if not ok:
+        return 'Error: Not paused'
+    # Wait up to 10s for next pause
+    for _ in range(50):
+        time.sleep(0.2)
+        state = session.get_state().get('state', '')
+        if state in ('paused', 'stopped', 'idle'):
+            break
+    state = session.get_state()
+    state_name = state.get('state', 'running')
+    if state_name == 'paused':
+        return f'Stepped ({action}). Now at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
+    if state_name == 'stopped':
+        return 'Program finished after step.'
+    return f'Step ({action}) executed. Session is {state_name}.'
 
 def _tool_debug_inspect(args):
     from routes.debug import get_session
@@ -1747,6 +1802,20 @@ def execute_agent_tool(name, arguments):
         return False, f'Security error: {e}', time.time() - t0
     except Exception as e:
         return False, f'Tool execution error: {str(e)}', time.time() - t0
+
+# Global tool execution timeout (prevents any single tool from hanging the agent loop)
+TOOL_EXECUTION_TIMEOUT = 120  # seconds
+
+def execute_agent_tool_with_timeout(name, arguments):
+    """Execute a tool with a global timeout to prevent hanging the agent loop."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(execute_agent_tool, name, arguments)
+        try:
+            return future.result(timeout=TOOL_EXECUTION_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            elapsed = time.time() - (executor._work_items and list(executor._work_items.keys())[0] or time.time())
+            return False, f'Error: Tool "{name}" timed out after {TOOL_EXECUTION_TIMEOUT}s', TOOL_EXECUTION_TIMEOUT
 
 # ==================== LLM Integration ====================
 def _build_api_messages(messages, llm_config):
@@ -2210,7 +2279,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
 
             _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
 
-            ok, result_str, elapsed = execute_agent_tool(tool_name, tool_args)
+            ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
 
             _emit({
                 'type': 'tool_result',
@@ -2512,7 +2581,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
             yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
 
-            ok, result_str, elapsed = execute_agent_tool(tool_name, tool_args)
+            ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
 
             yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
 
