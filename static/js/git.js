@@ -34,6 +34,53 @@ const GitManager = (() => {
         return '';
     }
 
+    // ── Console Logging Helper ─────────────────────────────────────
+
+    /**
+     * Log git operation command and result to the terminal console.
+     * Shows the actual git command being executed and its output.
+     */
+    function gitLog(cmd, result) {
+        if (!window.TerminalManager) return;
+        const T = window.TerminalManager;
+        T.appendOutput(`$ git ${cmd}`, 'system');
+        if (result && result.stdout) {
+            result.stdout.trim().split('\n').forEach(line => {
+                if (line) T.appendOutput(line, 'stdout');
+            });
+        }
+        if (result && result.stderr) {
+            result.stderr.trim().split('\n').forEach(line => {
+                if (line) T.appendOutput(line, 'stderr');
+            });
+        }
+        if (result && result.ok === false && (!result.stdout || !result.stderr)) {
+            T.appendOutput('(no output)', 'stderr');
+        }
+    }
+
+    function gitLogSimple(cmd, error) {
+        if (!window.TerminalManager) return;
+        window.TerminalManager.appendOutput(`$ git ${cmd}`, 'system');
+        if (error) {
+            window.TerminalManager.appendOutput(error, 'stderr');
+        }
+    }
+
+    /**
+     * Parse error from HTTP response, preferring server JSON body over statusText.
+     */
+    async function parseError(resp, context) {
+        let errorMsg = `${context}: ${resp.statusText}`;
+        try {
+            const err = await resp.json();
+            errorMsg = err.error || err.message || errorMsg;
+        } catch (_e) {
+            errorMsg = `${context} (${resp.status})`;
+        }
+        return errorMsg;
+    }
+
     // ── API: Status ────────────────────────────────────────────────
 
     /**
@@ -49,19 +96,15 @@ const GitManager = (() => {
                 body: JSON.stringify({ path: gitCwd })
             });
             if (!resp.ok) {
-                let errorMsg = '未知错误';
-                try {
-                    const err = await resp.json();
-                    errorMsg = err.error || err.message || '初始化失败';
-                } catch (e) {
-                    errorMsg = `服务器错误 (${resp.status})`;
-                }
+                const errorMsg = await parseError(resp, '初始化失败');
                 throw new Error(errorMsg);
             }
             const data = await resp.json();
+            gitLog(`init ${gitCwd || '.'}`, data);
             showToast(data.note || 'Git 仓库已初始化', 'success');
             await refresh();
         } catch (err) {
+            gitLogSimple(`init ${getGitCwd() || '.'}`, err.message);
             showToast('初始化失败: ' + err.message, 'error');
         }
     }
@@ -217,6 +260,7 @@ const GitManager = (() => {
             const data = await resp.json();
 
             showToast('克隆成功', 'success');
+            gitLog(`clone ${url}`, data);
 
             // Navigate into cloned folder
             const clonePath = data.path;
@@ -237,6 +281,7 @@ const GitManager = (() => {
             return data;
         } catch (err) {
             showToast('克隆失败: ' + err.message, 'error');
+            gitLogSimple(`clone ${url}`, err.message);
         }
     }
 
@@ -341,9 +386,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: gitCwd })
             });
-            if (!resp.ok) throw new Error(`Pull failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Pull failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
-
+            gitLog(`pull`, data);
             showToast('Pull successful', 'success');
             await refresh();
 
@@ -355,6 +403,7 @@ const GitManager = (() => {
             return data;
         } catch (err) {
             showToast(`Pull error: ${err.message}`, 'error');
+            gitLogSimple(`pull`, err.message);
         }
     }
 
@@ -378,9 +427,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             });
-            if (!resp.ok) throw new Error(`Push failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Push failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
-
+            gitLog(`push${setUpstream ? ' -u' : ''}`, data);
             showToast('Push successful', 'success');
             await refresh();
 
@@ -397,6 +449,7 @@ const GitManager = (() => {
                 }
             } else {
                 showToast(`Push error: ${err.message}`, 'error');
+                gitLogSimple(`push`, err.message);
             }
         }
     }
@@ -435,9 +488,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ paths, path: gitCwd })
             });
-            if (!resp.ok) throw new Error(`Git add failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Git add failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
-
+            gitLog(`add ${paths.join(' ')}`, data);
             showToast(`${paths.length} file(s) staged`, 'success');
             await refreshStatus();
             return data;
@@ -457,9 +513,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ paths: ['.'], path: gitCwd })
             });
-            if (!resp.ok) throw new Error(`Git add all failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Git add all failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
-
+            gitLog('add -A', data);
             showToast('All changes staged', 'success');
             await refreshStatus();
             return data;
@@ -492,8 +551,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ message, path: gitCwd })
             });
-            if (!resp.ok) throw new Error(`Commit failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Commit failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
+            gitLog(`commit -m ${message}`, data);
 
             // Clear commit message input
             const msgEl = document.getElementById('git-commit-msg');
@@ -504,6 +567,7 @@ const GitManager = (() => {
 
             return data;
         } catch (err) {
+            gitLogSimple(`commit -m ${message || ''}`, err.message);
             showToast(`Commit error: ${err.message}`, 'error');
         }
     }
@@ -540,9 +604,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ branch, path: gitCwd })
             });
-            if (!resp.ok) throw new Error(`Checkout failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Checkout failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
-
+            gitLog(`checkout ${branch}`, data);
             showToast(`Switched to ${branch}`, 'success');
             await refresh();
 
@@ -583,8 +650,12 @@ const GitManager = (() => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action, path: gitCwd, ...options })
             });
-            if (!resp.ok) throw new Error(`Stash ${action} failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, `Stash ${action} failed`);
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
+            gitLog(`stash ${action}`, data);
 
             if (action === 'list') {
                 // Display stash list
@@ -617,8 +688,12 @@ const GitManager = (() => {
                 url += `&file=${encodeURIComponent(filepath)}`;
             }
             const resp = await fetch(url);
-            if (!resp.ok) throw new Error(`Diff failed: ${resp.statusText}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Diff failed');
+                throw new Error(errorMsg);
+            }
             const data = await resp.json();
+            gitLog(`diff${filepath ? ' ' + filepath : ''}`, { stdout: data.diff || data.content || '' });
 
             const diffText = data.diff || data.content || '';
             if (!diffText.trim()) {

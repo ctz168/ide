@@ -16,6 +16,30 @@ const FileManager = (() => {
     let isNavigating = false;
     let projectRoot = null;      // project root path (relative to workspace), null = no project
 
+    // ── Persistence ────────────────────────────────────────────────
+    const STORAGE_KEY = 'phoneide_files';
+
+    function saveState() {
+        try {
+            const state = {
+                currentPath,
+                currentFilePath,
+                projectRoot
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (_e) {}
+    }
+
+    function loadSavedState() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (_e) {
+            return null;
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────
 
     /**
@@ -111,6 +135,7 @@ const FileManager = (() => {
         const rel = normalizePath(path);
         if (rel) param = `?path=${encodeURIComponent(rel)}`;
         currentPath = rel;
+        saveState();
         updateBreadcrumb(rel);
 
         try {
@@ -149,6 +174,7 @@ const FileManager = (() => {
             currentFilePath = path;
             currentFileName = path.split('/').pop();
             fileCache[path] = { content, modified: false };
+            saveState();
 
             // Open in tab system
             if (window.EditorManager && typeof window.EditorManager.openTab === 'function') {
@@ -837,6 +863,26 @@ const FileManager = (() => {
                     currentPath = data.project;
                     await loadFileList(data.project);
                     pushHistory(data.project);
+
+                    // Restore saved sub-path within project if persisted
+                    const saved = loadSavedState();
+                    if (saved && saved.currentPath && saved.projectRoot === projectRoot
+                        && saved.currentPath !== projectRoot) {
+                        // Navigate to previously viewed sub-directory
+                        openFolder(saved.currentPath);
+                    }
+
+                    // Re-open previously open file
+                    if (saved && saved.currentFilePath) {
+                        const filePath = saved.currentFilePath;
+                        // Verify file still exists before opening
+                        try {
+                            const checkResp = await fetch(`/api/files/read?path=${encodeURIComponent(filePath.replace(/^\/workspace\/?/, ''))}`);
+                            if (checkResp.ok) {
+                                await openFile(filePath);
+                            }
+                        } catch (_e) {}
+                    }
                     return;
                 }
             }
@@ -844,9 +890,22 @@ const FileManager = (() => {
             console.warn('[FileManager] Failed to check project on init:', e);
         }
 
-        // No project — load workspace root
-        loadFileList(currentPath);
-        pushHistory(currentPath);
+        // No project — try to restore saved state
+        const saved = loadSavedState();
+        const restoredPath = saved ? (saved.currentPath || '') : currentPath;
+        loadFileList(restoredPath);
+        pushHistory(restoredPath);
+
+        // Re-open saved file if any
+        if (saved && saved.currentFilePath && !saved.projectRoot) {
+            try {
+                const filePath = saved.currentFilePath;
+                const checkResp = await fetch(`/api/files/read?path=${encodeURIComponent(filePath.replace(/^\/workspace\/?/, ''))}`);
+                if (checkResp.ok) {
+                    await openFile(filePath);
+                }
+            } catch (_e) {}
+        }
     }
 
     // Auto-init when DOM is ready
@@ -859,9 +918,12 @@ const FileManager = (() => {
     // Listen for project events
     document.addEventListener('project:opened', (e) => {
         projectRoot = e.detail.project || null;
+        saveState();
     });
     document.addEventListener('project:closed', () => {
         projectRoot = null;
+        currentPath = '';
+        saveState();
     });
 
     // ── Public API ─────────────────────────────────────────────────
