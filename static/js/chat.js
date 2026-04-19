@@ -24,6 +24,8 @@ const ChatManager = (() => {
     let isReconnecting = false;         // true when reconnecting to a running task
     let taskStatusInterval = null;      // interval for polling task status
     let taskActivityBadge = null;       // badge element on #btn-chat
+    let sseConnectionAlive = false;     // whether the SSE connection is currently alive
+    let sseConnectionLostWhileHidden = false; // set to true if SSE dies while page is hidden
 
     // ── Constants ──────────────────────────────────────────────────
     const MSG_BACKUP_KEY = 'phoneide_chat_backup'; // localStorage key for crash recovery
@@ -1532,10 +1534,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             const reader = resp.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            sseConnectionAlive = true;  // Mark SSE as connected
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                if (done) {
+                    sseConnectionAlive = false;
+                    break;
+                }
 
                 buffer += decoder.decode(value, { stream: true });
 
@@ -1683,6 +1689,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             }
 
         } catch (err) {
+            sseConnectionAlive = false;
             if (err.name === 'AbortError') {
                 // User aborted
                 hideTyping();
@@ -1691,6 +1698,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 }
                 addMessage('system', 'Generation stopped by user.');
                 showToast('Generation stopped', 'info');
+            } else if (document.hidden) {
+                // SSE connection dropped while page was in background — mark it so we
+                // can auto-reconnect when the page becomes visible again
+                sseConnectionLostWhileHidden = true;
+                console.warn('ChatManager: SSE connection lost while page was hidden, will reconnect on restore');
             } else {
                 hideTyping();
                 if (currentStreamEl && streamBuffer) {
@@ -1703,25 +1715,29 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // On error/abort, do a final backup so messages survive refresh
             backupMessages();
         } finally {
-            currentAbortController = null;
-            isProcessing = false;
-            hideStopButton();
-            hideTyping();
-            hideTurnIndicator();
-            autoResizeInput();
+            // Only clean up processing state if we are NOT going to reconnect later
+            // (i.e. if SSE didn't die while hidden)
+            if (!sseConnectionLostWhileHidden) {
+                currentAbortController = null;
+                isProcessing = false;
+                hideStopButton();
+                hideTyping();
+                hideTurnIndicator();
+                autoResizeInput();
 
-            // Stop the periodic backup timer
-            stopBackupTimer();
+                // Stop the periodic backup timer
+                stopBackupTimer();
 
-            const sendBtn = document.getElementById('chat-send');
-            if (sendBtn) {
-                sendBtn.disabled = false;
-                sendBtn.textContent = 'Send';
-                sendBtn.style.display = '';
-            }
-            const inputEl = document.getElementById('chat-input');
-            if (inputEl) {
-                inputEl.disabled = false;
+                const sendBtn = document.getElementById('chat-send');
+                if (sendBtn) {
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Send';
+                    sendBtn.style.display = '';
+                }
+                const inputEl = document.getElementById('chat-input');
+                if (inputEl) {
+                    inputEl.disabled = false;
+                }
             }
         }
     }
@@ -1861,10 +1877,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             const reader = resp.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
+            sseConnectionAlive = true;  // Mark SSE as connected
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                if (done) {
+                    sseConnectionAlive = false;
+                    break;
+                }
 
                 buffer += decoder.decode(value, { stream: true });
 
@@ -1995,6 +2015,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             }
 
         } catch (err) {
+            sseConnectionAlive = false;
             if (err.name === 'AbortError') {
                 hideTyping();
                 if (currentStreamEl && streamBuffer) {
@@ -2002,6 +2023,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 }
                 addMessage('system', 'Retry stopped by user.');
                 showToast('Retry stopped', 'info');
+            } else if (document.hidden) {
+                // SSE died while page hidden — mark for reconnection on restore
+                sseConnectionLostWhileHidden = true;
+                console.warn('ChatManager: Retry SSE lost while page hidden, will reconnect on restore');
             } else {
                 hideTyping();
                 if (currentStreamEl && streamBuffer) {
@@ -2011,26 +2036,27 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 showToast('Retry error: ' + err.message, 'error');
                 hasError = true;
             }
-            // On error/abort, do a final backup so messages survive refresh
             backupMessages();
         } finally {
-            currentAbortController = null;
-            isProcessing = false;
-            hideStopButton();
-            hideTyping();
-            hideTurnIndicator();
-            autoResizeInput();
-            stopBackupTimer();
+            if (!sseConnectionLostWhileHidden) {
+                currentAbortController = null;
+                isProcessing = false;
+                hideStopButton();
+                hideTyping();
+                hideTurnIndicator();
+                autoResizeInput();
+                stopBackupTimer();
 
-            const sendBtn = document.getElementById('chat-send');
-            if (sendBtn) {
-                sendBtn.disabled = false;
-                sendBtn.textContent = 'Send';
-                sendBtn.style.display = '';
-            }
-            const inputEl = document.getElementById('chat-input');
-            if (inputEl) {
-                inputEl.disabled = false;
+                const sendBtn = document.getElementById('chat-send');
+                if (sendBtn) {
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Send';
+                    sendBtn.style.display = '';
+                }
+                const inputEl = document.getElementById('chat-input');
+                if (inputEl) {
+                    inputEl.disabled = false;
+                }
             }
         }
     }
@@ -3505,6 +3531,111 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const select = document.getElementById('chat-mode-select');
         if (select) select.value = chatMode;
     }
+
+    // ── Page Visibility: Auto-reconnect SSE after restore ─────────
+
+    /**
+     * When the page is restored from background (tab/window becomes visible),
+     * check if the SSE connection was lost while hidden. If so, reconnect
+     * to the running task using the buffered event replay endpoint.
+     */
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState !== 'visible') return;
+
+        // Case 1: SSE died while page was hidden — reconnect immediately
+        if (sseConnectionLostWhileHidden) {
+            sseConnectionLostWhileHidden = false;
+            console.log('ChatManager: Page restored, SSE was lost — reconnecting...');
+
+            // Clean up stale state from the dead SSE
+            currentAbortController = null;
+            stopBackupTimer();
+            hideTyping();
+
+            // Check if the backend task is still running
+            try {
+                const resp = await fetch('/api/chat/task/status');
+                if (!resp.ok) {
+                    // Backend task is gone — reload history instead
+                    isProcessing = false;
+                    hideStopButton();
+                    hideTurnIndicator();
+                    autoResizeInput();
+                    await loadHistory();
+                    showToast('Connection restored — task may have completed', 'info');
+                    return;
+                }
+                const data = await resp.json();
+                if (data.running) {
+                    // Task still running — reconnect and resume streaming
+                    addMessage('system', '🔄 Reconnected to running task...');
+                    showToast('Reconnected to running task', 'info', 3000);
+                    // Reset streaming state for clean reconnection
+                    currentStreamEl = null;
+                    streamBuffer = '';
+                    await reconnectTask(data.conv_id);
+                } else {
+                    // Task already finished — reload history
+                    isProcessing = false;
+                    hideStopButton();
+                    hideTurnIndicator();
+                    autoResizeInput();
+                    await loadHistory();
+                    showToast('Connection restored — task completed while away', 'info', 3000);
+                }
+            } catch (err) {
+                console.warn('ChatManager: visibilitychange reconnect error:', err.message);
+                isProcessing = false;
+                hideStopButton();
+                hideTurnIndicator();
+                autoResizeInput();
+                await loadHistory();
+            }
+            return;
+        }
+
+        // Case 2: SSE is supposedly alive, but let's verify the connection is still working.
+        // If the page was hidden for a long time, the browser may have silently killed
+        // the connection without triggering an error (especially on mobile).
+        if (sseConnectionAlive && isProcessing && !isReconnecting) {
+            // The SSE reader loop might be stuck. We can't easily probe it,
+            // so we check the backend task status and reconcile.
+            try {
+                const resp = await fetch('/api/chat/task/status');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.running) {
+                        // Backend is still running. Check if we've been receiving events
+                        // by looking at whether any recent streaming updates exist.
+                        // If the connection is truly dead, the reader.read() will
+                        // eventually throw and we'll catch it in the catch block above.
+                        // For now, just log for debugging.
+                        console.log('ChatManager: Page restored, SSE appears alive, backend task running');
+                    } else {
+                        // Backend task finished but our SSE never got the 'done' event.
+                        // Clean up and reload history.
+                        console.log('ChatManager: Page restored, backend task completed but SSE missed it');
+                        sseConnectionAlive = false;
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        currentAbortController = null;
+                        isProcessing = false;
+                        hideStopButton();
+                        hideTyping();
+                        hideTurnIndicator();
+                        stopBackupTimer();
+                        autoResizeInput();
+                        clearBackup();
+                        await loadHistory();
+                        showToast('Task completed while away', 'info', 3000);
+                    }
+                }
+            } catch (err) {
+                console.warn('ChatManager: visibilitychange status check error:', err.message);
+            }
+        }
+    });
 
     // ── Initialize ─────────────────────────────────────────────────
 
