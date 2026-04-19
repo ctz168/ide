@@ -11,6 +11,9 @@ const TerminalManager = (() => {
     let eventSource = null;         // SSE connection
     let pollTimer = null;           // polling fallback timer
     let pollSince = 0;              // last line index seen
+
+    // SessionStorage key for persisting running process ID across page refreshes
+    const PROC_ID_STORAGE_KEY = 'phoneide_running_proc_id';
     let compilers = [];             // cached compiler list
     let panelHeight = Math.floor(window.innerHeight * 0.85);  // default 85% of screen height
     let isDragging = false;         // resize drag state
@@ -164,6 +167,7 @@ const TerminalManager = (() => {
             pollSince = 0;
 
             if (currentProcId) {
+                persistProcId(currentProcId);
                 appendOutput(`[info] PID: ${currentProcId} | Streaming output...`, 'info');
                 setRunningState(true);
                 streamOutput(currentProcId);
@@ -236,6 +240,7 @@ const TerminalManager = (() => {
             pollSince = 0;
 
             if (currentProcId) {
+                persistProcId(currentProcId);
                 appendOutput(`[info] PID: ${currentProcId} | Streaming output...`, 'info');
                 setRunningState(true);
                 streamOutput(currentProcId);
@@ -532,12 +537,130 @@ const TerminalManager = (() => {
     }
 
     /**
+     * Persist the running process ID to sessionStorage.
+     * Called when a process starts so we can reconnect after page refresh.
+     */
+    function persistProcId(procId) {
+        try { sessionStorage.setItem(PROC_ID_STORAGE_KEY, procId); } catch (_e) {}
+    }
+
+    /**
+     * Clear the persisted process ID from sessionStorage.
+     * Called when a process finishes or is stopped.
+     */
+    function clearPersistedProcId() {
+        try { sessionStorage.removeItem(PROC_ID_STORAGE_KEY); } catch (_e) {}
+    }
+
+    /**
+     * Recover a running process after page refresh.
+     * Checks sessionStorage for a persisted proc_id and the backend
+     * for the actual process state.
+     */
+    async function recoverRunningProcess() {
+        let procId = null;
+        try { procId = sessionStorage.getItem(PROC_ID_STORAGE_KEY); } catch (_e) {}
+
+        // Also try to find any running process from backend
+        if (!procId) {
+            try {
+                const resp = await fetch('/api/run/processes');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const runningProcs = (data.processes || []).filter(p => p.running);
+                    if (runningProcs.length > 0) {
+                        procId = runningProcs[runningProcs.length - 1].id;
+                    }
+                }
+            } catch (_e) {}
+        }
+
+        if (!procId) return;
+
+        // Verify the process is actually running on the backend
+        try {
+            const resp = await fetch('/api/run/processes');
+            if (!resp.ok) { clearPersistedProcId(); return; }
+            const data = await resp.json();
+            const proc = (data.processes || []).find(p => p.id === procId);
+            if (!proc || !proc.running) {
+                clearPersistedProcId();
+                return;
+            }
+
+            // Process is still running — reconnect!
+            appendOutput('[info] Detected running process after page refresh, reconnecting...', 'info');
+            await reconnectToProcess(procId);
+        } catch (_e) {
+            clearPersistedProcId();
+        }
+    }
+
+    /**
+     * Reconnect to a specific process (running or finished).
+     * Fetches missed output and re-establishes SSE streaming.
+     * Can be called from the process tab's "输出" button or on page load recovery.
+     */
+    async function reconnectToProcess(procId) {
+        if (!procId) return;
+
+        // Show the panel
+        showPanel();
+
+        // Switch to output tab if not already active
+        const outputTab = document.querySelector('[data-btab="output"]');
+        if (outputTab && outputTab.classList && !outputTab.classList.contains('active')) {
+            outputTab.click();
+        }
+
+        // Fetch all output from the beginning
+        try {
+            const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=0`);
+            if (outResp.ok) {
+                const outData = await outResp.json();
+                const lines = outData.outputs || [];
+                if (Array.isArray(lines) && lines.length > 0) {
+                    startCmdBlock(`Process ${procId}`);
+                    for (const line of lines) {
+                        const text = typeof line === 'string' ? line : (line.text || line.content || '');
+                        const rawType = typeof line === 'object' ? (line.type || line.stream || 'stdout') : 'stdout';
+                        const type = rawType === 'error' ? 'error' :
+                                    rawType === 'status' ? 'system' :
+                                    rawType === 'stderr' ? 'stderr' : 'stdout';
+                        appendOutput(text, type);
+                        if (type === 'stdout' && text) _parsePipLine(text);
+                    }
+                    pollSince = outData.since !== undefined ? outData.since : lines.length;
+                }
+
+                // Check if still running
+                if (outData.running) {
+                    currentProcId = procId;
+                    setRunningState(true);
+                    persistProcId(procId);
+                    appendOutput(`[info] PID: ${procId} | Reconnected, streaming output...`, 'info');
+                    streamOutput(procId);
+                } else {
+                    finishCmdBlock();
+                    currentProcId = null;
+                    setRunningState(false);
+                    clearPersistedProcId();
+                    appendOutput(`[info] Process ${procId} has finished.`, 'info');
+                }
+            }
+        } catch (err) {
+            appendOutput(`[error] Failed to reconnect: ${err.message}`, 'error');
+        }
+    }
+
+    /**
      * Clean up after a process finishes
      */
     function cleanupProcess() {
         closeEventSource();
         stopPolling();
         finishCmdBlock();
+        clearPersistedProcId();
         currentProcId = null;
         pollSince = 0;
         setRunningState(false);
@@ -621,6 +744,7 @@ const TerminalManager = (() => {
             if (!isRunning) {
                 setRunningState(true);
             }
+            persistProcId(procId);
 
             // Fetch any output we missed while backgrounded
             try {
@@ -1221,6 +1345,11 @@ const TerminalManager = (() => {
         // Print startup banner with system info
         printStartupBanner();
 
+        // After banner, check for a running process that survived a page refresh.
+        // This reads from sessionStorage (set when a process starts) and
+        // verifies with the backend whether the process is still alive.
+        setTimeout(() => recoverRunningProcess(), 300);
+
         // Auto-detect venv when workspace changes
         window.addEventListener('workspace:changed', () => {
             loadVenvInfo();
@@ -1753,6 +1882,8 @@ const TerminalManager = (() => {
         createVenv,
         installPackage,
         importRequirements,
+        reconnectToProcess,
+        recoverRunningProcess,
 
         // Getters
         get currentProcId() { return currentProcId; },

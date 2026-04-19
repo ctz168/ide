@@ -19,6 +19,9 @@ const DebugManager = (() => {
         interceptErrors();
         interceptNetwork();
         _ensureProcessTimer();
+        // Always refresh process list immediately on init (page load).
+        // This ensures running processes are shown even after a page refresh.
+        refreshProcesses();
 
         // When tab becomes visible again, always refresh process list
         // (browser throttles/cancels setInterval in background tabs)
@@ -298,14 +301,42 @@ const DebugManager = (() => {
             for (const proc of processes) {
                 const tr = document.createElement('tr');
                 const isRunning = proc.running !== false;
-                tr.innerHTML = '<td>' + escapeHTML(proc.id || '-') + '</td>' +
-                    '<td class="' + (isRunning ? 'proc-running' : 'proc-stopped') + '">' + (isRunning ? '运行中' : '已停止') + '</td>' +
+                const cmd = proc.cmd || '-';
+                const shortCmd = cmd.length > 50 ? cmd.substring(0, 50) + '...' : cmd;
+                const exitInfo = !isRunning && proc.exit_code !== undefined && proc.exit_code !== null
+                    ? ` (exit: ${proc.exit_code})` : '';
+                const statusClass = isRunning ? 'proc-running' : 'proc-stopped';
+                const statusText = isRunning ? '运行中' : ('已停止' + exitInfo);
+
+                // Title shows full command on hover
+                tr.title = cmd;
+                tr.innerHTML =
+                    '<td>' + escapeHTML(proc.id || '-') + '</td>' +
+                    '<td class="' + statusClass + '">' + escapeHTML(statusText) + '</td>' +
+                    '<td title="' + escapeHTML(cmd) + '" style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHTML(shortCmd) + '</td>' +
                     '<td>' + (proc.uptime || '-') + '</td>' +
-                    '<td>' + (isRunning ? '<button onclick="DebugManager.killProcess(\'' + escapeHTML(proc.id) + '\')">终止</button>' : '') + '</td>';
+                    '<td>' +
+                        (isRunning
+                            ? '<button onclick="DebugManager.killProcess(\'' + escapeHTML(proc.id) + '\')">终止</button>'
+                            : '<button onclick="DebugManager.viewProcessOutput(\'' + escapeHTML(proc.id) + '\')">输出</button>') +
+                    '</td>';
                 tbody.appendChild(tr);
             }
         } catch {
             tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-muted);">加载失败</td></tr>';
+        }
+    }
+
+    /**
+     * View the output of a finished/running process in the terminal output panel.
+     */
+    async function viewProcessOutput(procId) {
+        // Switch to the output tab
+        const outputTab = document.querySelector('[data-btab="output"]');
+        if (outputTab) outputTab.click();
+
+        if (window.TerminalManager) {
+            await window.TerminalManager.reconnectToProcess(procId);
         }
     }
 
@@ -341,6 +372,8 @@ const DebugManager = (() => {
         init,
         addError,
         killProcess,
+        viewProcessOutput,
+        refreshProcesses,
         get activeTab() { return activeTab; }
     };
 })();

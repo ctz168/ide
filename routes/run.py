@@ -9,6 +9,7 @@ from flask import Blueprint, jsonify, request, Response
 from utils import (
     handle_error, load_config, WORKSPACE, shlex_quote,
     run_process, stop_process, running_processes, process_outputs,
+    _verify_process_state,
 )
 
 bp = Blueprint('run', __name__)
@@ -69,13 +70,16 @@ def stop_execution():
 @bp.route('/api/run/processes', methods=['GET'])
 @handle_error
 def list_processes():
-    """List all running and recent processes"""
+    """List all running and recent processes.
+    Uses proc.poll() to verify actual OS process state,
+    so this is accurate even after page refreshes."""
     processes = []
     for pid, info in running_processes.items():
         start = info.get('start_time')
-        running = info.get('running', False)
+        # Verify actual process state at the OS level
+        running = _verify_process_state(pid)
         uptime = ''
-        if start and running:
+        if start:
             elapsed = time.time() - start
             mins, secs = divmod(int(elapsed), 60)
             hours, mins = divmod(mins, 60)
@@ -85,10 +89,16 @@ def list_processes():
                 uptime = f'{mins}m {secs}s'
             else:
                 uptime = f'{secs}s'
+        # Truncate command for display
+        cmd = info.get('cmd', '')
+        if len(cmd) > 120:
+            cmd = cmd[:120] + '...'
         processes.append({
             'id': pid,
             'running': running,
             'cwd': info.get('cwd', ''),
+            'cmd': cmd,
+            'exit_code': info.get('exit_code'),
             'uptime': uptime,
             'start_time': start,
         })
@@ -103,7 +113,8 @@ def get_output():
 
     if proc_id and proc_id in process_outputs:
         outputs = process_outputs[proc_id][since:]
-        is_running = running_processes.get(proc_id, {}).get('running', False)
+        # Verify actual process state (not just the flag)
+        is_running = _verify_process_state(proc_id)
         return jsonify({
             'outputs': outputs,
             'since': len(process_outputs[proc_id]),
@@ -131,9 +142,11 @@ def stream_output():
                         yield f"event: {evt_type}\ndata: {json.dumps(item)}\n\n"
                     idx = len(outputs)
 
-                is_running = running_processes.get(proc_id, {}).get('running', False)
+                # Verify actual process state (not just the flag)
+                is_running = _verify_process_state(proc_id)
                 if not is_running:
-                    yield f"event: exit\ndata: {json.dumps({'exit_code': 0})}\n\n"
+                    exit_code = running_processes.get(proc_id, {}).get('exit_code', 0)
+                    yield f"event: exit\ndata: {json.dumps({'exit_code': exit_code or 0})}\n\n"
                     break
             else:
                 # proc_id not found — process may have finished before we started

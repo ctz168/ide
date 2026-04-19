@@ -280,18 +280,92 @@ def delete_conversation(conv_id):
 running_processes = {}
 process_outputs = {}
 
+# Maximum number of finished processes to keep in memory
+MAX_FINISHED_PROCESSES = 20
+# Maximum age (seconds) for finished process entries
+MAX_FINISHED_AGE = 3600  # 1 hour
+
+
+def _verify_process_state(proc_id):
+    """
+    Verify the actual OS process state using proc.poll().
+    Updates running_processes in-place and returns the verified running flag.
+    This handles cases where the running flag is stale.
+    """
+    if proc_id not in running_processes:
+        return False
+    info = running_processes[proc_id]
+    proc = info.get('process')
+    if proc is None:
+        return info.get('running', False)
+    # If the process object exists, check its actual state
+    poll_result = proc.poll()
+    if poll_result is not None:
+        # Process has exited at the OS level — update our state
+        if info.get('running'):
+            info['running'] = False
+            info['exit_code'] = poll_result
+            # Append exit status to output if not already there
+            if proc_id in process_outputs:
+                process_outputs[proc_id].append({
+                    'type': 'status',
+                    'text': f'Process exited with code {poll_result}',
+                    'exit_code': poll_result,
+                    'time': datetime.now().isoformat(),
+                })
+        return False
+    # poll() returns None → process is still alive
+    info['running'] = True
+    return True
+
+
+def _cleanup_old_processes():
+    """
+    Remove old finished process entries to prevent memory leaks.
+    Keeps at most MAX_FINISHED_PROCESSES finished entries under MAX_FINISHED_AGE seconds.
+    """
+    now = time.time()
+    finished = []
+    running = []
+    for pid, info in running_processes.items():
+        # First verify actual state
+        _verify_process_state(pid)
+        if info.get('running'):
+            running.append(pid)
+        else:
+            finished.append((pid, info.get('start_time', now)))
+
+    # Sort finished by start_time descending (newest first)
+    finished.sort(key=lambda x: x[1], reverse=True)
+
+    # Remove old finished processes beyond the limit
+    to_remove = []
+    for i, (pid, start) in enumerate(finished):
+        age = now - start if start else 0
+        if i >= MAX_FINISHED_PROCESSES or age > MAX_FINISHED_AGE:
+            to_remove.append(pid)
+
+    for pid in to_remove:
+        running_processes.pop(pid, None)
+        process_outputs.pop(pid, None)
+
 
 def run_process(cmd, cwd=None, timeout=300, proc_id=None):
     """Run a subprocess and capture output"""
     if not proc_id:
         proc_id = str(uuid.uuid4())[:8]
 
+    # Cleanup old finished processes before starting a new one
+    _cleanup_old_processes()
+
     process_outputs[proc_id] = []
     running_processes[proc_id] = {
         'process': None,
         'cwd': cwd,
+        'cmd': cmd,          # Store the command for display
         'running': False,
         'start_time': None,
+        'exit_code': None,
     }
 
     def execute():
@@ -331,6 +405,7 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
 
             proc.wait(timeout=5)
             code = proc.returncode
+            running_processes[proc_id]['exit_code'] = code
 
             process_outputs[proc_id].append({
                 'type': 'status',
@@ -339,12 +414,14 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
                 'time': datetime.now().isoformat(),
             })
         except subprocess.TimeoutExpired:
+            running_processes[proc_id]['exit_code'] = -1
             process_outputs[proc_id].append({
                 'type': 'error',
                 'text': 'Process timed out',
                 'time': datetime.now().isoformat(),
             })
         except Exception as e:
+            running_processes[proc_id]['exit_code'] = -1
             process_outputs[proc_id].append({
                 'type': 'error',
                 'text': str(e),
@@ -366,9 +443,11 @@ def stop_process(proc_id):
             try:
                 proc['process'].terminate()
                 proc['process'].wait(timeout=3)
+                proc['exit_code'] = proc['process'].returncode
             except:
                 try:
                     proc['process'].kill()
+                    proc['exit_code'] = -9
                 except:
                     pass
             return True
