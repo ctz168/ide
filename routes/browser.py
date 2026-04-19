@@ -13,6 +13,9 @@ import subprocess
 import re
 import gzip
 import zlib
+import io
+import http.client
+import socket
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -904,19 +907,29 @@ def _proxy_url(url, proxy_base):
     return proxy_base + '&rel=' + urllib.parse.quote(url, safe='')
 
 
-@bp.route('/api/browser/proxy')
-@handle_error
+@bp.route('/api/browser/proxy', methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'])
 def proxy():
     """
     Reverse proxy for iframe preview.
     Fetches the target URL, strips X-Frame-Options / CSP headers,
     rewrites HTML/CSS/JS URLs to route through this proxy.
+    Supports all HTTP methods (GET, POST, PUT, DELETE, OPTIONS, PATCH)
+    with request body forwarding and SSE streaming response passthrough.
 
     Query params:
       url  — the target URL to fetch
       rel  — (optional) relative URL path to append to the target URL
       base — (optional) override the base URL for resolving relative paths
     """
+    # ── Handle CORS preflight ──
+    if request.method == 'OPTIONS':
+        resp = Response('', status=204)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+        resp.headers['Access-Control-Allow-Headers'] = '*'
+        resp.headers['Access-Control-Max-Age'] = '86400'
+        return resp
+
     target_url = request.args.get('url', '').strip()
     if not target_url:
         return jsonify({'error': 'url parameter required'}), 400
@@ -943,47 +956,135 @@ def proxy():
     # Compute self_origin early so it's available in all exception handlers
     self_origin = request.host_url.rstrip('/')
 
+    # Determine if we need to stream the response (for SSE)
+    # We detect SSE by checking the request's Accept header or the response content-type later
+
     try:
-        # Fetch target URL using urllib
-        req = urllib.request.Request(target_url, method='GET')
-        req.add_header('User-Agent', 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36')
-        # Use */* for subresources (not the HTML-preferring Accept header)
-        req.add_header('Accept', '*/*')
-        req.add_header('Accept-Encoding', 'identity')  # avoid gzip to simplify URL rewriting
-        # Forward Referer so target servers handle relative redirects correctly
-        req.add_header('Referer', f'{parsed.scheme}://{parsed.netloc}/')
-        # Forward Host header so virtual-host servers respond correctly
-        req.add_header('Host', hostname)
+        # Build the outgoing request
+        req_method = request.method
+        req_body = request.get_data()  # gets raw body bytes for POST/PUT
 
-        raw_resp = urllib.request.urlopen(req, timeout=15, context=_SSL_CONTEXT)
+        # Use http.client for full control over method, body, and streaming
+        if parsed.scheme == 'https':
+            conn = http.client.HTTPSConnection(
+                hostname,
+                parsed.port or 443,
+                timeout=120,
+                context=_SSL_CONTEXT,
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                hostname,
+                parsed.port or 80,
+                timeout=120,
+            )
 
-        # ── Redirect handling ──
-        # urllib.request.urlopen automatically follows HTTP 302 redirects.
-        # If the server redirected (e.g. / → /ui/chat/chat_container.html),
-        # raw_resp.url is the FINAL URL after all redirects.
-        # We MUST use the final URL for computing proxy_base. Otherwise relative
-        # URLs in the HTML (e.g. <script src="chat.js">) would be resolved
-        # against the original URL's directory (/) instead of the actual page
-        # directory (/ui/chat/), causing all JS/CSS to 404.
-        final_url = getattr(raw_resp, 'url', None) or target_url
-        if final_url != target_url:
-            print(f'[PROXY] Redirect followed: {target_url} → {final_url}')
-            # Use the final URL for everything below
-            target_url = final_url
-            parsed = urlparse(target_url)
+        # Build path with query string (only the target's own query params, not our proxy params)
+        target_path = parsed.path or '/'
+        if parsed.query:
+            target_path += '?' + parsed.query
 
-        raw_body = raw_resp.read()
+        # Forward request headers (selectively)
+        forward_headers = {}
+        # Content-Type and Content-Length for POST/PUT with body
+        if req_body:
+            ct = request.headers.get('Content-Type', '')
+            if ct:
+                forward_headers['Content-Type'] = ct
+            forward_headers['Content-Length'] = str(len(req_body))
+        # Authorization header (for API calls that need auth)
+        auth = request.headers.get('Authorization', '')
+        if auth:
+            forward_headers['Authorization'] = auth
+        # Accept header
+        accept = request.headers.get('Accept', '*/*')
+        if accept:
+            forward_headers['Accept'] = accept
+        # Forward User-Agent
+        forward_headers['User-Agent'] = request.headers.get('User-Agent', 'Mozilla/5.0 PhoneIDE Proxy')
+        # Forward Host
+        forward_headers['Host'] = hostname
+        # Forward Referer
+        referer = f'{parsed.scheme}://{parsed.netloc}/'
+        forward_headers['Referer'] = referer
+        # Accept-Encoding: identity to avoid gzip (for non-streaming, we need to rewrite)
+        forward_headers['Accept-Encoding'] = 'identity'
+        # Forward Origin if present (some APIs need it)
+        origin = request.headers.get('Origin', '')
+        if origin:
+            forward_headers['Origin'] = origin
+        # Forward X-Requested-With (some backends check for this)
+        xrw = request.headers.get('X-Requested-With', '')
+        if xrw:
+            forward_headers['X-Requested-With'] = xrw
+
+        conn.request(req_method, target_path, body=req_body if req_body else None, headers=forward_headers)
+        raw_resp = conn.getresponse()
+
         status_code = raw_resp.status
-        resp_headers = dict(raw_resp.headers.items())
+        resp_headers = dict(raw_resp.getheaders())
 
-        # Log proxy activity for diagnostics (visible in server.log)
-        content_type = resp_headers.get('Content-Type', 'unknown')
+        # Check if this is a redirect (3xx)
+        if 300 <= status_code < 400 and 'Location' in resp_headers:
+            location = resp_headers['Location']
+            # Resolve relative redirect
+            if not location.startswith('http'):
+                location = urljoin(target_url, location)
+            print(f'[PROXY] {status_code} redirect: {target_url} → {location}')
+            resp = Response('', status=status_code)
+            resp.headers['Location'] = location
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+            resp.headers['Access-Control-Allow-Headers'] = '*'
+            conn.close()
+            return resp
+
+        content_type = resp_headers.get('Content-Type', '') or resp_headers.get('content-type', '')
+
+        print(f'[PROXY] {req_method} {status_code} {target_url} [{content_type}]')
+
+        # ── For SSE / streaming responses, stream through directly ──
+        ct_lower = (content_type or '').lower()
+        is_streaming = (
+            'text/event-stream' in ct_lower or
+            'application/x-ndjson' in ct_lower or
+            'application/octet-stream' in ct_lower
+        )
+
+        if is_streaming:
+            # Stream the response through without buffering
+            def _generate():
+                try:
+                    while True:
+                        chunk = raw_resp.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    conn.close()
+
+            resp = Response(_generate(), status=status_code)
+            # Set content type
+            if content_type:
+                resp.headers['Content-Type'] = content_type
+            # Pass through CORS headers
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+            resp.headers['Access-Control-Allow-Headers'] = '*'
+            # Prevent buffering by proxies
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            resp.headers['X-Accel-Buffering'] = 'no'
+            return resp
+
+        # ── For non-streaming responses, buffer and optionally rewrite ──
+        raw_body = raw_resp.read()
+        conn.close()
+
         body_size = len(raw_body)
         print(f'[PROXY] {status_code} {target_url} [{content_type}] {body_size}B')
 
         # Build proxy base URL for rewriting
-        # Use the directory of the (final) target URL as base, so relative URLs resolve correctly
-        # e.g. for http://host:8080/app/page.html, base should be http://host:8080/app/
+        # Use the directory of the target URL as base, so relative URLs resolve correctly
         path = parsed.path or '/'
         if '/' in path.rstrip('/'):
             dir_path = path.rsplit('/', 1)[0] + '/'
@@ -997,19 +1098,11 @@ def proxy():
         wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
         return _proxy_response(wrapped, proxy_base)
 
-    except urllib.error.HTTPError as e:
-        # For HTTP errors, still try to return the error page through our proxy
-        try:
-            raw_body = e.read()
-            resp_headers = dict(e.headers.items()) if e.headers else {}
-            proxy_base = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
-            proxy_base += f'&base={urllib.parse.quote(target_url, safe="")}'
-            wrapped = _ProxyResponse(raw_body, e.code, resp_headers)
-            return _proxy_response(wrapped, proxy_base)
-        except Exception:
-            return jsonify({'error': f'HTTP {e.code} for {target_url}'}), e.code
-    except urllib.error.URLError as e:
-        reason = str(e.reason) if e.reason else 'Unknown error'
-        return jsonify({'error': f'Cannot connect to {target_url}: {reason[:200]}'}), 502
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        reason = str(e.reason) if hasattr(e, 'reason') and e.reason else str(e)
+        print(f'[PROXY] Error for {target_url}: {reason}')
+        return jsonify({'error': f'Proxy error: {reason[:200]}'}), 502
     except Exception as e:
+        import traceback as _tb
+        _tb.print_exc()
         return jsonify({'error': f'Proxy error: {str(e)[:200]}'}), 502

@@ -8,7 +8,7 @@ Refactored: routes split into routes/ directory, shared utilities in utils.py.
 
 import os
 import sys
-from flask import Flask, send_from_directory, jsonify, make_response
+from flask import Flask, send_from_directory, jsonify, make_response, request
 from flask_cors import CORS
 
 # ==================== Create App ====================
