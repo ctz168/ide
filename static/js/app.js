@@ -380,7 +380,7 @@ const AppManager = (() => {
         _getWorkspaceKey() {
             // Use workspace path to isolate config per project
             const ws = document.getElementById('workspace-path');
-            return ws ? ws.value || 'default' : 'default';
+            return ws ? ws.textContent || 'default' : 'default';
         },
 
         _load() {
@@ -1008,7 +1008,7 @@ const AppManager = (() => {
                         }
                         const data = await resp.json();
                         if (data.workspace) {
-                            document.getElementById('workspace-path').value = data.workspace;
+                            document.getElementById('workspace-path').textContent = data.workspace;
                             if (window.FileManager) await FileManager.loadFileList();
                             showToast('工作区已切换', 'success');
                         }
@@ -1707,7 +1707,7 @@ const AppManager = (() => {
             if (configResp.ok) {
                 const config = await configResp.json();
                 if (config.workspace) {
-                    document.getElementById('workspace-path').value = config.workspace;
+                    document.getElementById('workspace-path').textContent = config.workspace;
                 }
                 if (config.font_size && window.EditorManager) {
                     EditorManager.setFontSize(config.font_size);

@@ -66,6 +66,20 @@ const FileManager = (() => {
     }
 
     /**
+     * Constrain a path to stay within the project boundary.
+     * When a project is open, navigation must not go above the project root.
+     * Returns the constrained path.
+     */
+    function constrainToProject(path) {
+        if (!projectRoot) return path;  // no project, no constraint
+        const normalized = normalizePath(path);
+        if (!normalized || normalized === projectRoot) return projectRoot;
+        if (normalized.startsWith(projectRoot + '/')) return normalized;
+        // Path is above or outside the project — redirect to project root
+        return projectRoot;
+    }
+
+    /**
      * Join path segments
      */
     function joinPath(base, name) {
@@ -106,7 +120,9 @@ const FileManager = (() => {
         if (historyIndex > 0) {
             historyIndex--;
             isNavigating = true;
-            loadFileList(navigationHistory[historyIndex]);
+            // Constrain to project boundary when navigating history
+            const targetPath = constrainToProject(navigationHistory[historyIndex]);
+            loadFileList(targetPath);
             isNavigating = false;
         }
     }
@@ -118,7 +134,9 @@ const FileManager = (() => {
         if (historyIndex < navigationHistory.length - 1) {
             historyIndex++;
             isNavigating = true;
-            loadFileList(navigationHistory[historyIndex]);
+            // Constrain to project boundary when navigating history
+            const targetPath = constrainToProject(navigationHistory[historyIndex]);
+            loadFileList(targetPath);
             isNavigating = false;
         }
     }
@@ -126,17 +144,20 @@ const FileManager = (() => {
     // ── API Calls ──────────────────────────────────────────────────
 
     /**
-     * Fetch the file list for a given directory path
+     * Fetch the file list for a given directory path.
+     * When a project is open, constrains navigation to within the project directory.
      */
     async function loadFileList(path) {
+        // Enforce project boundary before making any request
+        const effectivePath = constrainToProject(normalizePath(path));
+        currentPath = effectivePath;
+
         // '' = workspace root (server needs no path param)
         // 'myrepo' = subdirectory (server needs 'myrepo')
         let param = '';
-        const rel = normalizePath(path);
-        if (rel) param = `?path=${encodeURIComponent(rel)}`;
-        currentPath = rel;
+        if (effectivePath) param = `?path=${encodeURIComponent(effectivePath)}`;
         saveState();
-        updateBreadcrumb(rel);
+        updateBreadcrumb(effectivePath);
 
         try {
             const resp = await fetch(`/api/files/list${param}`);
@@ -151,7 +172,15 @@ const FileManager = (() => {
                 projectRoot = data.project || null;
             }
 
-            renderFileTree(data.items || data || [], path);
+            // If server redirected the path (project boundary enforcement),
+            // sync our currentPath to the server's returned path
+            if (data.path !== undefined && data.path !== effectivePath) {
+                currentPath = normalizePath(data.path);
+                saveState();
+                updateBreadcrumb(currentPath);
+            }
+
+            renderFileTree(data.items || data || [], currentPath);
             return data;
         } catch (err) {
             safeToast(`Error loading files: ${err.message}`, 'error');
@@ -448,10 +477,11 @@ const FileManager = (() => {
     }
 
     /**
-     * Open / navigate into a directory
+     * Open / navigate into a directory.
+     * Enforces project boundary — cannot navigate above the project root.
      */
     async function openFolder(path) {
-        path = normalizePath(path);
+        path = constrainToProject(normalizePath(path));
         pushHistory(path);
         await loadFileList(path);
         // Notify other modules (e.g. GitManager) that the directory changed
@@ -508,20 +538,22 @@ const FileManager = (() => {
         // Build HTML
         let html = '';
 
-        // Add "go up" button if not at project root (or workspace root if no project)
+        // Add "go up" button (..)
+        // Rules:
+        //   - When a project is open: show .. only when NOT at the project root
+        //     (the project root is the topmost boundary — user cannot go above it)
+        //   - When no project: show .. only when NOT at the workspace root
         const rootBoundary = projectRoot || '';
-        if (currentPath && currentPath !== '' && currentPath !== rootBoundary) {
-            // Check if we can go up (must not go above project root)
+        const canGoUp = currentPath && currentPath !== rootBoundary;
+        if (canGoUp) {
             const parent = parentPath(currentPath);
-            if (!projectRoot || !parent || parent.startsWith(projectRoot)) {
-                html += `
-                    <div class="file-item directory" data-path="${escapeAttr(parent)}" data-action="go-up">
-                        <span class="arrow">&#9664;</span>
-                        <span class="icon">📁</span>
-                        <span class="name">..</span>
-                        <span class="size"></span>
-                    </div>`;
-            }
+            html += `
+                <div class="file-item directory" data-path="${escapeAttr(parent)}" data-action="go-up">
+                    <span class="arrow">&#9664;</span>
+                    <span class="icon">📁</span>
+                    <span class="name">..</span>
+                    <span class="size"></span>
+                </div>`;
         }
 
         for (const item of items) {
@@ -629,7 +661,8 @@ const FileManager = (() => {
                 const action = item.dataset.action;
 
                 if (action === 'go-up') {
-                    openFolder(parentPath(currentPath));
+                    // Use data-path from the rendered button (already computed correctly)
+                    openFolder(path);
                     return;
                 }
 
@@ -984,6 +1017,7 @@ const FileManager = (() => {
         get currentPath() { return currentPath; },
         get currentFilePath() { return currentFilePath; },
         get currentFileName() { return currentFileName; },
+        get projectRoot() { return projectRoot; },
         set currentFilePath(v) { currentFilePath = v; },
 
         // Utilities exposed for other modules

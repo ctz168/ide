@@ -339,6 +339,54 @@ html, body {
     font-family: var(--font-mono);
 }
 
+/* Breadcrumb in file panel */
+.workspace-breadcrumb {
+    flex: 1;
+    min-width: 60px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 20px;
+    cursor: default;
+    display: flex;
+    align-items: center;
+}
+.workspace-breadcrumb:empty::before {
+    content: '工作区路径';
+    color: var(--text-muted);
+}
+.breadcrumb-segment {
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 1px 3px;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+.breadcrumb-segment:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+.breadcrumb-segment.current {
+    color: var(--text-primary);
+    cursor: default;
+    font-weight: 600;
+}
+.breadcrumb-segment.current:hover {
+    background: none;
+}
+.breadcrumb-separator {
+    color: var(--text-muted);
+    margin: 0 1px;
+    user-select: none;
+}
+
 /* ==================== File Tree ==================== */
 #file-tree {
     flex: 1;

@@ -22,13 +22,25 @@ def list_files():
     path = request.args.get('path', '')
     config = load_config()
     base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
 
     target = os.path.join(base, path) if path else base
     target = os.path.realpath(target)
 
     # Security: must be under workspace
-    if not target.startswith(os.path.realpath(base)):
+    real_base = os.path.realpath(base)
+    if not target.startswith(real_base):
         return jsonify({'error': 'Access denied'}), 403
+
+    # Project boundary enforcement:
+    # When a project is open, the file tree is confined to the project directory.
+    # If the requested path is above the project root, redirect to the project root.
+    if project:
+        project_dir = os.path.realpath(os.path.join(base, project))
+        if os.path.isdir(project_dir) and not target.startswith(project_dir):
+            # User tried to navigate above the project — redirect to project root
+            target = project_dir
+            path = project
 
     if not os.path.exists(target):
         return jsonify({'error': 'Path not found'}), 404
@@ -63,8 +75,6 @@ def list_files():
             'icon': get_icon_for_file(os.path.basename(target)),
         })
 
-    # Include project info in response so frontend can enforce boundary
-    project = config.get('project', None)
     return jsonify({'items': items, 'path': path, 'base': base, 'project': project})
 
 
