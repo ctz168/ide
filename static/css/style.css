@@ -318,6 +318,14 @@ html, body {
 .panel-toolbar button:active {
     background: var(--bg-hover);
 }
+#btn-set-workspace {
+    background: var(--accent-color, #007AFF);
+    color: #fff;
+    border-color: var(--accent-color, #007AFF);
+}
+#btn-set-workspace:active {
+    opacity: 0.8;
+}
 
 .panel-toolbar input {
     flex: 1;
