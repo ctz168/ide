@@ -939,7 +939,7 @@ const GitManager = (() => {
     }
 
     /**
-     * Render commit log
+     * Render commit log (with expandable file list per commit)
      */
     function renderLogList(commits) {
         const el = document.getElementById('git-log-list');
@@ -960,34 +960,185 @@ const GitManager = (() => {
             const date = commit.date || commit.timestamp || '';
 
             html += `
-                <div class="git-log-item" data-hash="${escapeAttr(hash)}">
+                <div class="git-log-item" data-hash="${escapeAttr(hash)}" data-full-hash="${escapeAttr(fullHash)}">
                     <div class="git-log-header">
+                        <span class="git-log-expand-icon" data-expanded="false">▶</span>
                         <span class="git-log-hash">${escapeHTML(shortHash)}</span>
                         <span class="git-log-author">${escapeHTML(author)}</span>
                         <button class="git-log-checkout-btn" data-full-hash="${escapeAttr(fullHash)}" title="回到该版本">⏪</button>
                     </div>
                     <div class="git-log-message">${escapeHTML(message.split('\n')[0])}</div>
                     <div class="git-log-date">${escapeHTML(date)}</div>
+                    <div class="git-log-files" style="display:none;"></div>
                 </div>`;
         }
 
         el.innerHTML = html;
 
-        // Bind checkout buttons
-        el.querySelectorAll('.git-log-checkout-btn').forEach(btn => {
+        // Bind expand/collapse + checkout buttons
+        el.querySelectorAll('.git-log-item').forEach(item => {
+            // ── Click header to expand/collapse file list ──
+            const header = item.querySelector('.git-log-header');
+            const expandIcon = item.querySelector('.git-log-expand-icon');
+            const filesContainer = item.querySelector('.git-log-files');
+
             const handler = (e) => {
+                // Don't toggle if clicking the checkout button
+                if (e.target.closest('.git-log-checkout-btn')) return;
                 e.stopPropagation();
-                const fullHash = btn.dataset.fullHash;
-                if (fullHash) checkoutCommit(fullHash);
+                toggleCommitFiles(item);
             };
-            btn.addEventListener('click', handler);
-            // Touch support
-            btn.addEventListener('touchend', (e) => {
+            header.addEventListener('click', handler);
+            header.addEventListener('touchend', (e) => {
+                if (e.target.closest('.git-log-checkout-btn')) return;
                 e.preventDefault();
                 e.stopPropagation();
                 handler(e);
             });
+
+            // ── Checkout button ──
+            const checkoutBtn = item.querySelector('.git-log-checkout-btn');
+            const checkoutHandler = (e) => {
+                e.stopPropagation();
+                const fullHash = checkoutBtn.dataset.fullHash;
+                if (fullHash) checkoutCommit(fullHash);
+            };
+            checkoutBtn.addEventListener('click', checkoutHandler);
+            checkoutBtn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                checkoutHandler(e);
+            });
         });
+    }
+
+    // Track which commits have loaded their file lists
+    const _commitFilesCache = {};
+
+    /**
+     * Toggle the file list under a commit item.
+     * First click: fetch file list from server, then expand.
+     * Second click: collapse.
+     */
+    async function toggleCommitFiles(item) {
+        const fullHash = item.dataset.fullHash;
+        const filesContainer = item.querySelector('.git-log-files');
+        const expandIcon = item.querySelector('.git-log-expand-icon');
+        const isExpanded = expandIcon.dataset.expanded === 'true';
+
+        if (isExpanded) {
+            // Collapse
+            filesContainer.style.display = 'none';
+            expandIcon.dataset.expanded = 'false';
+            expandIcon.textContent = '▶';
+            return;
+        }
+
+        // Expand
+        expandIcon.dataset.expanded = 'true';
+        expandIcon.textContent = '▼';
+        filesContainer.style.display = 'block';
+
+        // If we haven't loaded the file list yet, fetch it
+        if (!_commitFilesCache[fullHash]) {
+            filesContainer.innerHTML = '<div style="padding:6px 12px;color:var(--text-muted);font-size:11px;">Loading...</div>';
+            try {
+                const gitCwd = getGitCwd();
+                const params = `?ref=${encodeURIComponent(fullHash)}&path=${encodeURIComponent(gitCwd)}`;
+                const resp = await fetch(`/api/git/commit-diff${params}`);
+                if (!resp.ok) throw new Error('Failed to load commit files');
+                const data = await resp.json();
+                _commitFilesCache[fullHash] = data.files || [];
+            } catch (err) {
+                filesContainer.innerHTML = `<div style="padding:6px 12px;color:#e74c3c;font-size:11px;">${escapeHTML(err.message)}</div>`;
+                return;
+            }
+        }
+
+        const files = _commitFilesCache[fullHash];
+        if (!files || files.length === 0) {
+            filesContainer.innerHTML = '<div style="padding:6px 12px;color:var(--text-muted);font-size:11px;">No file changes (possibly merge commit)</div>';
+            return;
+        }
+
+        // Render file list
+        let filesHtml = '<div class="git-log-files-list">';
+        for (const f of files) {
+            const fpath = f.path || f.file || '';
+            const additions = f.additions || 0;
+            const deletions = f.deletions || 0;
+            // Detect binary
+            const ext = (fpath.split('.').pop() || '').toLowerCase();
+            const binaryExts = ['pdf','png','jpg','jpeg','gif','webp','ico','svg','mp3','mp4','wav','zip','tar','gz','7z','rar','exe','dll','so','dylib','bin','dat','woff','woff2','ttf','eot','otf'];
+            const isBinary = binaryExts.includes(ext);
+
+            filesHtml += `
+                <div class="git-log-file-item" data-path="${escapeAttr(fpath)}" data-hash="${escapeAttr(fullHash)}">
+                    <span class="git-log-file-icon">${isBinary ? '📦' : '📄'}</span>
+                    <span class="git-log-file-path" title="${escapeAttr(fpath)}">${escapeHTML(fpath)}</span>
+                    ${!isBinary ? `<span class="git-log-file-stat">+${additions} -${deletions}</span>` : '<span class="git-log-file-stat binary">binary</span>'}
+                    ${!isBinary ? `<button class="git-log-file-diff-btn" data-path="${escapeAttr(fpath)}" data-hash="${escapeAttr(fullHash)}" title="查看差异">📋</button>` : ''}
+                </div>`;
+        }
+        filesHtml += '</div>';
+        filesContainer.innerHTML = filesHtml;
+
+        // Bind diff buttons
+        filesContainer.querySelectorAll('.git-log-file-diff-btn').forEach(btn => {
+            const btnHandler = (e) => {
+                e.stopPropagation();
+                const fpath = btn.dataset.path;
+                const hash = btn.dataset.hash;
+                if (fpath && hash) showCommitFileDiff(hash, fpath);
+            };
+            btn.addEventListener('click', btnHandler);
+            btn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                btnHandler(e);
+            });
+        });
+
+        // Also bind click on file row (for diff)
+        filesContainer.querySelectorAll('.git-log-file-item').forEach(row => {
+            row.addEventListener('click', () => {
+                const fpath = row.dataset.path;
+                const hash = row.dataset.hash;
+                if (fpath && hash && !row.querySelector('.git-log-file-stat.binary')) {
+                    showCommitFileDiff(hash, fpath);
+                }
+            });
+        });
+    }
+
+    /**
+     * Show the diff for a specific file in a specific commit.
+     */
+    async function showCommitFileDiff(hash, filepath) {
+        try {
+            const gitCwd = getGitCwd();
+            const params = `?ref=${encodeURIComponent(hash)}&file=${encodeURIComponent(filepath)}&path=${encodeURIComponent(gitCwd)}`;
+            const resp = await fetch(`/api/git/commit-diff${params}`);
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, 'Commit diff failed');
+                throw new Error(errorMsg);
+            }
+            const data = await resp.json();
+            const diffText = data.diff || '';
+            if (!diffText.trim()) {
+                showToast('No diff available', 'info');
+                return;
+            }
+
+            if (window.EditorManager && typeof window.EditorManager.showDiff === 'function') {
+                const label = `${hash.substring(0, 7)} ${filepath}`;
+                window.EditorManager.showDiff(diffText, label);
+            } else {
+                showToast(diffText.substring(0, 500), 'info');
+            }
+        } catch (err) {
+            showToast('Diff error: ' + err.message, 'error');
+        }
     }
 
     /**
@@ -1405,6 +1556,7 @@ const GitManager = (() => {
         gitInit,
         restoreFile,
         checkoutCommit,
+        showCommitFileDiff,
         openGitFile,
         addToGitignore,
         deleteGitFile,

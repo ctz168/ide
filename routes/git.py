@@ -443,6 +443,78 @@ def git_restore():
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
+@bp.route('/api/git/commit-diff', methods=['GET'])
+@handle_error
+def git_commit_diff():
+    """Get file list and/or diff for a specific commit.
+
+    Query params:
+        ref  — commit hash (required)
+        file — optional; if provided, returns diff for that specific file only
+    Returns:
+        { files: [{path, status, additions, deletions}], diff: "..." }
+        If ?file= is set, returns { file, diff } for just that file.
+    """
+    ref = request.args.get('ref', '').strip()
+    filepath = request.args.get('file', '').strip()
+
+    if not ref:
+        return jsonify({'error': 'Commit ref required'}), 400
+
+    cwd = resolve_cwd()
+
+    if filepath:
+        # Get diff for a specific file in this commit
+        r = git_cmd(
+            f'show {shlex_quote(ref)} -- {shlex_quote(filepath)}',
+            cwd=cwd, timeout=30
+        )
+        return jsonify({
+            'file': filepath,
+            'diff': r['stdout'] if r['ok'] else '',
+            'error': r['stderr'] if not r['ok'] else None,
+        })
+    else:
+        # Get file list with stat (names + change summary)
+        r_stat = git_cmd(
+            f'show {shlex_quote(ref)} --stat --format=""',
+            cwd=cwd, timeout=30
+        )
+        files = []
+        if r_stat['ok'] and r_stat['stdout'].strip():
+            for line in r_stat['stdout'].strip().split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                # Parse lines like " path/to/file | 10 ++++++++---"
+                # or " 3 files changed, 10 insertions(+), 5 deletions(-)"
+                if '|' not in line or 'files changed' in line:
+                    continue
+                parts = line.rsplit('|', 1)
+                if len(parts) == 2:
+                    fpath = parts[0].strip()
+                    stat_str = parts[1].strip()
+                    # Parse additions/deletions from stat
+                    additions = 0
+                    deletions = 0
+                    import re as _re
+                    nums = _re.findall(r'(\d+)', stat_str)
+                    if len(nums) >= 1:
+                        additions = int(nums[0])
+                    if len(nums) >= 2:
+                        deletions = int(nums[1])
+                    files.append({
+                        'path': fpath,
+                        'additions': additions,
+                        'deletions': deletions,
+                    })
+
+        return jsonify({
+            'ref': ref,
+            'files': files,
+        })
+
+
 @bp.route('/api/git/checkout-commit', methods=['POST'])
 @handle_error
 def git_checkout_commit():
