@@ -46,16 +46,25 @@
             <!-- Project Panel -->
             <div id="panel-project" class="panel active">
                 <div class="panel-toolbar">
+                    <button id="btn-set-workspace" title="选定工作目录">📁 工作目录</button>
                     <button id="btn-open-project" title="打开项目">📂 打开项目</button>
                     <button id="btn-clone-project" title="克隆项目">📥 克隆项目</button>
                     <button id="btn-close-project" title="关闭项目" style="display:none;">✕ 关闭项目</button>
+                </div>
+                <!-- Workspace info bar -->
+                <div id="workspace-info-bar" class="hidden">
+                    <div id="workspace-info-content" style="padding:6px 10px;font-size:11px;color:var(--text-secondary);background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:6px;">
+                        <span style="color:var(--text-muted);">工作目录:</span>
+                        <span id="workspace-current-path" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);color:var(--text-primary);"></span>
+                        <button id="btn-change-workspace" title="更改工作目录" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 4px;">✏</button>
+                    </div>
                 </div>
                 <div id="project-info">
                     <div id="project-current" class="project-no-project">
                         <div style="text-align:center;padding:30px 12px;">
                             <div style="font-size:36px;margin-bottom:10px;">📁</div>
                             <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px;">未打开项目</div>
-                            <div style="font-size:11px;color:var(--text-muted);">点击「打开项目」选择一个文件夹，或点击「克隆项目」从远程克隆</div>
+                            <div style="font-size:11px;color:var(--text-muted);">点击「工作目录」选择一个根目录，或点击「打开项目」选择一个文件夹，或点击「克隆项目」从远程克隆</div>
                         </div>
                     </div>
                 </div>
@@ -66,6 +75,20 @@
                         <span id="project-picker-path" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">/</span>
                     </div>
                     <div id="project-picker-list"></div>
+                </div>
+                <!-- Workspace picker (for selecting root working directory) -->
+                <div id="workspace-picker" class="hidden">
+                    <div style="padding:8px 10px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);">
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <button id="ws-picker-back" title="返回上级" style="display:none;background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:14px;padding:2px 6px;">⬆</button>
+                            <span id="ws-picker-path" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-family:var(--font-mono);color:var(--text-secondary);">/</span>
+                        </div>
+                    </div>
+                    <div id="ws-picker-list" style="max-height:300px;overflow-y:auto;"></div>
+                    <div style="padding:8px 10px;border-top:1px solid var(--border-color);display:flex;gap:8px;">
+                        <button id="ws-picker-cancel" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:12px;">取消</button>
+                        <button id="ws-picker-confirm" style="flex:1;padding:6px;border-radius:6px;border:none;background:var(--accent-color);color:#fff;cursor:pointer;font-size:12px;">选定此目录</button>
+                    </div>
                 </div>
             </div>
             <!-- Files Panel -->

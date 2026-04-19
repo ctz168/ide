@@ -231,6 +231,69 @@ def open_folder():
     return jsonify({'error': 'Invalid folder path'}), 400
 
 
+# ==================== Workspace Root Selection ====================
+
+@bp.route('/api/workspace/info', methods=['GET'])
+@handle_error
+def workspace_info():
+    """Get current workspace information."""
+    config = load_config()
+    ws = config.get('workspace', WORKSPACE)
+    exists = os.path.isdir(ws)
+    return jsonify({
+        'workspace': ws,
+        'exists': exists,
+        'is_default': ws == WORKSPACE,
+    })
+
+
+@bp.route('/api/workspace/browse', methods=['GET'])
+@handle_error
+def workspace_browse():
+    """Browse directories for workspace selection.
+    Unlike /api/files/list, this is NOT restricted to the current workspace —
+    it allows navigating the whole filesystem to pick a root directory.
+    Only directories are listed (no files)."""
+    path = request.args.get('path', '/')
+    path = os.path.realpath(path)
+
+    if not os.path.isdir(path):
+        return jsonify({'error': 'Directory not found'}, 404)
+
+    folders = []
+    try:
+        for entry in sorted(os.listdir(path)):
+            full = os.path.join(path, entry)
+            if os.path.isdir(full) and not entry.startswith('.'):
+                folders.append({
+                    'name': entry,
+                    'path': full,
+                })
+    except PermissionError:
+        return jsonify({'error': 'Permission denied'}, 403)
+
+    return jsonify({
+        'folders': folders,
+        'current_path': path,
+        'can_go_up': path != '/',
+    })
+
+
+@bp.route('/api/workspace/set', methods=['POST'])
+@handle_error
+def workspace_set():
+    """Set the workspace directory and persist it in config."""
+    data = request.json
+    path = data.get('path', '')
+    if not path or not os.path.isdir(path):
+        return jsonify({'error': 'Invalid directory path'}), 400
+
+    config = load_config()
+    config['workspace'] = path
+    save_config(config)
+    return jsonify({'ok': True, 'workspace': path})
+
+
 # ==================== Project Management ====================
 
 def get_project_path():

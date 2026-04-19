@@ -956,6 +956,14 @@ const FileManager = (() => {
         saveState();
     });
 
+    // Listen for workspace changes — reload file list from new root
+    document.addEventListener('workspace:changed', () => {
+        projectRoot = null;
+        currentPath = '';
+        saveState();
+        loadFileList('');
+    });
+
     // ── Public API ─────────────────────────────────────────────────
     return {
         loadFileList,

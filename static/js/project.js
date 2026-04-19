@@ -8,6 +8,179 @@ const ProjectManager = (() => {
     // ── State ──────────────────────────────────────────────────────
     let currentProject = null;  // { project: 'myrepo', name: 'myrepo' }
     let pickerPath = '';        // current path in folder picker (relative to workspace)
+    let currentWorkspace = null; // current workspace path (absolute)
+    let wsPickerPath = '';      // current path in workspace picker (absolute, filesystem)
+
+    // ── Workspace Management ───────────────────────────────────────
+
+    /**
+     * Load workspace info from server and update UI
+     */
+    async function loadWorkspaceInfo() {
+        try {
+            const resp = await fetch('/api/workspace/info');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            currentWorkspace = data.workspace;
+            updateWorkspaceInfoBar(data);
+        } catch (err) {
+            console.warn('[ProjectManager] Failed to load workspace info:', err);
+        }
+    }
+
+    /**
+     * Update the workspace info bar in the UI
+     */
+    function updateWorkspaceInfoBar(data) {
+        const bar = document.getElementById('workspace-info-bar');
+        const pathEl = document.getElementById('workspace-current-path');
+        if (!bar || !pathEl) return;
+
+        if (data.exists) {
+            bar.classList.remove('hidden');
+            // Show just the last directory name for brevity, full path on hover
+            const short = data.workspace.split('/').filter(Boolean).pop() || data.workspace;
+            pathEl.textContent = data.workspace;
+            pathEl.title = data.workspace;
+        } else {
+            bar.classList.remove('hidden');
+            pathEl.textContent = data.workspace + ' (不存在)';
+            pathEl.style.color = 'var(--error-color, #f44)';
+        }
+    }
+
+    /**
+     * Show the workspace picker dialog (navigable filesystem browser)
+     */
+    async function showWorkspacePicker() {
+        // If there's already a workspace, start browsing from it
+        const startPath = currentWorkspace || '/';
+        wsPickerPath = '';
+
+        // Hide project info and folder picker, show workspace picker
+        const pickerEl = document.getElementById('workspace-picker');
+        const infoEl = document.getElementById('project-info');
+        const projectPicker = document.getElementById('project-folder-picker');
+        if (pickerEl) pickerEl.classList.remove('hidden');
+        if (infoEl) infoEl.classList.add('hidden');
+        if (projectPicker) projectPicker.classList.add('hidden');
+
+        await browseWorkspace(startPath);
+    }
+
+    function hideWorkspacePicker() {
+        const pickerEl = document.getElementById('workspace-picker');
+        const infoEl = document.getElementById('project-info');
+        if (pickerEl) pickerEl.classList.add('hidden');
+        if (infoEl) infoEl.classList.remove('hidden');
+    }
+
+    /**
+     * Browse directories at the given path for workspace selection
+     */
+    async function browseWorkspace(path) {
+        wsPickerPath = path;
+        try {
+            const resp = await fetch(`/api/workspace/browse?path=${encodeURIComponent(path)}`);
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || 'Failed to browse');
+            }
+            const data = await resp.json();
+
+            // Update header path
+            const pathEl = document.getElementById('ws-picker-path');
+            if (pathEl) pathEl.textContent = data.current_path;
+
+            // Show/hide back button
+            const backBtn = document.getElementById('ws-picker-back');
+            if (backBtn) backBtn.style.display = data.can_go_up ? '' : 'none';
+
+            // Render folder list
+            const listEl = document.getElementById('ws-picker-list');
+            if (!listEl) return;
+
+            if (data.folders.length === 0) {
+                listEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px;">此目录下没有子文件夹</div>';
+                return;
+            }
+
+            let html = '';
+            for (const folder of data.folders) {
+                // Highlight if this is the current workspace
+                const isCurrent = currentWorkspace && folder.path === currentWorkspace;
+                const activeClass = isCurrent ? ' style="background:var(--accent-color, #007AFF);color:#fff;"' : '';
+                html += `
+                    <div class="project-folder-item"${activeClass} data-path="${escapeAttr(folder.path)}">
+                        <div class="project-folder-info" data-path="${escapeAttr(folder.path)}">
+                            <span class="icon">📁</span>
+                            <span class="name">${escapeHTML(folder.name)}</span>
+                        </div>
+                    </div>`;
+            }
+
+            listEl.innerHTML = html;
+
+            // Bind click events for folder navigation
+            listEl.querySelectorAll('.project-folder-info').forEach(item => {
+                const handler = async () => {
+                    const itemPath = item.dataset.path;
+                    await browseWorkspace(itemPath);
+                };
+                if (window.bindTouchButton) {
+                    window.bindTouchButton(item, handler);
+                } else {
+                    item.addEventListener('click', handler);
+                }
+            });
+        } catch (err) {
+            safeToast('浏览目录失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
+     * Confirm workspace selection
+     */
+    async function confirmWorkspace() {
+        if (!wsPickerPath) return;
+
+        try {
+            const resp = await fetch('/api/workspace/set', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: wsPickerPath })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.error || 'Failed to set workspace');
+            }
+
+            currentWorkspace = wsPickerPath;
+            safeToast(`工作目录已设置为: ${wsPickerPath.split('/').pop()}`, 'success');
+
+            hideWorkspacePicker();
+
+            // Update info bar
+            updateWorkspaceInfoBar({ workspace: wsPickerPath, exists: true });
+
+            // If a project is currently open and it's inside the old workspace,
+            // we need to close it since the project path may no longer be valid
+            if (currentProject) {
+                safeToast('工作目录已更改，请重新选择项目', 'info');
+                await closeProject();
+            }
+
+            // Reload file list to reflect new workspace root
+            if (window.FileManager) {
+                window.FileManager.loadFileList('');
+            }
+
+            // Notify other modules that workspace changed
+            document.dispatchEvent(new CustomEvent('workspace:changed', { detail: { workspace: wsPickerPath } }));
+        } catch (err) {
+            safeToast('设置工作目录失败: ' + err.message, 'error');
+        }
+    }
 
     // ── Helpers ────────────────────────────────────────────────────
     function safeToast(msg, type) {
@@ -252,16 +425,20 @@ const ProjectManager = (() => {
         pickerPath = '';
         const pickerEl = document.getElementById('project-folder-picker');
         const infoEl = document.getElementById('project-info');
+        const wsPicker = document.getElementById('workspace-picker');
         if (pickerEl) pickerEl.classList.remove('hidden');
         if (infoEl) infoEl.classList.add('hidden');
+        if (wsPicker) wsPicker.classList.add('hidden');
         await loadPickerFolders('');
     }
 
     function hideFolderPicker() {
         const pickerEl = document.getElementById('project-folder-picker');
         const infoEl = document.getElementById('project-info');
+        const wsPicker = document.getElementById('workspace-picker');
         if (pickerEl) pickerEl.classList.add('hidden');
         if (infoEl) infoEl.classList.remove('hidden');
+        if (wsPicker) wsPicker.classList.add('hidden');
     }
 
     async function loadPickerFolders(path) {
@@ -497,6 +674,65 @@ const ProjectManager = (() => {
     // ── Wire Up Buttons ────────────────────────────────────────────
 
     function wireButtons() {
+        const setWsBtn = document.getElementById('btn-set-workspace');
+        if (setWsBtn) {
+            const handler = () => showWorkspacePicker();
+            if (window.bindTouchButton) {
+                window.bindTouchButton(setWsBtn, handler);
+            } else {
+                setWsBtn.addEventListener('click', handler);
+            }
+        }
+
+        const changeWsBtn = document.getElementById('btn-change-workspace');
+        if (changeWsBtn) {
+            const handler = () => showWorkspacePicker();
+            if (window.bindTouchButton) {
+                window.bindTouchButton(changeWsBtn, handler);
+            } else {
+                changeWsBtn.addEventListener('click', handler);
+            }
+        }
+
+        // Workspace picker buttons
+        const wsBackBtn = document.getElementById('ws-picker-back');
+        if (wsBackBtn) {
+            const handler = async () => {
+                if (wsPickerPath && wsPickerPath !== '/') {
+                    const parent = wsPickerPath.split('/').slice(0, -1).join('/') || '/';
+                    await browseWorkspace(parent);
+                }
+            };
+            if (window.bindTouchButton) {
+                window.bindTouchButton(wsBackBtn, handler);
+            } else {
+                wsBackBtn.addEventListener('click', handler);
+            }
+        }
+
+        const wsCancelBtn = document.getElementById('ws-picker-cancel');
+        if (wsCancelBtn) {
+            const handler = () => {
+                hideWorkspacePicker();
+                // If no workspace set, still show the project info
+            };
+            if (window.bindTouchButton) {
+                window.bindTouchButton(wsCancelBtn, handler);
+            } else {
+                wsCancelBtn.addEventListener('click', handler);
+            }
+        }
+
+        const wsConfirmBtn = document.getElementById('ws-picker-confirm');
+        if (wsConfirmBtn) {
+            const handler = () => confirmWorkspace();
+            if (window.bindTouchButton) {
+                window.bindTouchButton(wsConfirmBtn, handler);
+            } else {
+                wsConfirmBtn.addEventListener('click', handler);
+            }
+        }
+
         const openBtn = document.getElementById('btn-open-project');
         if (openBtn) {
             const handler = () => showFolderPicker();
@@ -556,6 +792,7 @@ const ProjectManager = (() => {
         if (window.bindTouchButton) {
             _wired = true;
             wireButtons();
+            loadWorkspaceInfo();
             loadProjectInfo();
         } else {
             const check = setInterval(() => {
@@ -563,6 +800,7 @@ const ProjectManager = (() => {
                     clearInterval(check);
                     _wired = true;
                     wireButtons();
+                    loadWorkspaceInfo();
                     loadProjectInfo();
                 }
             }, 10);
@@ -571,6 +809,7 @@ const ProjectManager = (() => {
                 if (!_wired) {
                     _wired = true;
                     wireButtons();
+                    loadWorkspaceInfo();
                     loadProjectInfo();
                 }
             }, 500);
@@ -590,6 +829,8 @@ const ProjectManager = (() => {
         closeProject,
         cloneProject,
         getCurrentProject: () => currentProject,
+        loadWorkspaceInfo,
+        getCurrentWorkspace: () => currentWorkspace,
     };
 })();
 
