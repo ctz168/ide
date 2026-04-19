@@ -2803,18 +2803,184 @@ def _estimate_tokens(text):
     """Rough token estimation: ~4 characters per token."""
     return len(text) // 4
 
+
+def _get_context_budget(llm_config):
+    """Get the context window budget for compression.
+    
+    Uses the model's max_context (input context window size) minus safety margins,
+    falling back to max_tokens * 10 if max_context is not configured.
+    """
+    max_context = llm_config.get('max_context', 0)
+    if max_context > 0:
+        max_output = llm_config.get('max_tokens', 4096)
+        return max(max_context - max_output - 4000, 8000)  # safety margin + minimum floor
+    return llm_config.get('max_tokens', 4096) * 10
+
+
+# ==================== AI-Powered History Summarization ====================
+def _ai_summarize_messages(messages, llm_config):
+    """Use the LLM to generate a concise summary of conversation messages.
+    
+    Returns summary text string, or None on failure.
+    This is used by _compress_context when llm_config is provided.
+    """
+    if not messages or not llm_config or len(messages) < 3:
+        return None
+    
+    # Build compact representation of messages for summarization
+    compact = []
+    for msg in messages:
+        role = msg.get('role', '')
+        content = (msg.get('content') or '')
+        name = msg.get('name', '')
+        
+        # Skip existing summary messages to avoid re-summarizing summaries
+        if role == 'user' and (content.startswith('[Previous Conversation Summary]') or
+                                content.startswith('[Conversation Summary]') or
+                                content.startswith('Earlier conversation summary')):
+            continue
+        
+        if role == 'user':
+            compact.append(f'[User]: {content[:400]}')
+        elif role == 'assistant':
+            tool_calls = msg.get('tool_calls')
+            if tool_calls:
+                tools = ', '.join(t.get('function', {}).get('name', '') for t in tool_calls)
+                text_part = f' "{content[:200]}"' if content else ''
+                compact.append(f'[Assistant]: Called [{tools}]{text_part}')
+            else:
+                compact.append(f'[Assistant]: {content[:300]}')
+        elif role == 'tool':
+            compact.append(f'[Tool/{name}]: {content[:200]}')
+    
+    if not compact:
+        return None
+    
+    conversation_text = '\n'.join(compact)
+    
+    summary_prompt = (
+        "Summarize the following conversation between a user and an AI coding assistant. "
+        "Focus on:\n"
+        "1. What the user asked for (goals and requirements)\n"
+        "2. Key files modified (full file paths and what was changed)\n"
+        "3. Important commands run and their results\n"
+        "4. Errors encountered and how they were resolved\n"
+        "5. Current state of work (what is done, what remains)\n\n"
+        "Preserve all file paths, code snippets, function names, and technical details. "
+        "Be concise but complete. This summary will replace the original conversation.\n\n"
+        f"Conversation to summarize:\n{conversation_text}"
+    )
+    
+    try:
+        url, headers = _get_llm_endpoint(llm_config, llm_config.get('model'))
+        headers = headers or {'Content-Type': 'application/json'}
+        
+        payload = {
+            'model': llm_config.get('model'),
+            'messages': [{'role': 'user', 'content': summary_prompt}],
+            'temperature': 0.3,  # Low temperature for factual summarization
+            'max_tokens': min(2000, llm_config.get('max_tokens', 4096)),
+        }
+        
+        req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+        with _urllib_opener.open(req, timeout=60) as resp:
+            resp_body = resp.read().decode()
+            result = json.loads(resp_body)
+            summary = result.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+            if summary:
+                print(f'[AI-SUMMARY] Generated {len(summary)} char summary from {len(messages)} messages')
+            return summary
+    except Exception as e:
+        print(f'[AI-SUMMARY] Failed to generate summary: {e}')
+        return None
+
+
+# ==================== Self-Correction Loop ====================
+MAX_SELF_CORRECTION_RETRIES = 3
+
+# Tools that should trigger self-correction on failure
+_SELF_CORRECTION_TOOLS = frozenset({
+    'write_file', 'edit_file', 'run_command', 'install_package', 'debug_start',
+})
+
+# Error patterns to detect in tool results
+_ERROR_PATTERNS = [
+    'error:', 'error：', 'traceback (most recent call last)',
+    'syntaxerror', 'typeerror', 'valueerror', 'nameerror',
+    'importerror', 'modulenotfounderror', 'filenotfounderror',
+    'keyerror', 'attributeerror', 'indexerror', 'runtimeerror',
+    'permission denied', 'no such file or directory',
+    'command not found', 'returned non-zero', 'non-zero exit', 'exit code',
+    'segmentation fault', 'connectionrefusederror', 'connectionerror',
+    'oserror', 'json.decoder.jsondecodeerror',
+]
+
+
+def _is_tool_result_error(tool_name, result_str):
+    """Check if a tool result indicates a failure that should trigger self-correction."""
+    if tool_name not in _SELF_CORRECTION_TOOLS:
+        return False
+    if not result_str:
+        return False
+    
+    # Skip successful-looking results
+    result_lower = result_str[:800].lower()
+    
+    # If result starts with 'Error' or 'error', it's definitely an error
+    if result_lower.startswith('error'):
+        return True
+    
+    # Check for error patterns
+    for pattern in _ERROR_PATTERNS:
+        if pattern in result_lower:
+            return True
+    
+    return False
+
+
+def _build_self_correction_hint(failed_tools):
+    """Build a hint message for the LLM when self-correction is needed.
+    
+    Args:
+        failed_tools: list of (tool_name, args, result_str) tuples
+    """
+    hint = "[Self-Correction Required] The following tool calls encountered errors:\n\n"
+    for name, args, result in failed_tools:
+        args_str = json.dumps(args, ensure_ascii=False)[:300] if args else 'N/A'
+        # Extract the most relevant error info from the result
+        error_excerpt = result[:500]
+        hint += f"**{name}** (args: {args_str}):\n"
+        hint += f"Error output: {error_excerpt}\n\n"
+    
+    hint += (
+        "Please analyze these errors and retry with a corrected approach:\n"
+        "1. Read the relevant file(s) to understand the current state before fixing\n"
+        "2. Identify the root cause from the error message\n"
+        "3. Apply a corrected approach (different edit, different command, fix imports, etc.)\n"
+        "4. Re-run to verify the fix works\n"
+    )
+    return hint
+
+
 def _has_tool_calls(msg):
     """Check if a message has tool calls."""
     return bool(msg and msg.get('tool_calls'))
 
-def _compress_context(messages, max_tokens=None):
-    """Smart context compression with code-change preservation.
+def _compress_context(messages, max_tokens=None, llm_config=None):
+    """Smart context compression with AI summarization and code-change preservation.
     
     Strategy:
     1. Preserve write_file/edit_file results as "KEY CODE CHANGES" 
-    2. Differentiated compression limits by tool type
-    3. Two-stage compression (gentle → aggressive)
-    4. Informative size markers instead of silent truncation
+    2. AI-powered summarization of older messages (when llm_config is provided)
+    3. Differentiated compression limits by tool type
+    4. Two-stage compression (gentle → aggressive)
+    5. Informative size markers instead of silent truncation
+    
+    Args:
+        messages: List of chat messages.
+        max_tokens: Maximum token budget for the compressed context.
+        llm_config: If provided, uses AI summarization for older messages.
+                  Only effective when there are enough older messages to summarize.
     
     Returns (messages, was_compressed) tuple.
     """
@@ -2847,32 +3013,46 @@ def _compress_context(messages, max_tokens=None):
     recent = messages[split_idx:]
 
     # ── Stage 3: Build smart summary of older messages ──
-    summary_parts = []
-    for msg in older:
-        role = msg.get('role', '')
-        content = msg.get('content') or ''
-        if role == 'user':
-            summary_parts.append(f'[User]: {content[:300]}')
-        elif role == 'assistant':
-            text = content[:300] if content else '(tool calls only)'
-            summary_parts.append(f'[Assistant]: {text}')
-        elif role == 'tool':
-            name = msg.get('name', 'tool')
-            # Differentiated limits by tool type
-            if name in ('write_file', 'edit_file'):
-                summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
-            elif name in ('read_file', 'grep_code', 'search_files', 'glob_files', 'find_definition', 'find_references'):
-                summary_parts.append(f'[Tool {name}]: {_truncate(content, 150)}')
-            elif name in ('run_command', 'install_package'):
-                summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
-            else:
-                summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
-
-    summary = 'Earlier conversation summary:\n'
-    if code_changes:
-        summary += 'KEY CODE CHANGES (preserved from earlier):\n' + '\n'.join(f'  • {c}' for c in code_changes[:5]) + '\n\n'
-    summary += '\n'.join(summary_parts[-15:])
-    summary_msg = {'role': 'user', 'content': summary}
+    # Try AI-powered summarization first (only when llm_config is provided and enough messages)
+    ai_summary = None
+    if llm_config and len(older) >= 4:
+        ai_summary = _ai_summarize_messages(older, llm_config)
+    
+    if ai_summary:
+        # Use AI-generated summary — much better context preservation
+        summary_content = f'[Previous Conversation Summary]\n{ai_summary}'
+        if code_changes:
+            summary_content += '\n\nKEY CODE CHANGES (preserved):\n' + '\n'.join(f'  - {c[:300]}' for c in code_changes[:5])
+        summary_msg = {'role': 'user', 'content': summary_content}
+        print(f'[CONTEXT] Using AI-generated summary ({len(ai_summary)} chars) for {len(older)} older messages')
+    else:
+        # Fallback to mechanical summary (original logic)
+        summary_parts = []
+        for msg in older:
+            role = msg.get('role', '')
+            content = msg.get('content') or ''
+            if role == 'user':
+                summary_parts.append(f'[User]: {content[:300]}')
+            elif role == 'assistant':
+                text = content[:300] if content else '(tool calls only)'
+                summary_parts.append(f'[Assistant]: {text}')
+            elif role == 'tool':
+                name = msg.get('name', 'tool')
+                # Differentiated limits by tool type
+                if name in ('write_file', 'edit_file'):
+                    summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
+                elif name in ('read_file', 'grep_code', 'search_files', 'glob_files', 'find_definition', 'find_references'):
+                    summary_parts.append(f'[Tool {name}]: {_truncate(content, 150)}')
+                elif name in ('run_command', 'install_package'):
+                    summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
+                else:
+                    summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
+    
+        summary = 'Earlier conversation summary:\n'
+        if code_changes:
+            summary += 'KEY CODE CHANGES (preserved from earlier):\n' + '\n'.join(f'  • {c}' for c in code_changes[:5]) + '\n\n'
+        summary += '\n'.join(summary_parts[-15:])
+        summary_msg = {'role': 'user', 'content': summary}
 
     # ── Stage 4: Gentle compression — differentiated tool limits ──
     TOOL_LIMITS_GENTLE = {
@@ -2954,8 +3134,8 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
     user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
     history.append(user_msg)
 
-    # Compress context if needed
-    context, _ = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+    # Compress context if needed (with AI summarization for history-level compression)
+    context, _ = _compress_context(history, max_tokens=_get_context_budget(llm_config), llm_config=llm_config)
 
     def _emit(event):
         if stream_callback:
@@ -2964,6 +3144,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
     final_content = ''
     total_iterations = 0
     all_tool_calls = []
+    self_corrections = 0  # Track self-correction retries
 
     for iteration in range(MAX_AGENT_ITERATIONS):
         total_iterations = iteration + 1
@@ -3018,6 +3199,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
 
         if parallel_results is not None:
             # Parallel execution succeeded — emit all results
+            _batch_results = []
             for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
                 all_tool_calls.append({'name': tool_name})
                 _emit({'type': 'tool_start', 'tool': tool_name})
@@ -3026,9 +3208,22 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                 context.append({'role': 'tool', 'tool_call_id': tool_call_id,
                                 'name': tool_name, 'content': result_str,
                                 'time': datetime.now().isoformat()})
-            context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+                _batch_results.append((tool_name, {}, ok, result_str))
+            context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
+            
+            # === Self-Correction Check (parallel batch) ===
+            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
+                failed = [(n, a, r) for n, a, ok, r in _batch_results
+                          if not ok or _is_tool_result_error(n, r)]
+                if failed:
+                    self_corrections += 1
+                    hint = _build_self_correction_hint(failed)
+                    _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors, retrying...'})
+                    context.append({'role': 'user', 'content': hint,
+                                    'time': datetime.now().isoformat()})
         else:
             # Sequential execution (mixed read/write tools or single tool)
+            _batch_results = []
             for tc in tool_calls_raw:
                 func = tc.get('function', {})
                 tool_name = func.get('name', '')
@@ -3060,9 +3255,21 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                     'content': result_str,
                     'time': datetime.now().isoformat(),
                 })
+                _batch_results.append((tool_name, tool_args, ok, result_str))
 
                 # Re-check context size and compress if needed
-                context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+                context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
+            
+            # === Self-Correction Check (sequential batch) ===
+            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
+                failed = [(n, a, r) for n, a, ok, r in _batch_results
+                          if not ok or _is_tool_result_error(n, r)]
+                if failed:
+                    self_corrections += 1
+                    hint = _build_self_correction_hint(failed)
+                    _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), retrying...'})
+                    context.append({'role': 'user', 'content': hint,
+                                    'time': datetime.now().isoformat()})
 
     # Build final assistant message for history
     final_assistant = {
@@ -3105,7 +3312,8 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
         history.append(user_msg)
 
-    context, _ = _compress_context(history, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+    # Compress context if needed (with AI summarization for history-level compression)
+    context, _ = _compress_context(history, max_tokens=_get_context_budget(llm_config), llm_config=llm_config)
 
     # Pre-save history before starting the loop so retry can recover even if
     # the very first LLM call fails (before any tool execution).
@@ -3118,6 +3326,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
     accumulated_text = ''
     tool_calls_in_progress = []
     loop_completed_normally = False
+    self_corrections = 0  # Track self-correction retries
     # Buffer for streaming tool_calls assembly
     current_tool_calls = []
     current_tool_call_idx = {}
@@ -3335,6 +3544,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         if parallel_results is not None:
             # Parallel execution
+            _batch_results = []
             for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
                 tool_calls_in_progress.append({'name': tool_name})
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name})}\n\n"
@@ -3344,9 +3554,23 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                             'time': datetime.now().isoformat()}
                 context.append(tool_msg)
                 history.append(tool_msg)
-            context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+                _batch_results.append((tool_name, {}, ok, result_str))
+            context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
+            
+            # === Self-Correction Check (parallel batch) ===
+            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
+                failed = [(n, a, r) for n, a, ok, r in _batch_results
+                          if not ok or _is_tool_result_error(n, r)]
+                if failed:
+                    self_corrections += 1
+                    hint = _build_self_correction_hint(failed)
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), analyzing and retrying...'})}\n\n"
+                    context.append({'role': 'user', 'content': hint,
+                                    'time': datetime.now().isoformat()})
+                    print(f'[SELF-CORRECT] #{self_corrections}: {len(failed)} tool(s) failed in parallel batch')
         else:
             # Sequential execution (mixed read/write tools or single tool)
+            _batch_results = []
             for tc in tool_calls_raw:
                 func = tc.get('function', {})
                 tool_name = func.get('name', '')
@@ -3373,6 +3597,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 }
                 context.append(tool_msg)
                 history.append(tool_msg)
+                _batch_results.append((tool_name, tool_args, ok, result_str))
 
                 # Save after each tool so refresh mid-iteration preserves partial progress
                 save_chat_history(history)
@@ -3380,7 +3605,20 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     save_conversation(conv_id, history)
 
                 # Compress context if needed
-                context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+                context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
+            
+            # === Self-Correction Check (sequential batch) ===
+            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
+                failed = [(n, a, r) for n, a, ok, r in _batch_results
+                          if not ok or _is_tool_result_error(n, r)]
+                if failed:
+                    self_corrections += 1
+                    hint = _build_self_correction_hint(failed)
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), analyzing and retrying...'})}\n\n"
+                    context.append({'role': 'user', 'content': hint,
+                                    'time': datetime.now().isoformat()})
+                    # Don't add to history — this is orchestration-level, not user conversation
+                    print(f'[SELF-CORRECT] #{self_corrections}: {len(failed)} tool(s) failed in sequential batch')
 
         # Progressive save: persist history after each iteration so retry can resume
         save_chat_history(history)
