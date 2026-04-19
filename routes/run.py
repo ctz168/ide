@@ -56,6 +56,37 @@ def execute_code():
     return jsonify({'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base})
 
 
+@bp.route('/api/run/shell', methods=['POST'])
+@handle_error
+def execute_shell():
+    """Execute a raw shell command directly (not as code file).
+    Used by the terminal/shell input bar for commands like 'dir', 'ls', 'pip install', etc."""
+    data = request.json or {}
+    command = data.get('command', '').strip()
+    if not command:
+        return jsonify({'error': 'No command provided'}), 400
+
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    # When a project is open, run commands in the project directory
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # On Windows, wrap with cmd /c to ensure built-in commands (dir, cd, etc.) work
+    # On Linux/macOS, use bash -c for consistency
+    if IS_WINDOWS:
+        cmd = f'cmd /c {command}'
+    else:
+        cmd = command  # shell=True already uses bash
+
+    proc_id = run_process(cmd, cwd=base)
+    return jsonify({'ok': True, 'proc_id': proc_id, 'cwd': base})
+
+
 @bp.route('/api/run/stop', methods=['POST'])
 @handle_error
 def stop_execution():

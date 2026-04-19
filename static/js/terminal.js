@@ -292,6 +292,74 @@ const TerminalManager = (() => {
         }
     }
 
+    // ── API: Shell Command (raw command execution) ─────────────
+
+    /**
+     * Execute a raw shell command (e.g. 'dir', 'ls', 'pip install').
+     * Unlike executeCode(), this does NOT write to a temp file —
+     * it sends the command directly to /api/run/shell for execution.
+     * @param {string} command - the shell command to execute
+     * @returns {Promise<object>} execution result
+     */
+    async function executeShellCommand(command) {
+        if (isRunning) {
+            showToast('A process is already running', 'warning');
+            return { error: 'Process already running' };
+        }
+
+        if (!command || !command.trim()) {
+            showToast('No command to execute', 'warning');
+            return { error: 'No command provided' };
+        }
+
+        showPanel();
+
+        try {
+            const body = { command };
+
+            const resp = await fetch('/api/run/shell', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Execution failed: ${resp.statusText}`);
+            }
+
+            const data = await resp.json();
+
+            currentProcId = data.proc_id || data.process_id || data.id || null;
+            pollSince = 0;
+
+            if (currentProcId) {
+                persistProcId(currentProcId);
+                appendOutput(`[info] PID: ${currentProcId} | Streaming output...`, 'info');
+                setRunningState(true);
+                streamOutput(currentProcId);
+            } else {
+                if (data.output) appendOutput(data.output, 'stdout');
+                if (data.stderr) appendOutput(data.stderr, 'stderr');
+                if (data.error) appendOutput(data.error, 'error');
+                if (data.exit_code !== undefined) {
+                    const code = data.exit_code;
+                    const type = code === 0 ? 'success' : 'error';
+                    appendOutput(`[exit] Code: ${code} (${type === 'success' ? 'OK' : 'FAIL'})`, type);
+                }
+                const si = document.getElementById('shell-input');
+                if (si) si.focus();
+            }
+
+            return data;
+        } catch (err) {
+            appendOutput(`[error] Shell command failed: ${err.message}`, 'error');
+            appendOutput(`[info] Check network connection and try again.`, 'info');
+            showToast(`Shell error: ${err.message}`, 'error');
+            return { error: err.message };
+        }
+    }
+
     // ── API: Stop ──────────────────────────────────────────────────
 
     /**
@@ -1186,8 +1254,8 @@ const TerminalManager = (() => {
             appendOutput(`${prompt} ${cmd}`, 'system');
             appendOutput(`[info] Shell command | Time: ${new Date().toLocaleString()}`, 'info');
 
-            // Execute via API
-            executeCode(cmd, platformInfo.default_shell || 'bash');
+            // Execute via shell API (runs commands directly, not as code files)
+            executeShellCommand(cmd);
             shellInput.value = '';
         }
 

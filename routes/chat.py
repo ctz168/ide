@@ -64,6 +64,7 @@ _active_task = {
 _SYSTEM_ENV_INFO = get_system_info()
 _PLATFORM_NAME = 'Windows' if IS_WINDOWS else ('macOS' if platform.system() == 'Darwin' else 'Linux')
 _DEFAULT_COMPILER = 'python' if IS_WINDOWS else 'python3'
+_SERVER_DIR = SERVER_DIR
 
 RING_BUFFER_SIZE = 100
 
@@ -171,19 +172,11 @@ You can debug Python code execution in real-time:
 15. **Use `server_logs` after backend changes** to check for server-side errors
 16. **Use browser tools after frontend changes** to verify the UI renders and functions correctly
 
-## Workspace
-Current workspace: {WORKSPACE}
-Server directory: {SERVER_DIR}
-
-## System Environment
-{_SYSTEM_ENV_INFO}
-
 ## Important: Platform Awareness
-- The server is running on {_PLATFORM_NAME}. Use this to choose correct shell commands and paths.
+- Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
 - On Windows: use `cmd /c` or `powershell -Command` for shell commands. Paths use backslashes. Python is `python` not `python3`. Virtual env binaries are in `Scripts/` not `bin/`.
 - On Linux/macOS: use `bash -c` for shell commands. Paths use forward slashes. Python is `python3`. Virtual env binaries are in `bin/`.
 - When writing shell commands for `run_command`, always use the correct syntax for the current platform.
-- When referencing Python executable, use `{_DEFAULT_COMPILER}` for the current platform.
 """
 
 # ==================== Tool Definitions ====================
