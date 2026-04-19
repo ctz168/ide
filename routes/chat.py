@@ -11,6 +11,8 @@ import subprocess
 import fnmatch
 import threading
 import queue
+import glob as _glob
+import concurrent.futures
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -237,7 +239,9 @@ AGENT_TOOLS = [
             'description': (
                 'Search and replace text within a file. Performs exact string matching of old_text and replaces '
                 'it with new_text. If old_text appears multiple times, all occurrences will be replaced - be '
-                'specific with surrounding context to avoid unintended changes. Returns the number of replacements made.'
+                'specific with surrounding context to avoid unintended changes. Returns the number of replacements made. '
+                'For multiple edits to the same file, use the "replacements" array parameter — all replacements are '
+                'applied atomically (all succeed or all fail, no partial changes).'
             ),
             'parameters': {
                 'type': 'object',
@@ -254,8 +258,20 @@ AGENT_TOOLS = [
                         'type': 'string',
                         'description': 'Replacement text',
                     },
+                    'replacements': {
+                        'type': 'array',
+                        'description': 'Array of {old_text, new_text} objects for atomic multi-edit. All applied or none. Mutually exclusive with old_text/new_text.',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'old_text': {'type': 'string', 'description': 'Exact text to search for'},
+                                'new_text': {'type': 'string', 'description': 'Replacement text'},
+                            },
+                            'required': ['old_text', 'new_text'],
+                        },
+                    },
                 },
-                'required': ['path', 'old_text', 'new_text'],
+                'required': ['path'],
             },
         },
     },
@@ -983,6 +999,133 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── P0+P1 New Tools ──
+
+    {
+        'type': 'function',
+        'function': {
+            'name': 'glob_files',
+            'description': (
+                'Fast file pattern matching using glob syntax. Returns matching file paths sorted by modification time. '
+                'Supports patterns like "**/*.py", "src/**/*.{ts,tsx}", "static/css/*.css". '
+                'Much faster than search_files for finding files by name. Returns up to 100 results.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'pattern': {
+                        'type': 'string',
+                        'description': 'Glob pattern to match files (e.g. "**/*.py", "src/**/*.ts")',
+                    },
+                    'path': {
+                        'type': 'string',
+                        'description': 'Base directory to search in. Defaults to workspace root.',
+                    },
+                },
+                'required': ['pattern'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'find_definition',
+            'description': (
+                'Find the definition location of a function, class, or variable in source code. '
+                'Searches for def/class/func/const/let/var/function declarations matching the given symbol name. '
+                'Returns file path, line number, and surrounding context. Useful for understanding code structure.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'symbol': {
+                        'type': 'string',
+                        'description': 'The symbol name to find (e.g. "execute_agent_tool", "MyClass", "API_KEY")',
+                    },
+                    'path': {
+                        'type': 'string',
+                        'description': 'Directory or file to search in. Defaults to workspace root.',
+                    },
+                },
+                'required': ['symbol'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'find_references',
+            'description': (
+                'Find all references/usages of a symbol across the codebase. Automatically excludes the definition line itself. '
+                'Returns file paths, line numbers, and the matching lines. Useful for refactoring and understanding dependencies.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'symbol': {
+                        'type': 'string',
+                        'description': 'The symbol name to find references for (e.g. "execute_agent_tool", "WORKSPACE")',
+                    },
+                    'path': {
+                        'type': 'string',
+                        'description': 'Directory or file to search in. Defaults to workspace root.',
+                    },
+                    'include_tests': {
+                        'type': 'boolean',
+                        'description': 'Whether to include test files in the search. Default: true',
+                    },
+                },
+                'required': ['symbol'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'file_structure',
+            'description': (
+                'Parse a source file and return its structural outline: classes, functions, methods, imports, and top-level variables. '
+                'Supports Python, JavaScript, TypeScript, and Go files. Useful for quickly understanding file organization '
+                'without reading the entire file.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {
+                        'type': 'string',
+                        'description': 'Path to the source file to analyze.',
+                    },
+                },
+                'required': ['path'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'delegate_task',
+            'description': (
+                'Launch a lightweight sub-agent to handle an independent, well-defined subtask (e.g. "explore project architecture", '
+                '"find all API endpoints", "summarize test coverage"). The sub-agent has its own context and can only use read-only tools '
+                '(read_file, glob_files, grep_code, search_files, list_directory, file_info, file_structure, find_definition, find_references). '
+                'Returns a concise summary. Max 15 iterations. Use this for exploration/research tasks to avoid polluting the main conversation context.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'task': {
+                        'type': 'string',
+                        'description': 'A clear description of the subtask to perform. Be specific about what information to gather or analyze.',
+                    },
+                    'max_iterations': {
+                        'type': 'integer',
+                        'description': 'Max iterations for the sub-agent (1-15). Default: 8',
+                    },
+                },
+                'required': ['task'],
+            },
+        },
+    },
 ]
 
 # ==================== Security Helpers ====================
@@ -1056,13 +1199,45 @@ def _tool_write_file(args):
 
 def _tool_edit_file(args):
     path = _validate_path(args['path'])
-    old_text = args['old_text']
-    new_text = args['new_text']
+    replacements = args.get('replacements')
     try:
         if not os.path.isfile(path):
             return f'Error: File not found: {path}'
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
+
+        # MultiEdit: atomic multi-replacement mode
+        if replacements and isinstance(replacements, list):
+            original_content = content
+            total_replacements = 0
+            errors = []
+            for i, rep in enumerate(replacements):
+                old_text = rep.get('old_text', '')
+                new_text = rep.get('new_text', '')
+                if not old_text:
+                    errors.append(f'Replacement {i+1}: missing old_text')
+                    continue
+                count = content.count(old_text)
+                if count == 0:
+                    errors.append(f'Replacement {i+1}: old_text not found')
+                    continue
+                if count > 1:
+                    errors.append(f'Replacement {i+1}: old_text found {count} times (ambiguous)')
+                content = content.replace(old_text, new_text, 1)
+                total_replacements += 1
+
+            if errors:
+                return f'Error: MultiEdit failed — {"; ".join(errors)}\nNo changes were made (atomic rollback).'
+            if total_replacements == 0:
+                return 'Error: No valid replacements provided.'
+
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return f'MultiEdit applied to {path}: {total_replacements} replacement(s) made'
+
+        # Legacy single-replacement mode
+        old_text = args['old_text']
+        new_text = args['new_text']
         count = content.count(old_text)
         if count == 0:
             return f'Error: old_text not found in file. Make sure the text matches exactly (including whitespace).'
@@ -1757,6 +1932,476 @@ def _tool_server_logs(args):
     except Exception as e:
         return f'Error reading server logs: {e}'
 
+# ── P0+P1 New Tool Implementations ──
+
+def _tool_glob_files(args):
+    """Fast file pattern matching using glob."""
+    pattern = args['pattern']
+    search_path = _validate_path(args.get('path', WORKSPACE))
+    if not os.path.isdir(search_path):
+        return f'Error: Directory not found: {search_path}'
+
+    # Use pathlib-style recursive matching
+    if '**' in pattern:
+        full_pattern = os.path.join(search_path, pattern)
+        matches = _glob.glob(full_pattern, recursive=True)
+    else:
+        full_pattern = os.path.join(search_path, pattern)
+        matches = _glob.glob(full_pattern)
+
+    # Filter to files only, resolve paths, deduplicate
+    seen = set()
+    files = []
+    for f in matches:
+        if os.path.isfile(f):
+            real = os.path.realpath(f)
+            if real not in seen:
+                seen.add(real)
+                files.append(f)
+
+    # Sort by modification time (newest first)
+    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+
+    # Limit results
+    max_results = 100
+    if len(files) > max_results:
+        files = files[:max_results]
+
+    if not files:
+        return f'No files matching pattern "{pattern}" in {search_path}'
+
+    lines = [f'Found {len(files)} file(s) matching "{pattern}":']
+    for f in files:
+        rel = os.path.relpath(f, search_path)
+        size = os.path.getsize(f)
+        mtime = datetime.fromtimestamp(os.path.getmtime(f)).strftime('%Y-%m-%d %H:%M')
+        lines.append(f'  {rel}  ({size:,} bytes, {mtime})')
+
+    if len(files) == max_results:
+        lines.append(f'  [showing first {max_results} results, sorted by modification time]')
+    return '\n'.join(lines)
+
+def _tool_find_definition(args):
+    """Find definition of a symbol in source code."""
+    symbol = re.escape(args['symbol'])
+    search_path = _validate_path(args.get('path', WORKSPACE))
+    if not os.path.isdir(search_path) and not os.path.isfile(search_path):
+        return f'Error: Path not found: {search_path}'
+
+    # Definition patterns for different languages
+    patterns = [
+        (r'^(\s*)(def\s+' + symbol + r'\s*\()', 'Python function'),
+        (r'^(\s*)(class\s+' + symbol + r'[\s(:])', 'Python class'),
+        (r'^(\s*)(' + symbol + r'\s*=\s*)', 'Python variable'),
+        (r'^(\s*)(function\s+' + symbol + r'\s*\()', 'JS/TS function'),
+        (r'^(\s*)(const|let|var)\s+' + symbol + r'\s*[\s=]', 'JS/TS variable'),
+        (r'^(\s*)(class\s+' + symbol + r'[\s{])', 'JS/TS class'),
+        (r'^(\s*)(func\s+' + symbol + r'\s*\()', 'Go function'),
+        (r'^(\s*)(type\s+' + symbol + r'\s+struct)', 'Go struct'),
+        (r'^(\s*)(var\s+' + symbol + r'\s+)', 'Go variable'),
+    ]
+    regex = re.compile('|'.join(f'(?P<p{i}>{p})' for i, (p, _) in enumerate(patterns)), re.MULTILINE)
+    kind_map = {f'p{i}': kind for i, (_, kind) in enumerate(patterns)}
+
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
+    results = []
+    search_start = time.time()
+
+    if os.path.isfile(search_path):
+        file_list = [search_path]
+    else:
+        file_list = []
+        for root, dirs, files in os.walk(search_path):
+            if time.time() - search_start > 20:
+                break
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.rb', '.php'):
+                    file_list.append(os.path.join(root, fname))
+
+    for fpath in file_list:
+        if time.time() - search_start > 20:
+            break
+        try:
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            for i, line in enumerate(lines):
+                m = regex.match(line)
+                if m:
+                    kind = None
+                    for group_name, kind_str in kind_map.items():
+                        if m.group(group_name):
+                            kind = kind_str
+                            break
+                    rel = os.path.relpath(fpath, search_path)
+                    ctx_start = max(0, i - 2)
+                    ctx_end = min(len(lines), i + 6)
+                    context = ''.join(f'  {"→" if j == i else " "} {j+1:>5}\t{lines[j].rstrip()}\n'
+                                      for j in range(ctx_start, ctx_end))
+                    results.append(f'{kind} in {rel}:{i+1}\n{context}')
+        except (PermissionError, OSError):
+            continue
+
+    if not results:
+        return f'No definition found for "{args["symbol"]}"'
+    return f'Found {len(results)} definition(s) for "{args["symbol"]}":\n' + '\n---\n'.join(results[:20])
+
+def _tool_find_references(args):
+    """Find all references/usages of a symbol."""
+    symbol = args['symbol']
+    search_path = _validate_path(args.get('path', WORKSPACE))
+    if not os.path.isdir(search_path) and not os.path.isfile(search_path):
+        return f'Error: Path not found: {search_path}'
+
+    include_tests = args.get('include_tests', True)
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
+    if not include_tests:
+        skip_dirs.add('tests')
+        skip_dirs.add('test')
+
+    # Use word boundary matching for precise symbol search
+    word_pattern = re.escape(symbol)
+    regex = re.compile(r'\b' + word_pattern + r'\b')
+
+    results = []
+    search_start = time.time()
+    max_results = 50
+
+    if os.path.isfile(search_path):
+        file_list = [search_path]
+    else:
+        file_list = []
+        for root, dirs, files in os.walk(search_path):
+            if time.time() - search_start > 20:
+                break
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yaml', '.yml', '.md', '.html', '.css', '.sh', '.rb', '.php', '.toml', '.cfg', '.ini'):
+                    file_list.append(os.path.join(root, fname))
+
+    for fpath in file_list:
+        if time.time() - search_start > 20 or len(results) >= max_results:
+            break
+        try:
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            for i, line in enumerate(lines):
+                if regex.search(line):
+                    # Skip pure definition lines (they're in find_definition)
+                    stripped = line.strip()
+                    if (stripped.startswith('def ') or stripped.startswith('class ') or
+                        stripped.startswith('function ') or stripped.startswith('func ') or
+                        re.match(r'^(const|let|var|type)\s+' + word_pattern + r'[\s=:{]', stripped)):
+                        continue
+                    rel = os.path.relpath(fpath, search_path)
+                    results.append(f'{rel}:{i+1}: {line.rstrip()}')
+        except (PermissionError, OSError):
+            continue
+
+    if not results:
+        return f'No references found for "{symbol}"'
+    output = f'Found {len(results)} reference(s) for "{symbol}":\n'
+    output += '\n'.join(results)
+    if len(results) >= max_results:
+        output += f'\n[showing first {max_results} results]'
+    return output
+
+def _tool_file_structure(args):
+    """Parse source file and return structural outline."""
+    path = _validate_path(args['path'])
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}'
+
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+    except Exception as e:
+        return f'Error reading file: {e}'
+
+    ext = os.path.splitext(path)[1].lower()
+    rel = os.path.relpath(path, WORKSPACE)
+    outline = [f'File: {rel} ({len(lines)} lines)', '']
+
+    if ext == '.py':
+        # Python structure parsing
+        imports = []
+        classes = []
+        functions = []
+        variables = []
+        current_class = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            # Imports
+            if stripped.startswith('import ') or stripped.startswith('from '):
+                imports.append(f'  L{i+1}: {stripped[:100]}')
+            # Class definitions
+            class_m = re.match(r'^(\s*)class\s+(\w+)', line)
+            if class_m:
+                indent = len(class_m.group(1))
+                name = class_m.group(2)
+                bases = ''
+                paren = stripped.find('(')
+                if paren > 0:
+                    bases = stripped[paren:stripped.find(')')+1] if ')' in stripped else ''
+                current_class = (name, indent)
+                classes.append(f'  L{i+1}: class {name}{bases}')
+                continue
+            # Function/method definitions
+            func_m = re.match(r'^(\s*)(async\s+)?def\s+(\w+)', line)
+            if func_m:
+                indent = len(func_m.group(1))
+                name = func_m.group(3)
+                prefix = 'async ' if func_m.group(2) else ''
+                params = ''
+                paren = stripped.find('(')
+                if paren > 0:
+                    end_p = stripped.find(')', paren)
+                    if end_p > 0:
+                        params = stripped[paren:end_p+1]
+                if current_class and indent > current_class[1]:
+                    # Method inside class
+                    functions.append(f'    L{i+1}: {prefix}def {name}{params}')
+                else:
+                    current_class = None
+                    functions.append(f'  L{i+1}: {prefix}def {name}{params}')
+            # Top-level variables
+            elif not stripped.startswith('#') and not stripped.startswith('import') and not stripped.startswith('from') and not stripped.startswith('@'):
+                if re.match(r'^[A-Z_][A-Z_0-9]*\s*=', stripped) and not current_class:
+                    variables.append(f'  L{i+1}: {stripped[:100]}')
+
+        if imports:
+            outline.append(f'Imports ({len(imports)}):')
+            outline.extend(imports[:30])
+            if len(imports) > 30:
+                outline.append(f'  ... and {len(imports)-30} more imports')
+            outline.append('')
+        if classes:
+            outline.append(f'Classes ({len(classes)}):')
+            outline.extend(classes)
+            outline.append('')
+        if functions:
+            outline.append(f'Functions/Methods ({len(functions)}):')
+            outline.extend(functions[:50])
+            if len(functions) > 50:
+                outline.append(f'  ... and {len(functions)-50} more functions')
+            outline.append('')
+        if variables:
+            outline.append(f'Constants ({len(variables)}):')
+            outline.extend(variables[:20])
+            outline.append('')
+
+    elif ext in ('.js', '.ts', '.tsx', '.jsx'):
+        # JS/TS structure parsing
+        imports = []
+        classes = []
+        functions = []
+        variables = []
+        current_class = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('import ') or stripped.startswith('export '):
+                imports.append(f'  L{i+1}: {stripped[:100]}')
+            class_m = re.match(r'^(\s*)(export\s+)?(default\s+)?class\s+(\w+)', line)
+            if class_m:
+                name = class_m.group(4)
+                current_class = (name, len(class_m.group(1)))
+                classes.append(f'  L{i+1}: class {name}')
+                continue
+            func_m = re.match(r'^(\s*)(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)', line)
+            if func_m:
+                name = func_m.group(5)
+                current_class = None
+                functions.append(f'  L{i+1}: function {name}')
+                continue
+            # Arrow functions and const/let/var
+            arrow_m = re.match(r'^(\s*)(export\s+)?(const|let|var)\s+(\w+)\s*=', line)
+            if arrow_m:
+                name = arrow_m.group(4)
+                indent = len(arrow_m.group(1))
+                if current_class and indent > current_class[1]:
+                    functions.append(f'    L{i+1}: {name} (property/method)')
+                else:
+                    if '=>' in stripped or 'function' in stripped:
+                        functions.append(f'  L{i+1}: {name} (arrow/function)')
+                    else:
+                        variables.append(f'  L{i+1}: {name}')
+
+        if imports:
+            outline.append(f'Imports ({len(imports)}):')
+            outline.extend(imports[:30])
+            if len(imports) > 30:
+                outline.append(f'  ... and {len(imports)-30} more imports')
+            outline.append('')
+        if classes:
+            outline.append(f'Classes ({len(classes)}):')
+            outline.extend(classes)
+            outline.append('')
+        if functions:
+            outline.append(f'Functions ({len(functions)}):')
+            outline.extend(functions[:50])
+            if len(functions) > 50:
+                outline.append(f'  ... and {len(functions)-50} more functions')
+            outline.append('')
+        if variables:
+            outline.append(f'Variables ({len(variables)}):')
+            outline.extend(variables[:20])
+            outline.append('')
+
+    elif ext == '.go':
+        # Go structure parsing
+        imports = []
+        functions = []
+        types = []
+        variables = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('import '):
+                imports.append(f'  L{i+1}: {stripped[:100]}')
+            func_m = re.match(r'^\s*func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)', line)
+            if func_m:
+                functions.append(f'  L{i+1}: func {func_m.group(1)}')
+            type_m = re.match(r'^\s*type\s+(\w+)\s+struct', line)
+            if type_m:
+                types.append(f'  L{i+1}: type {type_m.group(1)} struct')
+            var_m = re.match(r'^\s*var\s+(\w+)', line)
+            if var_m:
+                variables.append(f'  L{i+1}: var {var_m.group(1)}')
+
+        if imports:
+            outline.append(f'Imports ({len(imports)}):')
+            outline.extend(imports[:20])
+            outline.append('')
+        if types:
+            outline.append(f'Types ({len(types)}):')
+            outline.extend(types)
+            outline.append('')
+        if functions:
+            outline.append(f'Functions ({len(functions)}):')
+            outline.extend(functions[:50])
+            outline.append('')
+        if variables:
+            outline.append(f'Variables ({len(variables)}):')
+            outline.extend(variables[:20])
+            outline.append('')
+    else:
+        return f'Unsupported file type: {ext}. Supported: .py, .js, .ts, .tsx, .jsx, .go'
+
+    total_items = sum(1 for line in outline if line.startswith('  L'))
+    if total_items == 0:
+        return f'No structure found in {rel} (empty or unrecognized format)'
+
+    outline.append(f'Total: {total_items} symbols')
+    return '\n'.join(outline)
+
+# Read-only tools available to sub-agents
+_SUBAGENT_TOOLS = {
+    'read_file': _tool_read_file,
+    'glob_files': _tool_glob_files,
+    'grep_code': _tool_grep_code,
+    'search_files': _tool_search_files,
+    'list_directory': _tool_list_directory,
+    'file_info': _tool_file_info,
+    'file_structure': _tool_file_structure,
+    'find_definition': _tool_find_definition,
+    'find_references': _tool_find_references,
+}
+
+# Read-only tool definitions for sub-agent API calls
+_SUBAGENT_TOOL_DEFS = [t for t in AGENT_TOOLS if t['function']['name'] in _SUBAGENT_TOOLS]
+
+def _tool_delegate_task(args):
+    """Launch a lightweight sub-agent for exploration/research tasks."""
+    task = args.get('task', '').strip()
+    if not task:
+        return 'Error: task description is required'
+    max_iters = min(max(args.get('max_iterations', 8), 1), 15)
+
+    try:
+        config = load_config()
+        llm_config = get_active_llm_config(config)
+    except Exception as e:
+        return f'Error loading LLM config: {e}'
+
+    # Build sub-agent context
+    sub_context = [
+        {'role': 'system', 'content': (
+            'You are a research sub-agent. Your job is to gather information and return a concise summary.\n'
+            'You have access to read-only tools (read_file, glob_files, grep_code, search_files, list_directory, '
+            'file_info, file_structure, find_definition, find_references).\n'
+            'Be thorough but concise. Focus on factual findings.\n'
+            'When done, provide a clear summary of what you found.'
+        )},
+        {'role': 'user', 'content': task},
+    ]
+
+    tool_results_summary = []
+
+    for iteration in range(max_iters):
+        try:
+            api_messages = _build_api_messages(sub_context, llm_config)
+            # Remove tools from main payload for sub-agent, use read-only subset
+            payload = {
+                'model': llm_config.get('model', 'gpt-4o-mini'),
+                'messages': api_messages,
+                'temperature': 0.3,
+                'max_tokens': 4096,
+                'tools': _SUBAGENT_TOOL_DEFS,
+                'tool_choice': 'auto',
+            }
+            url, headers = _get_llm_endpoint(llm_config, payload['model'])
+            headers = headers or {'Content-Type': 'application/json'}
+            req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+            with _urllib_opener.open(req, timeout=120) as resp:
+                response = json.loads(resp.read().decode('utf-8'))
+        except Exception as e:
+            return f'Sub-agent error (iteration {iteration+1}): {str(e)}'
+
+        choice = response.get('choices', [{}])[0]
+        message = choice.get('message', {})
+        content = message.get('content', '') or ''
+        tool_calls = message.get('tool_calls', [])
+
+        if content:
+            sub_context.append({'role': 'assistant', 'content': content})
+            tool_results_summary.append(f'[Iteration {iteration+1}] {content[:500]}')
+
+        if not tool_calls:
+            break
+
+        sub_context.append({'role': 'assistant', 'content': content or None, 'tool_calls': tool_calls})
+
+        for tc in tool_calls:
+            func = tc.get('function', {})
+            tool_name = func.get('name', '')
+            try:
+                tool_args = json.loads(func.get('arguments', '{}'))
+            except json.JSONDecodeError:
+                tool_args = {}
+
+            handler = _SUBAGENT_TOOLS.get(tool_name)
+            if handler:
+                try:
+                    result = handler(tool_args)
+                except Exception as e:
+                    result = f'Error: {e}'
+            else:
+                result = f'Error: Sub-agent cannot use tool "{tool_name}" (not in read-only set)'
+
+            tool_results_summary.append(f'[{tool_name}] {_truncate(result, 300)}')
+            sub_context.append({
+                'role': 'tool',
+                'tool_call_id': tc.get('id', ''),
+                'name': tool_name,
+                'content': result,
+            })
+
+    # Return the sub-agent's findings
+    output = f'Sub-agent completed ({iteration+1}/{max_iters} iterations):\n\n'
+    output += '\n'.join(tool_results_summary)
+    return _truncate(output, 15000)
+
 _TOOL_HANDLERS = {
     'read_file': _tool_read_file,
     'write_file': _tool_write_file,
@@ -1796,6 +2441,12 @@ _TOOL_HANDLERS = {
     'debug_evaluate': _tool_debug_evaluate,
     'debug_stack': _tool_debug_stack,
     'server_logs': _tool_server_logs,
+    # P0+P1 new tools
+    'glob_files': _tool_glob_files,
+    'find_definition': _tool_find_definition,
+    'find_references': _tool_find_references,
+    'file_structure': _tool_file_structure,
+    'delegate_task': _tool_delegate_task,
 }
 
 def execute_agent_tool(name, arguments):
@@ -1818,7 +2469,6 @@ TOOL_EXECUTION_TIMEOUT = 120  # seconds
 
 def execute_agent_tool_with_timeout(name, arguments):
     """Execute a tool with a global timeout to prevent hanging the agent loop."""
-    import concurrent.futures
     t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(execute_agent_tool, name, arguments)
@@ -1827,6 +2477,59 @@ def execute_agent_tool_with_timeout(name, arguments):
         except concurrent.futures.TimeoutError:
             elapsed = time.time() - t0
             return False, f'Error: Tool "{name}" timed out after {TOOL_EXECUTION_TIMEOUT}s', elapsed
+
+# Read-only tools that can safely run in parallel (no side effects)
+_READONLY_TOOLS = frozenset({
+    'read_file', 'glob_files', 'grep_code', 'search_files', 'list_directory',
+    'file_info', 'file_structure', 'find_definition', 'find_references',
+    'list_packages', 'git_status', 'git_diff', 'git_log',
+    'web_search', 'web_fetch',
+    'browser_page_info', 'browser_console', 'browser_cookies',
+    'debug_inspect', 'debug_stack', 'server_logs',
+})
+
+def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
+    """Execute multiple read-only tools in parallel for speed.
+    
+    If ALL tools in the batch are read-only, execute them concurrently (max 8 threads).
+    If ANY tool has side effects (write/delete/run), fall back to sequential execution.
+    
+    Returns list of (tool_name, ok, result_str, elapsed, tool_call_id) tuples.
+    """
+    # Check if all tools are read-only
+    all_readonly = True
+    for tc in tool_calls_raw:
+        func = tc.get('function', {})
+        name = func.get('name', '')
+        if name not in _READONLY_TOOLS:
+            all_readonly = False
+            break
+
+    if len(tool_calls_raw) < 2 or not all_readonly:
+        return None  # Signal caller to use sequential execution
+
+    # Parallel execution
+    results = [None] * len(tool_calls_raw)
+
+    def _run_one(idx, tc):
+        func = tc.get('function', {})
+        tool_name = func.get('name', '')
+        try:
+            tool_args = json.loads(func.get('arguments', '{}'))
+        except json.JSONDecodeError:
+            tool_args = {}
+        tool_call_id = tc.get('id', f'call_{tool_name}')
+        ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
+        return (idx, tool_name, ok, result_str, elapsed, tool_call_id)
+
+    max_workers = min(len(tool_calls_raw), 8)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_run_one, i, tc): i for i, tc in enumerate(tool_calls_raw)}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results[result[0]] = result
+
+    return results
 
 # ==================== LLM Integration ====================
 def _build_api_messages(messages, llm_config):
@@ -2105,8 +2808,13 @@ def _has_tool_calls(msg):
     return bool(msg and msg.get('tool_calls'))
 
 def _compress_context(messages, max_tokens=None):
-    """Compress conversation history to fit within context window.
-    Keeps: system prompt, last 2 user messages, last 4 tool results, summary of older messages.
+    """Smart context compression with code-change preservation.
+    
+    Strategy:
+    1. Preserve write_file/edit_file results as "KEY CODE CHANGES" 
+    2. Differentiated compression limits by tool type
+    3. Two-stage compression (gentle → aggressive)
+    4. Informative size markers instead of silent truncation
     
     Returns (messages, was_compressed) tuple.
     """
@@ -2118,9 +2826,17 @@ def _compress_context(messages, max_tokens=None):
         return messages, False
 
     was_compressed = True
+    original_total = total
 
-    # Split messages into older and recent
-    # Find the last 2 user messages from the end
+    # ── Stage 1: Extract key code changes (write_file/edit_file results) ──
+    code_changes = []
+    for msg in messages:
+        if msg.get('role') == 'tool' and msg.get('name') in ('write_file', 'edit_file'):
+            content = msg.get('content', '') or ''
+            if content and 'Error' not in content[:20]:
+                code_changes.append(content[:500])
+
+    # ── Stage 2: Split into older/recent ──
     user_indices = [i for i, m in enumerate(messages) if m.get('role') == 'user']
     if len(user_indices) >= 2:
         split_idx = user_indices[-2]
@@ -2130,69 +2846,90 @@ def _compress_context(messages, max_tokens=None):
     older = messages[:split_idx]
     recent = messages[split_idx:]
 
-    # Build a summary of older messages
+    # ── Stage 3: Build smart summary of older messages ──
     summary_parts = []
     for msg in older:
         role = msg.get('role', '')
         content = msg.get('content') or ''
         if role == 'user':
-            summary_parts.append(f'[User]: {content[:200]}')
+            summary_parts.append(f'[User]: {content[:300]}')
         elif role == 'assistant':
-            summary_parts.append(f'[Assistant]: {content[:200]}')
+            text = content[:300] if content else '(tool calls only)'
+            summary_parts.append(f'[Assistant]: {text}')
         elif role == 'tool':
             name = msg.get('name', 'tool')
-            summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
+            # Differentiated limits by tool type
+            if name in ('write_file', 'edit_file'):
+                summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
+            elif name in ('read_file', 'grep_code', 'search_files', 'glob_files', 'find_definition', 'find_references'):
+                summary_parts.append(f'[Tool {name}]: {_truncate(content, 150)}')
+            elif name in ('run_command', 'install_package'):
+                summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
+            else:
+                summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
 
-    summary = 'Earlier conversation summary:\n' + '\n'.join(summary_parts[-10:])
+    summary = 'Earlier conversation summary:\n'
+    if code_changes:
+        summary += 'KEY CODE CHANGES (preserved from earlier):\n' + '\n'.join(f'  • {c}' for c in code_changes[:5]) + '\n\n'
+    summary += '\n'.join(summary_parts[-15:])
     summary_msg = {'role': 'user', 'content': summary}
 
-    # Compress recent tool results if still too large
+    # ── Stage 4: Gentle compression — differentiated tool limits ──
+    TOOL_LIMITS_GENTLE = {
+        'read_file': 5000, 'glob_files': 2000, 'grep_code': 3000,
+        'search_files': 3000, 'file_structure': 3000,
+        'find_definition': 3000, 'find_references': 2000,
+        'run_command': 3000, 'web_fetch': 2000,
+        'delegate_task': 3000,
+    }
+    TOOL_LIMITS_DEFAULT = 4000
+
     compressed_recent = []
     for msg in recent:
         if msg.get('role') == 'tool':
             content = msg.get('content') or ''
-            if len(content) > 3000:
-                msg = dict(msg, content=content[:3000] + '\n[truncated for context]')
+            name = msg.get('name', '')
+            limit = TOOL_LIMITS_GENTLE.get(name, TOOL_LIMITS_DEFAULT)
+            if len(content) > limit:
+                msg = dict(msg, content=content[:limit] + f'\n[compressed: {len(content)}→{limit} chars]')
         compressed_recent.append(msg)
 
-    # Re-check total size
     all_msgs = [summary_msg] + compressed_recent
     total2 = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
+
+    # ── Stage 5: Aggressive compression if still too large ──
     if total2 > max_tokens:
-        # Further trim tool results
         for msg in all_msgs:
             if msg.get('role') == 'tool':
                 content = msg.get('content', '')
-                if len(content) > 1000:
-                    msg['content'] = content[:1000] + '\n[truncated]'
+                if len(content) > 1500:
+                    msg['content'] = content[:1500] + f'\n[compressed: {len(content)}→1500 chars]'
 
-    # Final check: if STILL too large, do aggressive compression
     total3 = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
     if total3 > max_tokens:
-        # Only keep the very last user message, assistant response, and summary
-        # This is a drastic measure to ensure the request fits
         user_indices2 = [i for i, m in enumerate(all_msgs) if m.get('role') == 'user']
         if len(user_indices2) >= 1:
             keep_from = user_indices2[-1]
             kept = all_msgs[keep_from:]
-            # But also aggressively trim tool results in kept messages
             for msg in kept:
                 if msg.get('role') == 'tool':
                     content = msg.get('content', '')
-                    if len(content) > 500:
-                        msg['content'] = content[:500] + '\n[truncated]'
+                    if len(content) > 800:
+                        msg['content'] = content[:800] + f'\n[compressed: {len(content)}→800 chars]'
             all_msgs = [summary_msg] + kept
 
-    # ULTIMATE fallback: if STILL too large, trim everything to bare minimum
+    # ── Stage 6: Ultimate fallback ──
     total4 = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
     if total4 > max_tokens:
-        # Keep only system prompt + last 2 messages, aggressively trimmed
         minimal = [summary_msg]
         for msg in all_msgs[-2:]:
             content = msg.get('content', '') or ''
             minimal.append(dict(msg, content=content[:200] + ('...' if len(content) > 200 else '')))
         all_msgs = minimal
 
+    final_total = sum(_estimate_tokens(m.get('content', '') or '') for m in all_msgs)
+    print(f'[CONTEXT] Compressed: {_estimate_tokens(str(original_total*4))}→{final_total} tokens '
+          f'({len(messages)}→{len(all_msgs)} messages, saved code changes: {len(code_changes)})')
     return all_msgs, was_compressed
 
 # ==================== Agent Loop ====================
@@ -2276,41 +3013,56 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
         }
         context.append(assistant_msg)
 
-        # Execute each tool call
-        for tc in tool_calls_raw:
-            func = tc.get('function', {})
-            tool_name = func.get('name', '')
-            try:
-                tool_args = json.loads(func.get('arguments', '{}'))
-            except json.JSONDecodeError:
-                tool_args = {}
+        # Try parallel execution for read-only tools
+        parallel_results = _execute_tools_parallel(tool_calls_raw)
 
-            tool_call_id = tc.get('id', f'call_{tool_name}')
-            all_tool_calls.append({'name': tool_name, 'args': tool_args})
-
-            _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
-
-            ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
-
-            _emit({
-                'type': 'tool_result',
-                'tool': tool_name,
-                'ok': ok,
-                'result': _truncate(result_str, 30000),
-                'elapsed': round(elapsed, 2),
-            })
-
-            # Add tool result to context
-            context.append({
-                'role': 'tool',
-                'tool_call_id': tool_call_id,
-                'name': tool_name,
-                'content': result_str,
-                'time': datetime.now().isoformat(),
-            })
-
-            # Re-check context size and compress if needed
+        if parallel_results is not None:
+            # Parallel execution succeeded — emit all results
+            for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
+                all_tool_calls.append({'name': tool_name})
+                _emit({'type': 'tool_start', 'tool': tool_name})
+                _emit({'type': 'tool_result', 'tool': tool_name, 'ok': ok,
+                       'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2)})
+                context.append({'role': 'tool', 'tool_call_id': tool_call_id,
+                                'name': tool_name, 'content': result_str,
+                                'time': datetime.now().isoformat()})
             context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+        else:
+            # Sequential execution (mixed read/write tools or single tool)
+            for tc in tool_calls_raw:
+                func = tc.get('function', {})
+                tool_name = func.get('name', '')
+                try:
+                    tool_args = json.loads(func.get('arguments', '{}'))
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                tool_call_id = tc.get('id', f'call_{tool_name}')
+                all_tool_calls.append({'name': tool_name, 'args': tool_args})
+
+                _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
+
+                ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
+
+                _emit({
+                    'type': 'tool_result',
+                    'tool': tool_name,
+                    'ok': ok,
+                    'result': _truncate(result_str, 30000),
+                    'elapsed': round(elapsed, 2),
+                })
+
+                # Add tool result to context
+                context.append({
+                    'role': 'tool',
+                    'tool_call_id': tool_call_id,
+                    'name': tool_name,
+                    'content': result_str,
+                    'time': datetime.now().isoformat(),
+                })
+
+                # Re-check context size and compress if needed
+                context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
     # Build final assistant message for history
     final_assistant = {
@@ -2578,41 +3330,57 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         # Reset accumulated text for next iteration
         accumulated_text = ''
 
-        # Execute each tool call
-        for tc in tool_calls_raw:
-            func = tc.get('function', {})
-            tool_name = func.get('name', '')
-            try:
-                tool_args = json.loads(func.get('arguments', '{}'))
-            except json.JSONDecodeError:
-                tool_args = {}
+        # Try parallel execution for read-only tools
+        parallel_results = _execute_tools_parallel(tool_calls_raw)
 
-            tool_call_id = tc.get('id', f'call_{tool_name}')
-            tool_calls_in_progress.append({'name': tool_name, 'args': tool_args})
-
-            yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
-
-            ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
-
-            yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
-
-            tool_msg = {
-                'role': 'tool',
-                'tool_call_id': tool_call_id,
-                'name': tool_name,
-                'content': result_str,
-                'time': datetime.now().isoformat(),
-            }
-            context.append(tool_msg)
-            history.append(tool_msg)
-
-            # Save after each tool so refresh mid-iteration preserves partial progress
-            save_chat_history(history)
-            if conv_id:
-                save_conversation(conv_id, history)
-
-            # Compress context if needed
+        if parallel_results is not None:
+            # Parallel execution
+            for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
+                tool_calls_in_progress.append({'name': tool_name})
+                yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+                tool_msg = {'role': 'tool', 'tool_call_id': tool_call_id,
+                            'name': tool_name, 'content': result_str,
+                            'time': datetime.now().isoformat()}
+                context.append(tool_msg)
+                history.append(tool_msg)
             context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
+        else:
+            # Sequential execution (mixed read/write tools or single tool)
+            for tc in tool_calls_raw:
+                func = tc.get('function', {})
+                tool_name = func.get('name', '')
+                try:
+                    tool_args = json.loads(func.get('arguments', '{}'))
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                tool_call_id = tc.get('id', f'call_{tool_name}')
+                tool_calls_in_progress.append({'name': tool_name, 'args': tool_args})
+
+                yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
+
+                ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
+
+                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+
+                tool_msg = {
+                    'role': 'tool',
+                    'tool_call_id': tool_call_id,
+                    'name': tool_name,
+                    'content': result_str,
+                    'time': datetime.now().isoformat(),
+                }
+                context.append(tool_msg)
+                history.append(tool_msg)
+
+                # Save after each tool so refresh mid-iteration preserves partial progress
+                save_chat_history(history)
+                if conv_id:
+                    save_conversation(conv_id, history)
+
+                # Compress context if needed
+                context, _ = _compress_context(context, max_tokens=llm_config.get('max_tokens', 4096) * 10)
 
         # Progressive save: persist history after each iteration so retry can resume
         save_chat_history(history)

@@ -82,6 +82,12 @@ const ChatManager = (() => {
         debug_evaluate:      '⚡',
         debug_stack:         '📚',
         server_logs:         '📋',
+        // P0+P1 new tools
+        glob_files:          '📂',
+        find_definition:     '🎯',
+        find_references:     '🔗',
+        file_structure:      '🏗️',
+        delegate_task:       '🤖',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"
