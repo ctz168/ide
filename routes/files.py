@@ -42,6 +42,13 @@ def list_files():
             target = project_dir
             path = project
 
+    # Auto-create workspace root if it doesn't exist
+    if not os.path.exists(target) and target == os.path.realpath(base):
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            return jsonify({'error': f'Cannot create workspace directory: {target}'}), 500
+
     if not os.path.exists(target):
         return jsonify({'error': 'Path not found'}), 404
 
@@ -250,6 +257,12 @@ def workspace_info():
     config = load_config()
     ws = config.get('workspace', WORKSPACE)
     exists = os.path.isdir(ws)
+    if not exists:
+        try:
+            os.makedirs(ws, exist_ok=True)
+            exists = True
+        except OSError:
+            pass
     return jsonify({
         'workspace': ws,
         'exists': exists,

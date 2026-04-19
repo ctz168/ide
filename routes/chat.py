@@ -1331,6 +1331,9 @@ def _get_effective_cwd():
     try:
         config = load_config()
         ws = config.get('workspace', WORKSPACE)
+        # Auto-create workspace if it doesn't exist
+        if not os.path.isdir(ws):
+            os.makedirs(ws, exist_ok=True)
         project = config.get('project', None)
         if project:
             project_dir = os.path.join(ws, project)
