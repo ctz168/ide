@@ -3,6 +3,7 @@ PhoneIDE - Git API routes.
 """
 
 import os
+import shlex
 import subprocess
 from datetime import datetime
 from flask import Blueprint, jsonify, request
@@ -62,9 +63,13 @@ def git_cmd(args, cwd=None, timeout=60):
         # On Windows, shell=True with cmd.exe can have issues with certain characters.
         # Use shell=False with list args when possible.
         if IS_WINDOWS:
-            # Split into list for Windows (git handles its own argument parsing)
-            full_cmd = ['git', '-C', base] + args.split()
-            result = subprocess.run(full_cmd, shell=False, capture_output=True, text=True, timeout=timeout)
+            # Use shlex.split to properly handle quoted arguments (e.g. -m "msg", --format="...")
+            # Without this, args.split() would break quoted strings containing spaces
+            full_cmd = ['git', '-C', base] + shlex.split(args)
+            result = subprocess.run(
+                full_cmd, shell=False, capture_output=True,
+                text=True, timeout=timeout, encoding='utf-8', errors='replace'
+            )
         else:
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return {'ok': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr, 'code': result.returncode}
