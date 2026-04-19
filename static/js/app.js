@@ -1116,11 +1116,7 @@ const AppManager = (() => {
         const btn = document.getElementById('btn-theme');
         if (btn) btn.innerHTML = themeId === 'dark' ? moonIcon : sunIcon;
 
-        if (themeId === 'dark') {
-            document.documentElement.removeAttribute('data-theme');
-        } else {
-            document.documentElement.setAttribute('data-theme', themeId);
-        }
+        document.documentElement.setAttribute('data-theme', themeId);
 
         // Persist to localStorage
         try { localStorage.setItem('theme', themeId); } catch (e) {}

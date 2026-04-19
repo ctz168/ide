@@ -1,5 +1,39 @@
 /* PhoneIDE - Mobile-Optimized Dark Theme CSS */
 :root {
+    --bg-primary: #FAF9F6;
+    --bg-secondary: #F5F0E8;
+    --bg-tertiary: #EDE8DB;
+    --bg-surface: #FFFFFF;
+    --bg-hover: #E8E2D6;
+    --bg-active: #D4C5B0;
+    --text-primary: #2D2319;
+    --text-secondary: #5C4A3A;
+    --text-muted: #8B7355;
+    --accent: #C4621A;
+    --accent-hover: #A8510F;
+    --green: #2D7D46;
+    --red: #C0392B;
+    --yellow: #B8860B;
+    --orange: #D97706;
+    --blue: #2563EB;
+    --mauve: #7C3AED;
+    --teal: #0D9488;
+    --border: #D4C5B0;
+    --border-light: #C4B5A0;
+    --radius: 8px;
+    --radius-sm: 4px;
+    --toolbar-height: 44px;
+    --sidebar-width: 360px;
+    --bottom-panel-height: 85vh;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Dark theme override */
+[data-theme="dark"] {
     --bg-primary: #1e1e2e;
     --bg-secondary: #181825;
     --bg-tertiary: #11111b;
@@ -20,16 +54,6 @@
     --teal: #94e2d5;
     --border: #313244;
     --border-light: #45475a;
-    --radius: 8px;
-    --radius-sm: 4px;
-    --toolbar-height: 44px;
-    --sidebar-width: 360px;
-    --bottom-panel-height: 85vh;
-    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
-    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    --safe-top: env(safe-area-inset-top, 0px);
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* Reset */
