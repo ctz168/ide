@@ -384,8 +384,7 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
             running_processes[proc_id]['running'] = True
             running_processes[proc_id]['start_time'] = time.time()
 
-            proc = subprocess.Popen(
-                cmd,
+            popen_kwargs = dict(
                 shell=True,
                 cwd=cwd or config.get('workspace', WORKSPACE),
                 stdout=subprocess.PIPE,
@@ -394,6 +393,12 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
                 text=True,
                 bufsize=1,
             )
+            # On Windows, force UTF-8 to avoid cp936/cp1252 encoding issues
+            # with non-ASCII output (Chinese, Japanese, Korean, etc.)
+            if IS_WINDOWS:
+                popen_kwargs['encoding'] = 'utf-8'
+                popen_kwargs['errors'] = 'replace'
+            proc = subprocess.Popen(cmd, **popen_kwargs)
             running_processes[proc_id]['process'] = proc
 
             for line in iter(proc.stdout.readline, ''):
