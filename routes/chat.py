@@ -1393,6 +1393,7 @@ def _tool_git_commit(args):
     return f'Error: {r["stderr"]}'
 
 def _tool_install_package(args):
+    from utils import IS_WINDOWS, get_default_compiler
     package_name = args['package_name']
     manager = args.get('manager', 'auto')
     config = load_config()
@@ -1402,7 +1403,10 @@ def _tool_install_package(args):
         cmd = f'npm install {shlex_quote(package_name)}'
     else:
         venv = config.get('venv_path', '')
-        pip = os.path.join(venv, 'bin', 'pip') if venv and os.path.exists(os.path.join(venv, 'bin', 'pip')) else 'pip3'
+        if IS_WINDOWS:
+            pip = os.path.join(venv, 'Scripts', 'pip.exe') if venv and os.path.exists(os.path.join(venv, 'Scripts', 'pip.exe')) else get_default_compiler() + ' -m pip'
+        else:
+            pip = os.path.join(venv, 'bin', 'pip') if venv and os.path.exists(os.path.join(venv, 'bin', 'pip')) else get_default_compiler() + ' -m pip'
         cmd = f'{pip} install {shlex_quote(package_name)}'
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=100, cwd=WORKSPACE)
     output = r.stdout or ''
@@ -2541,31 +2545,33 @@ def _build_api_messages(messages, llm_config):
     else:
         sys_prompt = DEFAULT_SYSTEM_PROMPT
 
-    # Inject project-aware workspace info
+    # Inject project-aware workspace info and system environment
     try:
-        from utils import load_config
+        from utils import load_config, get_system_info, IS_WINDOWS, get_default_shell, get_default_compiler
         config = load_config()
         project = config.get('project', None)
         ws = config.get('workspace', WORKSPACE)
+
+        # System environment info
+        sys_env_info = f'## System Environment\n{get_system_info()}\nDefault shell: {get_default_shell()}\nDefault Python: {get_default_compiler()}\n'
+        if IS_WINDOWS:
+            sys_env_info += 'Note: This is a Windows system. Use Windows-compatible commands (cmd.exe/PowerShell). Use backslashes for paths in shell commands, forward slashes for file operations in code.\n'
+
         if project:
             project_dir = os.path.join(ws, project)
             if os.path.isdir(project_dir):
-                workspace_info = f'Current project: {project}\nProject directory: {project_dir}\nWorkspace root: {ws}\nServer directory: {SERVER_DIR}'
+                workspace_info = f'## Current Project\nCurrent project: {project}\nProject directory: {project_dir}\nWorkspace root: {ws}\nServer directory: {SERVER_DIR}'
             else:
-                workspace_info = f'Current workspace: {ws}\nServer directory: {SERVER_DIR}'
+                workspace_info = f'## Current Workspace\nCurrent workspace: {ws}\nServer directory: {SERVER_DIR}'
         else:
-            workspace_info = f'Current workspace: {ws}\nServer directory: {SERVER_DIR}'
+            workspace_info = f'## Current Workspace\nCurrent workspace: {ws}\nServer directory: {SERVER_DIR}'
     except Exception:
+        from utils import WORKSPACE, SERVER_DIR
+        sys_env_info = '## System Environment\nOS: Unknown\n'
         workspace_info = f'Current workspace: {WORKSPACE}\nServer directory: {SERVER_DIR}'
 
-    # Replace or append workspace info
-    if 'Current workspace:' in sys_prompt or 'Current project:' in sys_prompt:
-        # Remove old workspace lines
-        import re as _re
-        sys_prompt = _re.sub(r'Current (workspace|project):[^\n]*\n(Project directory|Workspace root|Server directory):[^\n]*\n?', '', sys_prompt)
-        sys_prompt += f'\n\n{workspace_info}\n'
-    else:
-        sys_prompt += f'\n\n{workspace_info}\n'
+    # Replace or append system environment and workspace info
+    sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
 
     api_messages = [{'role': 'system', 'content': sys_prompt}]
     for msg in messages:

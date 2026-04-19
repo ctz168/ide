@@ -9,7 +9,7 @@ from flask import Blueprint, jsonify, request, Response
 from utils import (
     handle_error, load_config, WORKSPACE, shlex_quote,
     run_process, stop_process, running_processes, process_outputs,
-    _verify_process_state,
+    _verify_process_state, IS_WINDOWS, get_default_compiler,
 )
 
 bp = Blueprint('run', __name__)
@@ -21,7 +21,7 @@ def execute_code():
     data = request.json
     code = data.get('code', '')
     file_path = data.get('file_path', '')
-    compiler = data.get('compiler', 'python3')
+    compiler = data.get('compiler', '') or get_default_compiler()
     args = data.get('args', '')
     config = load_config()
     base = config.get('workspace', WORKSPACE)

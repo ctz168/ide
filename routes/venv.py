@@ -6,7 +6,7 @@ import os
 import json
 import subprocess
 from flask import Blueprint, jsonify, request
-from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote
+from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote, IS_WINDOWS, get_default_compiler
 
 bp = Blueprint('venv', __name__)
 
@@ -34,14 +34,18 @@ def list_compilers():
         ('python3', 'Python 3', 'python3 --version'),
         ('python', 'Python', 'python --version'),
         ('node', 'Node.js', 'node --version'),
-        ('gcc', 'GCC C', 'gcc --version | head -1'),
-        ('g++', 'G++ C++', 'g++ --version | head -1'),
+        ('gcc', 'GCC C', 'gcc --version'),
+        ('g++', 'G++ C++', 'g++ --version'),
         ('go', 'Go', 'go version'),
         ('rustc', 'Rust', 'rustc --version'),
         ('ruby', 'Ruby', 'ruby --version'),
         ('lua', 'Lua', 'lua -v'),
-        ('bash', 'Bash', 'bash --version | head -1'),
     ]
+    # On Windows, don't check bash; add cmd and powershell checks
+    if IS_WINDOWS:
+        checks.append(('cmd', 'CMD', 'cmd /c ver'))
+    else:
+        checks.append(('bash', 'Bash', 'bash --version'))
     for cmd, name, version_cmd in checks:
         try:
             result = subprocess.run(version_cmd, shell=True, capture_output=True, text=True, timeout=5)
@@ -75,7 +79,8 @@ def create_venv():
     else:
         target = os.path.realpath(path)
 
-    proc_id = run_process(f'python3 -m venv {shlex_quote(target)}', cwd=effective_base)
+    venv_python = get_default_compiler()
+    proc_id = run_process(f'{venv_python} -m venv {shlex_quote(target)}', cwd=effective_base)
     if proc_id:
         config['venv_path'] = target
     save_config(config)
@@ -167,9 +172,12 @@ def list_packages():
     config = load_config()
     venv_path = config.get('venv_path', '')
     if venv_path and os.path.exists(venv_path):
-        pip = os.path.join(venv_path, 'bin', 'pip')
+        if IS_WINDOWS:
+            pip = os.path.join(venv_path, 'Scripts', 'pip.exe')
+        else:
+            pip = os.path.join(venv_path, 'bin', 'pip')
         if not os.path.exists(pip):
-            pip = 'pip3'
+            pip = get_default_compiler() + ' -m pip'
         result = subprocess.run(f'{pip} list --format=json', shell=True, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             try:

@@ -6,7 +6,7 @@ import os
 import subprocess
 from datetime import datetime
 from flask import Blueprint, jsonify, request
-from utils import handle_error, load_config, WORKSPACE, shlex_quote
+from utils import handle_error, load_config, WORKSPACE, shlex_quote, IS_WINDOWS
 
 bp = Blueprint('git', __name__)
 
@@ -59,7 +59,14 @@ def git_cmd(args, cwd=None, timeout=60):
     base = cwd or config.get('workspace', WORKSPACE)
     cmd = f'git -C {shlex_quote(base)} {args}'
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        # On Windows, shell=True with cmd.exe can have issues with certain characters.
+        # Use shell=False with list args when possible.
+        if IS_WINDOWS:
+            # Split into list for Windows (git handles its own argument parsing)
+            full_cmd = ['git', '-C', base] + args.split()
+            result = subprocess.run(full_cmd, shell=False, capture_output=True, text=True, timeout=timeout)
+        else:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return {'ok': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr, 'code': result.returncode}
     except subprocess.TimeoutExpired:
         return {'ok': False, 'stdout': '', 'stderr': 'Command timed out', 'code': -1}

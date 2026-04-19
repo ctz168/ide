@@ -373,9 +373,12 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
             env = os.environ.copy()
             config = load_config()
             if config.get('venv_path') and os.path.exists(config['venv_path']):
-                venv_bin = os.path.join(config['venv_path'], 'bin')
+                if IS_WINDOWS:
+                    venv_bin = os.path.join(config['venv_path'], 'Scripts')
+                else:
+                    venv_bin = os.path.join(config['venv_path'], 'bin')
                 if os.path.exists(venv_bin):
-                    env['PATH'] = venv_bin + ':' + env.get('PATH', '')
+                    env['PATH'] = venv_bin + (os.pathsep + env.get('PATH', '') if env.get('PATH') else '')
                     env['VIRTUAL_ENV'] = config['venv_path']
 
             running_processes[proc_id]['running'] = True
@@ -516,7 +519,77 @@ def handle_error(f):
     return wrapper
 
 
+# ==================== Platform Detection ====================
+import platform
+
+IS_WINDOWS = platform.system() == 'Windows'
+IS_MACOS = platform.system() == 'Darwin'
+IS_LINUX = platform.system() == 'Linux'
+IS_TERMUX = 'termux' in os.environ.get('PREFIX', '').lower() or 'com.termux' in os.environ.get('HOME', '').lower()
+
+PLATFORM_NAME = platform.system()  # 'Windows', 'Linux', 'Darwin'
+PLATFORM_DETAIL = platform.platform(terse=True)  # e.g. 'Linux-5.15.0-x86_64', 'Windows-10-10.0.19045-SP0'
+
+
+def get_system_info():
+    """Return a human-readable summary of the current system environment."""
+    info_parts = [f"OS: {PLATFORM_NAME}"]
+    if IS_WINDOWS:
+        info_parts.append(f"Platform: {PLATFORM_DETAIL}")
+    elif IS_LINUX:
+        info_parts.append(f"Platform: {PLATFORM_DETAIL}")
+        if IS_TERMUX:
+            info_parts.append("Environment: Termux (Android)")
+    elif IS_MACOS:
+        info_parts.append(f"Platform: {PLATFORM_DETAIL}")
+
+    info_parts.append(f"Python: {platform.python_version()}")
+    info_parts.append(f"Architecture: {platform.machine()}")
+
+    # Shell environment
+    if IS_WINDOWS:
+        info_parts.append("Shell: cmd.exe / PowerShell (Windows)")
+    elif IS_TERMUX:
+        info_parts.append("Shell: bash (Termux)")
+    else:
+        info_parts.append("Shell: bash")
+
+    return '\n'.join(info_parts)
+
+
+def get_default_shell():
+    """Return the default shell command for the current platform.
+    On Windows, returns 'cmd' for basic commands or 'powershell' for advanced usage.
+    On Unix-like, returns 'bash'."""
+    if IS_WINDOWS:
+        return 'cmd'
+    return 'bash'
+
+
+def get_default_compiler():
+    """Return the default Python compiler command for the current platform."""
+    if IS_WINDOWS:
+        return 'python'  # Windows uses 'python' not 'python3'
+    return 'python3'
+
+
 # ==================== Helper ====================
 def shlex_quote(s):
-    """Simple shell quoting"""
-    return "'" + s.replace("'", "'\\''") + "'"
+    """Platform-aware shell quoting.
+    On Windows, uses double-quote style quoting (cmd.exe).
+    On Unix-like, uses POSIX single-quote quoting (bash/sh)."""
+    if not s:
+        return '""' if IS_WINDOWS else "''"
+    if IS_WINDOWS:
+        # Windows cmd.exe quoting: wrap in double quotes, escape inner double quotes
+        escaped = s.replace('"', '\\"')
+        return f'"{escaped}"'
+    else:
+        # POSIX sh/bash quoting: wrap in single quotes, handle embedded single quotes
+        return "'" + s.replace("'", "'\\''") + "'"
+
+
+def get_git_executable():
+    """Return the git executable path or 'git'.
+    On Windows, git.exe is commonly available via PATH or Git for Windows."""
+    return 'git'
