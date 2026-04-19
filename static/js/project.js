@@ -224,6 +224,9 @@ const ProjectManager = (() => {
 
                 // If project is open on startup, switch to files tab
                 switchToFilesTab();
+
+                // Auto-detect and activate virtual environment
+                autoActivateVenv();
             } else {
                 currentProject = null;
                 onProjectClosed();
@@ -271,6 +274,9 @@ const ProjectManager = (() => {
 
             // Switch to files tab
             switchToFilesTab();
+
+            // Auto-detect and activate virtual environment
+            autoActivateVenv();
 
             return data;
         } catch (err) {
@@ -561,6 +567,58 @@ const ProjectManager = (() => {
             if (url) resolve({ url, token: '' });
             else resolve(null);
         });
+    }
+
+    /**
+     * Auto-detect and activate virtual environment for the current project.
+     * Checks for common venv directories (.venv, venv, env) in the project root.
+     */
+    async function autoActivateVenv() {
+        try {
+            const resp = await fetch('/api/venv/list');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const venvs = data.venvs || [];
+            const current = data.current || '';
+
+            // If already activated, just update UI
+            if (current) {
+                updateVenvUI(current);
+                return;
+            }
+
+            // Auto-activate the first found venv
+            if (venvs.length > 0) {
+                const venv = venvs[0];
+                const activateResp = await fetch('/api/venv/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: venv.path })
+                });
+                if (activateResp.ok) {
+                    safeToast(`已自动加载虚拟环境: ${venv.name}`, 'success');
+                    updateVenvUI(venv.full_path || venv.path);
+                }
+            }
+        } catch (err) {
+            console.warn('[ProjectManager] Auto venv detection failed:', err);
+        }
+    }
+
+    /**
+     * Update venv-related UI elements after activation.
+     */
+    function updateVenvUI(venvPath) {
+        // Update the venv info in the debug panel
+        const venvInfoEl = document.getElementById('current-venv');
+        if (venvInfoEl) {
+            const name = venvPath.split(/[/\\]/).pop() || venvPath;
+            venvInfoEl.textContent = name;
+        }
+        // Notify debug panel to refresh packages
+        if (window.DebugManager && typeof window.DebugManager.refreshPackages === 'function') {
+            window.DebugManager.refreshPackages();
+        }
     }
 
     // ── UI Updates ─────────────────────────────────────────────────

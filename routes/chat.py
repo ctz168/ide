@@ -6,6 +6,7 @@ import os
 import json
 import re
 import time
+import platform
 import shutil
 import subprocess
 import fnmatch
@@ -37,6 +38,7 @@ from utils import (
     load_conversations, save_conversations, get_conversation, save_conversation, delete_conversation,
     WORKSPACE, SERVER_DIR,
     get_file_type, shlex_quote,
+    get_system_info, IS_WINDOWS, get_default_shell,
 )
 from routes.git import git_cmd
 from routes.browser import create_browser_command, wait_browser_result
@@ -57,9 +59,14 @@ _active_task = {
     'thread': None,            # background thread running the agent loop
 }
 
+# ==================== System Prompt ====================
+# Build system environment info for the system prompt
+_SYSTEM_ENV_INFO = get_system_info()
+_PLATFORM_NAME = 'Windows' if IS_WINDOWS else ('macOS' if platform.system() == 'Darwin' else 'Linux')
+_DEFAULT_COMPILER = 'python' if IS_WINDOWS else 'python3'
+
 RING_BUFFER_SIZE = 100
 
-# ==================== System Prompt ====================
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
 You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
 
@@ -167,6 +174,16 @@ You can debug Python code execution in real-time:
 ## Workspace
 Current workspace: {WORKSPACE}
 Server directory: {SERVER_DIR}
+
+## System Environment
+{_SYSTEM_ENV_INFO}
+
+## Important: Platform Awareness
+- The server is running on {_PLATFORM_NAME}. Use this to choose correct shell commands and paths.
+- On Windows: use `cmd /c` or `powershell -Command` for shell commands. Paths use backslashes. Python is `python` not `python3`. Virtual env binaries are in `Scripts/` not `bin/`.
+- On Linux/macOS: use `bash -c` for shell commands. Paths use forward slashes. Python is `python3`. Virtual env binaries are in `bin/`.
+- When writing shell commands for `run_command`, always use the correct syntax for the current platform.
+- When referencing Python executable, use `{_DEFAULT_COMPILER}` for the current platform.
 """
 
 # ==================== Tool Definitions ====================
