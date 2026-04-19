@@ -28,6 +28,30 @@ const TerminalManager = (() => {
     const POLL_INTERVAL = 500;      // ms between poll requests
     const MAX_OUTPUT_LINES = 5000;  // max lines before trimming
 
+    // ── Platform Detection ────────────────────────────────────────
+    let platformInfo = {
+        is_windows: false,
+        is_termux: false,
+        shell_prompt: '$',
+        default_shell: 'bash',
+        default_compiler: 'python3',
+    };
+
+    async function loadPlatformInfo() {
+        try {
+            const resp = await fetch('/api/platform/info');
+            if (resp.ok) {
+                const data = await resp.json();
+                Object.assign(platformInfo, data);
+                // Update shell prompt in UI
+                const promptEl = document.getElementById('shell-prompt');
+                if (promptEl) promptEl.textContent = data.shell_prompt || '$';
+            }
+        } catch (e) {
+            console.warn('[TerminalManager] Failed to load platform info:', e);
+        }
+    }
+
     // ── Helpers ────────────────────────────────────────────────────
 
     /**
@@ -136,10 +160,11 @@ const TerminalManager = (() => {
         showPanel();
 
         try {
+            const prompt = platformInfo.shell_prompt || '$';
             const cmdDisplay = `${compiler} ${file_path}${args ? ' ' + args : ''}`;
             startCmdBlock(cmdDisplay);
             appendOutput(`─────────────────────────────────────────`, 'status');
-            appendOutput(`$ ${cmdDisplay}`, 'system');
+            appendOutput(`${prompt} ${cmdDisplay}`, 'system');
             appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
 
             const body = { file_path, compiler };
@@ -1156,12 +1181,13 @@ const TerminalManager = (() => {
             startCmdBlock(cmd);
 
             // Show the command in output
+            const prompt = platformInfo.shell_prompt || '$';
             appendOutput(`─────────────────────────────────────────`, 'status');
-            appendOutput(`$ ${cmd}`, 'system');
+            appendOutput(`${prompt} ${cmd}`, 'system');
             appendOutput(`[info] Shell command | Time: ${new Date().toLocaleString()}`, 'info');
 
             // Execute via API
-            executeCode(cmd, 'bash');
+            executeCode(cmd, platformInfo.default_shell || 'bash');
             shellInput.value = '';
         }
 
@@ -1336,6 +1362,7 @@ const TerminalManager = (() => {
 
     function init() {
         wireEvents();
+        loadPlatformInfo();  // Detect OS and adjust shell behavior
         loadCompilers();
         loadVenvInfo();
         setRunningState(false);
@@ -1387,7 +1414,14 @@ const TerminalManager = (() => {
 
         lines.push(`[system] Platform: ${platform}`);
         lines.push(`[system] Screen: ${screenInfo} | Viewport: ${viewportInfo}`);
-        lines.push(`[system] UA: ${ua.substring(0, 80)}...`);
+        if (platformInfo.is_windows) {
+            lines.push(`[system] Server OS: Windows (shell: cmd.exe)`);
+        } else if (platformInfo.is_termux) {
+            lines.push(`[system] Server OS: Linux/Termux`);
+        } else {
+            lines.push(`[system] Server OS: ${platformInfo.platform || 'Linux'}`);
+        }
+        lines.push(`[system] Shell: ${platformInfo.default_shell || 'bash'} | Prompt: ${platformInfo.shell_prompt || '$'}`);
         lines.push('');
 
         // Fetch server info

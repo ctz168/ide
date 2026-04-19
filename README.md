@@ -10,28 +10,23 @@
 
 ### 一行命令安装（推荐）
 
-自动检测平台、安装 Python 依赖、克隆仓库。一行搞定，复制粘贴即可：
-
-**Linux / macOS / Termux：**
-```bash
-curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
-```
+**全自动**：自动检测平台、安装 Python 依赖、克隆仓库、启动服务、检测端口、打开浏览器。一行命令，开箱即用：
 
 **Windows（PowerShell）：**
 ```powershell
 irm https://raw.githubusercontent.com/ctz168/ide/main/install.ps1 | iex
 ```
 
-安装完成后：
-
+**Linux / macOS / Termux：**
 ```bash
-cd ~/phoneide-ide && python3 server.py      # Linux / macOS
-cd $env:USERPROFILE\phoneide-ide; python server.py  # Windows
+curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
 ```
 
-浏览器打开 `http://localhost:1239` 即可使用。
+安装完成后浏览器会自动打开，直接使用即可。
 
-> 支持平台：Termux、Ubuntu/Debian、Fedora、CentOS、macOS、Alpine、Arch、openSUSE、Windows 10/11
+> 支持平台：Windows 10/11、Termux、Ubuntu/Debian、Fedora、CentOS、macOS、Alpine、Arch、openSUSE
+>
+> 默认地址：`http://localhost:12345`
 
 **自定义安装目录：**
 ```bash
@@ -41,12 +36,12 @@ PHONEIDE_INSTALL_DIR=~/my-ide curl -fsSL ... | bash
 $env:PHONEIDE_INSTALL_DIR="C:\my-ide"; irm ... | iex
 ```
 
-**安装并自动启动：**
+**自定义端口：**
 ```bash
 # Linux / macOS
-PHONEIDE_AUTO_START=1 curl -fsSL ... | bash
+PHONEIDE_PORT=8080 curl -fsSL ... | bash
 # Windows
-$env:PHONEIDE_AUTO_START="1"; irm ... | iex
+$env:PHONEIDE_PORT="8080"; irm ... | iex
 ```
 
 ### 手动安装
@@ -59,6 +54,7 @@ pip install flask flask-cors
 git clone https://github.com/ctz168/ide.git
 cd ide
 python server.py
+# 浏览器打开 http://localhost:12345
 ```
 
 **Termux：**
@@ -108,7 +104,7 @@ docker run -d -p 1239:1239 -v ~/phoneide_workspace:/workspace python:3.12-slim b
   "pip install flask flask-cors && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 server.py"
 ```
 
-启动后浏览器打开 `http://localhost:1239` 即可使用。
+启动后浏览器打开 `http://localhost:12345` 即可使用。
 
 ## 功能特性
 
@@ -151,8 +147,8 @@ ctz168/ide/
 ├── server.py              # Flask 入口，注册 7 个 Blueprint
 ├── utils.py               # 共享工具函数、常量、配置管理
 ├── requirements.txt       # Python 依赖 (flask, flask-cors)
-├── install.sh             # Linux/macOS 一键安装（Termux/Ubuntu/macOS/Fedora/Alpine/Arch）
-├── install.ps1            # Windows PowerShell 一键安装
+├── install.sh             # Linux/macOS 全自动安装（安装+启动+打开浏览器）
+├── install.ps1            # Windows PowerShell 全自动安装（安装+启动+打开浏览器）
 ├── start.sh               # 启动脚本（处理端口占用）
 ├── routes/
 │   ├── __init__.py
@@ -302,7 +298,7 @@ LLM API 配置存储在 `~/.phoneide/llm_config.json`：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PHONEIDE_PORT` | `1239` | 服务监听端口 |
+| `PHONEIDE_PORT` | `12345` | 服务监听端口 |
 | `PHONEIDE_HOST` | `0.0.0.0` | 绑定地址 |
 | `PHONEIDE_WORKSPACE` | `~/phoneide_workspace` | 默认工作空间路径 |
 

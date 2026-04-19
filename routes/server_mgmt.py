@@ -205,19 +205,42 @@ def server_logs_stream():
 # ---- System Info ----
 @bp.route('/api/system/info', methods=['GET'])
 def system_info():
-    from utils import load_config as _load_config
+    from utils import load_config as _load_config, IS_WINDOWS, PLATFORM_NAME, PLATFORM_DETAIL, IS_TERMUX
 
     info = {
-        'python': sys.version.split()[0],
-        'platform': sys.platform,
+        'platform': PLATFORM_NAME,
+        'platform_detail': PLATFORM_DETAIL,
+        'is_windows': IS_WINDOWS,
+        'is_termux': IS_TERMUX,
         'workspace': _load_config().get('workspace', WORKSPACE),
         'pid': os.getpid(),
         'server_version': SERVER_VERSION,
     }
-    try:
-        result = subprocess.run('uname -a', shell=True, capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            info['system'] = result.stdout.strip()
-    except Exception:
-        pass
+    # On Linux/Termux, also get kernel info
+    if not IS_WINDOWS:
+        try:
+            result = subprocess.run('uname -a', shell=True, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                info['uname'] = result.stdout.strip()
+        except Exception:
+            pass
     return jsonify(info)
+
+
+# ---- Platform Info for Frontend ----
+@bp.route('/api/platform/info', methods=['GET'])
+@handle_error
+def platform_info():
+    """Return platform info for frontend to adapt shell/terminal behavior."""
+    from utils import IS_WINDOWS, IS_TERMUX, IS_MACOS, PLATFORM_NAME, get_default_shell, get_default_compiler
+
+    return jsonify({
+        'is_windows': IS_WINDOWS,
+        'is_macos': IS_MACOS,
+        'is_linux': not IS_WINDOWS and not IS_MACOS,
+        'is_termux': IS_TERMUX,
+        'platform': PLATFORM_NAME,
+        'default_shell': get_default_shell(),
+        'default_compiler': get_default_compiler(),
+        'shell_prompt': '>' if IS_WINDOWS else '$',
+    })

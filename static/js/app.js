@@ -655,6 +655,47 @@ const AppManager = (() => {
             });
         }
 
+        // Wire up all .output-copy-btn buttons
+        document.querySelectorAll('.output-copy-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const targetId = btn.dataset.copyTarget;
+                const targetEl = document.getElementById(targetId);
+                if (!targetEl) return;
+
+                const text = targetEl.innerText || targetEl.textContent || '';
+                if (!text.trim()) {
+                    showToast('没有内容可复制', 'info');
+                    return;
+                }
+
+                try {
+                    await navigator.clipboard.writeText(text);
+                    btn.textContent = '✅ 已复制';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = '📋 复制';
+                        btn.classList.remove('copied');
+                    }, 1500);
+                } catch {
+                    // Fallback for older browsers / non-HTTPS
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.cssText = 'position:fixed;left:-9999px;';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    btn.textContent = '✅ 已复制';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = '📋 复制';
+                        btn.classList.remove('copied');
+                    }, 1500);
+                }
+            });
+        });
+
         // Toggle bottom panel button in toolbar (add if not present)
         addBottomToggle();
     }
@@ -1679,8 +1720,11 @@ const AppManager = (() => {
                 await TerminalManager.loadCompilers();
             }
 
-            // Load file tree (pass no path to use workspace root)
-            if (window.FileManager) await FileManager.loadFileList();
+            // Load file tree
+            // NOTE: FileManager.init() already handles navigating to the project
+            // directory and restoring saved state, so we don't call loadFileList()
+            // here to avoid resetting to workspace root.
+            // FileManager auto-inits when files.js loads (line ~942).
 
             // Load git status
             if (window.GitManager) await GitManager.refresh();
