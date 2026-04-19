@@ -984,6 +984,15 @@ def proxy():
         if parsed.query:
             target_path += '?' + parsed.query
 
+        # http.client requires ASCII-only path. Percent-encode any non-ASCII characters
+        # (e.g. Chinese characters in myagent conversation names).
+        # Only encode non-ASCII; preserve already-valid URL structure (/, ?, =, &, %).
+        target_path = re.sub(
+            r'[^\x00-\x7F]+',
+            lambda m: urllib.parse.quote(m.group(), safe=''),
+            target_path,
+        )
+
         # Forward request headers (selectively)
         forward_headers = {}
         # Content-Type and Content-Length for POST/PUT with body
