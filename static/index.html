@@ -208,25 +208,31 @@
             </div>
             <div id="bottom-panels">
                 <!-- Output (original terminal output) -->
-                <div id="bpanel-output" class="bpanel active">
-                    <div id="output-content"></div>
-                    <div id="shell-input-bar">
-                        <span id="shell-prompt">$</span>
-                        <input type="text" id="shell-input" placeholder="输入命令..." autocomplete="off" spellcheck="false" enterkeyhint="send" inputmode="text">
-                        <button id="shell-send-btn" type="button" style="padding:6px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0;">&#9166;</button>
+                <div id="bpanel-output" class="bpanel active" style="position:relative;">
+                    <div id="output-content" style="position:relative;flex:1;overflow-y:auto;"></div>
+                    <div style="position:relative;display:flex;align-items:stretch;">
+                        <div class="output-copy-btn" data-copy-target="output-content" title="复制输出内容" style="position:absolute;bottom:100%;left:0;">📋 复制</div>
+                        <div id="shell-input-bar" style="flex:1;">
+                            <span id="shell-prompt">$</span>
+                            <input type="text" id="shell-input" placeholder="输入命令..." autocomplete="off" spellcheck="false" enterkeyhint="send" inputmode="text">
+                            <button id="shell-send-btn" type="button" style="padding:6px 14px;border:none;background:var(--accent);color:#fff;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0;">&#9166;</button>
+                        </div>
                     </div>
                 </div>
                 <!-- Console -->
-                <div id="bpanel-console" class="bpanel">
-                    <div id="debug-console-content"></div>
+                <div id="bpanel-console" class="bpanel" style="position:relative;">
+                    <div id="debug-console-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;position:relative;"></div>
+                    <div class="output-copy-btn" data-copy-target="debug-console-content" title="复制控制台内容">📋 复制</div>
                 </div>
                 <!-- Network -->
-                <div id="bpanel-network" class="bpanel">
-                    <div id="debug-network-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;"></div>
+                <div id="bpanel-network" class="bpanel" style="position:relative;">
+                    <div id="debug-network-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;position:relative;"></div>
+                    <div class="output-copy-btn" data-copy-target="debug-network-content" title="复制网络日志">📋 复制</div>
                 </div>
                 <!-- Errors -->
-                <div id="bpanel-errors" class="bpanel">
-                    <div id="debug-errors-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;"></div>
+                <div id="bpanel-errors" class="bpanel" style="position:relative;">
+                    <div id="debug-errors-content" style="flex:1;overflow-y:auto;padding:6px 8px;font-family:var(--font-mono);font-size:11px;position:relative;"></div>
+                    <div class="output-copy-btn" data-copy-target="debug-errors-content" title="复制错误信息">📋 复制</div>
                 </div>
                 <!-- Debugger -->
                 <div id="bpanel-debug" class="bpanel" style="flex-direction:column;">

@@ -1502,6 +1502,33 @@ html, body {
     overflow: hidden;
 }
 
+/* Bottom panel copy button — fixed at bottom-left */
+.output-copy-btn {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    z-index: 10;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg-tertiary, rgba(30,30,46,0.85));
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-left: none;
+    border-radius: 0 6px 0 0;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    transition: opacity 0.2s;
+    user-select: none;
+}
+.output-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface, rgba(49,50,68,0.95));
+}
+.output-copy-btn.copied {
+    color: var(--green, #50fa7b);
+}
+
 /* Browser preview panel: ensure iframe doesn't leak out */
 #bpanel-browser {
     z-index: 0;
