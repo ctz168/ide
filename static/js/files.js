@@ -48,6 +48,8 @@ const FileManager = (() => {
     function normalizePath(p) {
         // '' means workspace root
         if (!p || p === '/workspace' || p === '/') return '';
+        // Normalize backslashes to forward slashes (Windows compatibility)
+        p = p.replace(/\\/g, '/');
         if (p.endsWith('/')) p = p.slice(0, -1);
         // Strip /workspace prefix if present
         p = p.replace(/^\/workspace\/?/, '');

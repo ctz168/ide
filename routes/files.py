@@ -55,7 +55,7 @@ def list_files():
                     is_dir = os.path.isdir(full)
                     items.append({
                         'name': entry,
-                        'path': os.path.relpath(full, base),
+                        'path': os.path.relpath(full, base).replace(os.sep, '/'),
                         'is_dir': is_dir,
                         'size': st.st_size if not is_dir else 0,
                         'modified': datetime.fromtimestamp(st.st_mtime).isoformat(),
@@ -410,7 +410,7 @@ def project_list_folders():
         for entry in sorted(os.listdir(target)):
             full = os.path.join(target, entry)
             if os.path.isdir(full) and not entry.startswith('.'):
-                rel = os.path.relpath(full, base)
+                rel = os.path.relpath(full, base).replace(os.sep, '/')
                 has_git = os.path.exists(os.path.join(full, '.git'))
                 folders.append({
                     'name': entry,
@@ -422,7 +422,7 @@ def project_list_folders():
 
     return jsonify({
         'folders': folders,
-        'current_path': os.path.relpath(target, base),
+        'current_path': os.path.relpath(target, base).replace(os.sep, '/'),
     })
 
 
@@ -483,7 +483,7 @@ def search_files():
                     with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                         for i, line in enumerate(f, 1):
                             if regex.search(line):
-                                rel = os.path.relpath(fpath, real_base)
+                                rel = os.path.relpath(fpath, real_base).replace(os.sep, '/')
                                 results.append({
                                     'file': rel,
                                     'line': i,
