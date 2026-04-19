@@ -163,7 +163,7 @@ def load_llm_config():
         return config
     return {
         'models': DEFAULT_LLM_MODELS,
-        'system_prompt': 'You are a helpful coding assistant integrated in PhoneIDE.',
+        'system_prompt': '你是一个专业的程序员，擅长编程和测试。每次开发任务的时候，先读项目的readme.md和worklog.md（没有你就创建）。每次开始和结束任务的时候要更新worklog.md，主要是整理压缩之前的记录（不能超过100条）、总结经验、更新最新工作记录。readme重点维护怎样测试使用这个项目的内容。',
     }
 
 
