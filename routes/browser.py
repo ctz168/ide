@@ -1033,24 +1033,69 @@ def proxy():
         status_code = raw_resp.status
         resp_headers = dict(raw_resp.getheaders())
 
-        # Check if this is a redirect (3xx)
-        if 300 <= status_code < 400 and 'Location' in resp_headers:
+        # ── Follow redirects server-side (like urllib did before 8dbd8ed) ──
+        # MUST follow redirects on the server side, NOT return 3xx to the browser.
+        # If we return the redirect to the browser, the Location header points to
+        # the original target URL (different origin), causing iframe cross-origin errors.
+        MAX_REDIRECTS = 10
+        _redirect_count = 0
+        while 300 <= status_code < 400 and 'Location' in resp_headers and _redirect_count < MAX_REDIRECTS:
+            conn.close()
             location = resp_headers['Location']
             # Resolve relative redirect
             if not location.startswith('http'):
                 location = urljoin(target_url, location)
-            print(f'[PROXY] {status_code} redirect: {target_url} → {location}')
-            resp = Response('', status=status_code)
-            resp.headers['Location'] = location
-            resp.headers['Access-Control-Allow-Origin'] = '*'
-            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
-            resp.headers['Access-Control-Allow-Headers'] = '*'
-            conn.close()
-            return resp
+            print(f'[PROXY] {status_code} redirect #{_redirect_count+1}: {target_url} → {location}')
+            target_url = location
+            parsed = urlparse(target_url)
+            hostname = parsed.hostname or ''
+
+            # Open new connection to the redirect target
+            if parsed.scheme == 'https':
+                conn = http.client.HTTPSConnection(
+                    hostname,
+                    parsed.port or 443,
+                    timeout=120,
+                    context=_SSL_CONTEXT,
+                )
+            else:
+                conn = http.client.HTTPConnection(
+                    hostname,
+                    parsed.port or 80,
+                    timeout=120,
+                )
+
+            target_path = parsed.path or '/'
+            if parsed.query:
+                target_path += '?' + parsed.query
+            # Percent-encode non-ASCII characters
+            target_path = re.sub(
+                r'[^\x00-\x7F]+',
+                lambda m: urllib.parse.quote(m.group(), safe=''),
+                target_path,
+            )
+            # Update forwarded headers for new host
+            forward_headers['Host'] = hostname
+            forward_headers['Referer'] = f'{parsed.scheme}://{parsed.netloc}/'
+
+            # For 307/308, preserve method and body; for 301/302/303, switch to GET
+            if status_code in (307, 308):
+                conn.request(req_method, target_path, body=req_body if req_body else None, headers=forward_headers)
+            else:
+                # 301, 302, 303 — switch to GET, drop body
+                conn.request('GET', target_path, body=None, headers=forward_headers)
+
+            raw_resp = conn.getresponse()
+            status_code = raw_resp.status
+            resp_headers = dict(raw_resp.getheaders())
+            _redirect_count += 1
 
         content_type = resp_headers.get('Content-Type', '') or resp_headers.get('content-type', '')
 
-        print(f'[PROXY] {req_method} {status_code} {target_url} [{content_type}]')
+        if _redirect_count > 0:
+            print(f'[PROXY] {req_method} {status_code} {target_url} [{content_type}] (after {_redirect_count} redirects)')
+        else:
+            print(f'[PROXY] {req_method} {status_code} {target_url} [{content_type}]')
 
         # ── For SSE / streaming responses, stream through directly ──
         ct_lower = (content_type or '').lower()
