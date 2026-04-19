@@ -162,3 +162,20 @@ Stage Summary:
 - 修复了页面最小化后进程状态错误显示为已停止的问题
 - 两个文件修改: static/js/terminal.js, static/js/debug.js
 - Commit: 8801aa1 "fix: 进程状态恢复 - 页面最小化后正确恢复运行中的进程"
+
+---
+Task ID: fix-system-prompt-project-dir
+Agent: main
+Task: 修复系统提示词中项目目录信息缺失的问题
+
+Work Log:
+- 分析 _build_api_messages() 发现问题：当 config.project 为 None 或路径无效时，系统提示词完全不包含"项目目录"信息
+- 修复逻辑：无论 config.project 是否存在，都始终在系统提示词中明确标注"Project directory (absolute)"
+- 三种情况全覆盖：(1) project 存在且路径有效 → 显示项目名+项目绝对路径 (2) project 存在但路径无效 → workspace 作为项目目录 (3) project 不存在 → workspace 就是项目目录
+- 使用 os.path.realpath() 确保路径是规范的绝对路径
+- 格式优化：用列表格式替代逗号分隔，提高可读性
+
+Stage Summary:
+- 修改文件: routes/chat.py (_build_api_messages 函数, line 2558-2610)
+- 关键改动：所有分支都包含 "Project directory (absolute): {绝对路径}" 字段
+- 修复后 AI 助手在每次对话中都能看到明确的项目目录路径

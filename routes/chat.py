@@ -2567,18 +2567,44 @@ def _build_api_messages(messages, llm_config):
         if IS_WINDOWS:
             sys_env_info += 'Note: This is a Windows system. Use Windows-compatible commands (cmd.exe/PowerShell). Use backslashes for paths in shell commands, forward slashes for file operations in code.\n'
 
+        # Always show project directory and workspace root clearly
         if project:
-            project_dir = os.path.join(ws, project)
+            project_dir = os.path.realpath(os.path.join(ws, project))
             if os.path.isdir(project_dir):
-                workspace_info = f'## Current Project\nCurrent project: {project}\nProject directory: {project_dir}\nWorkspace root: {ws}\nServer directory: {SERVER_DIR}'
+                workspace_info = (
+                    f'## Current Project & Workspace\n'
+                    f'- Project name: {project}\n'
+                    f'- Project directory (absolute): {project_dir}\n'
+                    f'- Workspace root: {ws}\n'
+                    f'- Server directory: {SERVER_DIR}\n'
+                    f'- All file operations should be scoped to the project directory: {project_dir}'
+                )
             else:
-                workspace_info = f'## Current Workspace\nCurrent workspace: {ws}\nServer directory: {SERVER_DIR}'
+                # project path invalid — treat workspace as project directory
+                workspace_info = (
+                    f'## Current Workspace\n'
+                    f'- Project directory (absolute): {os.path.realpath(ws)}\n'
+                    f'- Workspace root: {ws}\n'
+                    f'- Server directory: {SERVER_DIR}\n'
+                    f'- All file operations should be scoped to the project directory: {os.path.realpath(ws)}'
+                )
         else:
-            workspace_info = f'## Current Workspace\nCurrent workspace: {ws}\nServer directory: {SERVER_DIR}'
+            # No project selected — workspace IS the project directory
+            workspace_info = (
+                f'## Current Workspace\n'
+                f'- Project directory (absolute): {os.path.realpath(ws)}\n'
+                f'- Workspace root: {ws}\n'
+                f'- Server directory: {SERVER_DIR}\n'
+                f'- All file operations should be scoped to the project directory: {os.path.realpath(ws)}'
+            )
     except Exception:
         from utils import WORKSPACE, SERVER_DIR
         sys_env_info = '## System Environment\nOS: Unknown\n'
-        workspace_info = f'Current workspace: {WORKSPACE}\nServer directory: {SERVER_DIR}'
+        workspace_info = (
+            f'## Current Workspace\n'
+            f'- Project directory (absolute): {os.path.realpath(WORKSPACE)}\n'
+            f'- Server directory: {SERVER_DIR}'
+        )
 
     # Replace or append system environment and workspace info
     sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'

@@ -779,7 +779,7 @@ const FileManager = (() => {
         }, 10);
     }
 
-    function dismissContextMenu(e) {
+ function dismissContextMenu(e) {\n        // Only skip dismissal if the click landed on an actual menu item\n        // (menu items have their own click handlers that call removeContextMenu)\n        // Clicking the menu background (not an item) must also dismiss the menu.\n        if (!e.target.closest('.context-menu-item')) {\n            removeContextMenu();\n        }\n    }\n        // Only skip dismissal if the click landed on an actual menu item\n        // (menu items have their own click handlers that call removeContextMenu)\n        // Clicking the menu background (not an item) must also dismiss the menu.\n        if (!e.target.closest('.context-menu-item')) {\n            removeContextMenu();\n        }\n    }
         if (!e.target.closest('.context-menu')) {
             removeContextMenu();
         }
