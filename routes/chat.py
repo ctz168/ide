@@ -1229,7 +1229,7 @@ def _tool_install_package(args):
         venv = config.get('venv_path', '')
         pip = os.path.join(venv, 'bin', 'pip') if venv and os.path.exists(os.path.join(venv, 'bin', 'pip')) else 'pip3'
         cmd = f'{pip} install {shlex_quote(package_name)}'
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300, cwd=WORKSPACE)
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=100, cwd=WORKSPACE)
     output = r.stdout or ''
     if r.stderr:
         output += ('\n' if output else '') + r.stderr
@@ -1252,7 +1252,7 @@ def _tool_list_packages(args):
             lines = [f'  {p["name"]}=={p["version"]}' for p in pkgs]
             return f'Installed packages ({len(lines)}):\n' + '\n'.join(lines)
         except Exception:
-            pass
+            return r.stdout or r.stderr or 'No packages found'
     return r.stdout or r.stderr or 'No packages found'
 
 def _tool_grep_code(args):
@@ -1267,7 +1267,12 @@ def _tool_grep_code(args):
         return f'Error: Invalid regex: {e}'
     results = []
     skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode'}
+    _grep_start = time.time()
+    GREP_TIMEOUT = 30
     for root, dirs, files in os.walk(search_path):
+        if time.time() - _grep_start > GREP_TIMEOUT:
+            results.append(f'[Search timed out after {GREP_TIMEOUT}s]')
+            break
         dirs[:] = [d for d in dirs if d not in skip_dirs]
         for fname in files:
             if include and not fnmatch.fnmatch(fname, include):
@@ -1335,8 +1340,13 @@ def _tool_file_info(args):
 
 def _tool_create_directory(args):
     path = _validate_path(args['path'])
-    os.makedirs(path, exist_ok=True)
-    return f'Directory created: {path}'
+    try:
+        os.makedirs(path, exist_ok=True)
+        return f'Directory created: {path}'
+    except PermissionError:
+        return f'Error: Permission denied creating directory: {path}'
+    except OSError as e:
+        return f'Error creating directory {path}: {e}'
 
 def _tool_web_search(args):
     query = args.get('query', '')
@@ -1809,13 +1819,14 @@ TOOL_EXECUTION_TIMEOUT = 120  # seconds
 def execute_agent_tool_with_timeout(name, arguments):
     """Execute a tool with a global timeout to prevent hanging the agent loop."""
     import concurrent.futures
+    t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(execute_agent_tool, name, arguments)
         try:
             return future.result(timeout=TOOL_EXECUTION_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            elapsed = time.time() - (executor._work_items and list(executor._work_items.keys())[0] or time.time())
-            return False, f'Error: Tool "{name}" timed out after {TOOL_EXECUTION_TIMEOUT}s', TOOL_EXECUTION_TIMEOUT
+            elapsed = time.time() - t0
+            return False, f'Error: Tool "{name}" timed out after {TOOL_EXECUTION_TIMEOUT}s', elapsed
 
 # ==================== LLM Integration ====================
 def _build_api_messages(messages, llm_config):

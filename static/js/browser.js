@@ -418,14 +418,28 @@ const BrowserInspector = (() => {
             const result = executeCommand(data.action, data.params || {});
 
             // Post result back
-            await origFetch('/api/browser/result', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    cmd_id: data.cmd_id,
-                    result: result,
-                }),
-            });
+            try {
+                await origFetch('/api/browser/result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cmd_id: data.cmd_id,
+                        result: result,
+                    }),
+                });
+            } catch (postErr) {
+                // If posting the result also fails, report the error to backend
+                try {
+                    await origFetch('/api/browser/result', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            cmd_id: data.cmd_id,
+                            error: 'Frontend failed to report result: ' + postErr.message,
+                        }),
+                    });
+                } catch (e) { /* give up */ }
+            }
         } catch (e) {
             // Log poll errors (but don't spam — only log once per 10s)
             if (!pollCommand._lastLog || Date.now() - pollCommand._lastLog > 10000) {

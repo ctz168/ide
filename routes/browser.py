@@ -180,14 +180,17 @@ def open_external():
         if opened:
             return jsonify({'ok': True, 'message': f'Opened in browser: {url}'})
         # Fallback: subprocess (works on Termux / Android)
-        try:
-            subprocess.Popen(['xdg-open', url], stderr=subprocess.DEVNULL)
-        except Exception:
+        fallback_ok = False
+        for cmd in [['xdg-open', url], ['termux-open-url', url]]:
             try:
-                subprocess.Popen(['termux-open-url', url], stderr=subprocess.DEVNULL)
+                subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
+                fallback_ok = True
+                break
             except Exception:
-                pass
-        return jsonify({'ok': True, 'message': f'Opened: {url}'})
+                continue
+        if fallback_ok:
+            return jsonify({'ok': True, 'message': f'Opened: {url}'})
+        return jsonify({'error': f'Failed to open URL: {url} (no browser available)'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
