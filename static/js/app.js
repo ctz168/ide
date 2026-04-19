@@ -1720,8 +1720,11 @@ const AppManager = (() => {
                 await TerminalManager.loadCompilers();
             }
 
-            // Load file tree (pass no path to use workspace root)
-            if (window.FileManager) await FileManager.loadFileList();
+            // Load file tree
+            // NOTE: FileManager.init() already handles navigating to the project
+            // directory and restoring saved state, so we don't call loadFileList()
+            // here to avoid resetting to workspace root.
+            // FileManager auto-inits when files.js loads (line ~942).
 
             // Load git status
             if (window.GitManager) await GitManager.refresh();

@@ -213,8 +213,12 @@ const ProjectManager = (() => {
                 onProjectOpened(data);
 
                 // Navigate FileManager into the project directory
+                // Only navigate if FileManager is not already in the project
                 if (window.FileManager) {
-                    await window.FileManager.loadFileList(data.project);
+                    const fmPath = window.FileManager.currentPath || '';
+                    if (!fmPath.startsWith(data.project)) {
+                        await window.FileManager.loadFileList(data.project);
+                    }
                 }
 
                 // Refresh git status in the project directory
