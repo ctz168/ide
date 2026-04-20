@@ -234,6 +234,55 @@ You can debug Python code execution in real-time:
 
 # ==================== Tool Definitions ====================
 AGENT_TOOLS = [
+    # ── Task Planning & Tracking (PRIORITY: always first) ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'todo_write',
+            'description': (
+                'Create or update a task plan with a list of todo items. Each item has an id, content, status (pending/in_progress/completed), '
+                'and priority (high/medium/low). Use this BEFORE starting any complex multi-step task to plan your approach. '
+                'Update the status as you progress — mark items in_progress when working on them and completed when done. '
+                'This helps you stay organized and avoid missing steps. The todo list is displayed to the user in real-time.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'todos': {
+                        'type': 'array',
+                        'description': 'The updated todo list (replaces the entire list)',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'id': {'type': 'string', 'description': 'Unique identifier for this todo item'},
+                                'content': {'type': 'string', 'description': 'Description of the task'},
+                                'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed'], 'description': 'Task status'},
+                                'priority': {'type': 'string', 'enum': ['high', 'medium', 'low'], 'description': 'Priority level'},
+                            },
+                            'required': ['id', 'content', 'status'],
+                        },
+                    },
+                },
+                'required': ['todos'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'todo_read',
+            'description': (
+                'Read the current todo list. Returns all todo items with their id, content, status, and priority. '
+                'Use this to check your progress on a task plan.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
+    # ── File & Code Tools ──
     {
         'type': 'function',
         'function': {
@@ -1162,54 +1211,6 @@ AGENT_TOOLS = [
                     },
                 },
                 'required': ['path'],
-            },
-        },
-    },
-    # ── Task Planning & Tracking ──
-    {
-        'type': 'function',
-        'function': {
-            'name': 'todo_write',
-            'description': (
-                'Create or update a task plan with a list of todo items. Each item has an id, content, status (pending/in_progress/completed), '
-                'and priority (high/medium/low). Use this BEFORE starting any complex multi-step task to plan your approach. '
-                'Update the status as you progress — mark items in_progress when working on them and completed when done. '
-                'This helps you stay organized and avoid missing steps. The todo list is displayed to the user in real-time.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'todos': {
-                        'type': 'array',
-                        'description': 'The updated todo list (replaces the entire list)',
-                        'items': {
-                            'type': 'object',
-                            'properties': {
-                                'id': {'type': 'string', 'description': 'Unique identifier for this todo item'},
-                                'content': {'type': 'string', 'description': 'Description of the task'},
-                                'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed'], 'description': 'Task status'},
-                                'priority': {'type': 'string', 'enum': ['high', 'medium', 'low'], 'description': 'Priority level'},
-                            },
-                            'required': ['id', 'content', 'status'],
-                        },
-                    },
-                },
-                'required': ['todos'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'todo_read',
-            'description': (
-                'Read the current todo list. Returns all todo items with their id, content, status, and priority. '
-                'Use this to check your progress on a task plan.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
             },
         },
     },
@@ -3436,6 +3437,8 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
                     summary_parts.append(f'[Tool {name}]: {_truncate(content, 150)}')
                 elif name in ('run_command', 'install_package'):
                     summary_parts.append(f'[Tool {name}]: {_truncate(content, 200)}')
+                elif name in ('todo_write', 'todo_read'):
+                    summary_parts.append(f'[Tool {name}]: {_truncate(content, 300)}')
                 else:
                     summary_parts.append(f'[Tool {name}]: {_truncate(content, 100)}')
     
@@ -3453,7 +3456,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'run_command': 3000, 'web_fetch': 2000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
-        'todo_write': 100, 'todo_read': 100,
+        'todo_write': 2000, 'todo_read': 2000,
     }
     TOOL_LIMITS_DEFAULT = 4000
 
