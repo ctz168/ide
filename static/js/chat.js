@@ -3956,12 +3956,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
 
         function clearHighlights() {
-            // Restore original text nodes
-            for (const { node, text } of _originalTextNodes) {
-                if (node && node.parentNode) {
-                    node.textContent = text;
-                }
+            // Remove all highlight marks from DOM and restore plain text
+            const container = document.getElementById('chat-messages');
+            if (!container) return;
+            const marks = container.querySelectorAll('.chat-search-match');
+            for (const mark of marks) {
+                const text = document.createTextNode(mark.textContent);
+                mark.parentNode.replaceChild(text, mark);
             }
+            // Also remove current class from any leftover
+            container.querySelectorAll('.chat-search-match.current').forEach(el => el.classList.remove('current'));
             _originalTextNodes = [];
         }
 
