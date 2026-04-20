@@ -145,7 +145,7 @@ const ChatManager = (() => {
             else if (isInProgress) statusClass = 'todo-inprogress';
             const icon = isCompleted ? '✅' : (isInProgress ? '🔄' : '⬜');
             const pri = t.priority === 'high' ? '🔴' : (t.priority === 'medium' ? '🟡' : (t.priority === 'low' ? '🟢' : ''));
-            html += '<div class="todo-item ' + statusClass + '">' + icon + ' ' + pri + ' <span>' + escHtml(t.content) + '</span></div>';
+            html += '<div class="todo-item ' + statusClass + '">' + icon + ' ' + pri + ' <span>' + escapeHTML(t.content) + '</span></div>';
         });
         html += '</div>';
         todoPanelEl.innerHTML = html;
