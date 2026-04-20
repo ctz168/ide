@@ -1122,7 +1122,7 @@ const EditorManager = (() => {
 
         const cmCursor = editor.getSearchCursor(
             searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
-            editor.getCursor('from'),
+            editor.getCursor('to'),
             { caseFold: !searchState.caseSensitive }
         );
 
@@ -1164,7 +1164,7 @@ const EditorManager = (() => {
 
         const cmCursor = editor.getSearchCursor(
             searchState.regex ? new RegExp(searchState.query, searchState.caseSensitive ? '' : 'i') : searchState.query,
-            editor.getCursor('to'),
+            editor.getCursor('from'),
             { caseFold: !searchState.caseSensitive }
         );
 
