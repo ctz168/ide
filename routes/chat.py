@@ -3070,9 +3070,9 @@ def _call_llm_stream_raw(messages, llm_config):
         api_type = llm_config.get('api_type', '')
         model_lower = model.lower()
 
-        # OpenAI reasoning models (o1, o3, o4-mini, etc.)
+        # OpenAI reasoning models (o1, o3, o4-mini, codex, etc.)
         if ('o1' in model_lower or 'o3' in model_lower or 'o4' in model_lower or
-            'reasoning' in model_lower or 'codex' in model_lower):
+            'codex' in model_lower):
             payload['reasoning_effort'] = 'high'
             # OpenAI reasoning models don't support temperature and system messages in the usual way
             payload.pop('temperature', None)
@@ -3089,12 +3089,20 @@ def _call_llm_stream_raw(messages, llm_config):
                 # Claude thinking requires temperature=1
                 payload['temperature'] = 1
 
-        # DeepSeek reasoning models
+        # DeepSeek reasoning models (R1, etc.)
         elif 'deepseek' in model_lower or 'reasoner' in model_lower:
             payload.setdefault('temperature', 0.6)
 
-        # QwQ / other reasoning models
-        elif 'qwq' in model_lower or 'think' in model_lower:
+        # Step (深度求索) reasoning models
+        elif 'step' in model_lower:
+            payload.setdefault('temperature', 0.6)
+
+        # GLM (Z.ai) reasoning models
+        elif 'glm' in model_lower:
+            payload.setdefault('temperature', 0.6)
+
+        # QwQ / Kimi / other reasoning models
+        elif 'qwq' in model_lower or 'kimi' in model_lower or 'think' in model_lower or 'reasoning' in model_lower:
             pass  # These models reason by default, no special params needed
 
     try:
@@ -3107,6 +3115,24 @@ def _call_llm_stream_raw(messages, llm_config):
     req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
     print(f'[LLM] Calling: {url}')
     print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}, Reasoning: {reasoning}')
+    if reasoning:
+        # Log which reasoning branch was matched
+        model_lower = model.lower()
+        provider = llm_config.get('provider', '')
+        if 'o1' in model_lower or 'o3' in model_lower or 'o4' in model_lower or 'codex' in model_lower:
+            print(f'[LLM] Reasoning branch: OpenAI (reasoning_effort=high)')
+        elif provider == 'anthropic' or 'anthropic' in llm_config.get('api_type', ''):
+            print(f'[LLM] Reasoning branch: Anthropic thinking')
+        elif 'deepseek' in model_lower or 'reasoner' in model_lower:
+            print(f'[LLM] Reasoning branch: DeepSeek (temp=0.6)')
+        elif 'step' in model_lower:
+            print(f'[LLM] Reasoning branch: Step (temp=0.6)')
+        elif 'glm' in model_lower:
+            print(f'[LLM] Reasoning branch: GLM (temp=0.6)')
+        elif 'qwq' in model_lower or 'kimi' in model_lower or 'think' in model_lower or 'reasoning' in model_lower:
+            print(f'[LLM] Reasoning branch: Generic (no special params)')
+        else:
+            print(f'[LLM] Reasoning enabled but no model matched — model="{model}"')
     print(f'[LLM] Headers: {dict((k, v[:20]+"..." if len(v)>20 else v) for k,v in headers.items())}')
     print(f'[LLM] Messages count: {len(api_messages)}')
 
@@ -3138,9 +3164,9 @@ def _call_llm_stream_raw(messages, llm_config):
                         if fr:
                             delta['_finish_reason'] = fr
                             accumulated_finish_reason = fr
-                        # Pass through reasoning_content for DeepSeek/QwQ/reasoning models
+                        # Pass through reasoning_content for DeepSeek/QwQ/Step/GLM/Kimi/reasoning models
                         # The delta dict may contain 'reasoning_content' field
-                        if not delta.get('content') and 'reasoning_content' in delta:
+                        if 'reasoning_content' in delta:
                             delta['_reasoning'] = True
                         yield delta
                 except json.JSONDecodeError:
@@ -3157,7 +3183,7 @@ def _call_llm_stream_raw(messages, llm_config):
                         fr = choices[0].get('finish_reason')
                         if fr:
                             delta['_finish_reason'] = fr
-                        if not delta.get('content') and 'reasoning_content' in delta:
+                        if 'reasoning_content' in delta:
                             delta['_reasoning'] = True
                         yield delta
                 except (json.JSONDecodeError, KeyError):
@@ -3740,26 +3766,28 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
                 finish_reason = None
                 reasoning_text = ''  # accumulate reasoning/thinking content
+                reasoning_ended = False
                 for delta in _call_llm_stream_raw(context, llm_config):
                     # Capture finish_reason
                     fr = delta.get('_finish_reason')
                     if fr:
                         finish_reason = fr
 
-                    # Handle reasoning_content (DeepSeek-R1, QwQ, etc.)
+                    # Handle reasoning_content (DeepSeek-R1, QwQ, Step, GLM, Kimi, etc.)
                     reasoning_chunk = delta.get('reasoning_content')
+                    content_chunk = delta.get('content') or None
+
                     if reasoning_chunk:
                         reasoning_text += reasoning_chunk
                         yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_chunk})}\n\n"
-                        continue  # Skip further processing for reasoning-only chunks
+                        # Don't skip — also check for content below
 
-                    # If we had reasoning and now we're getting content, signal reasoning end
-                    if reasoning_text and content_chunk and not delta.get('_reasoning_sent'):
+                    # Signal reasoning_end when we transition from reasoning to content
+                    if reasoning_text and not reasoning_ended and content_chunk:
                         yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
-                        delta['_reasoning_sent'] = True
+                        reasoning_ended = True
 
                     # Handle text content
-                    content_chunk = delta.get('content')
                     if content_chunk:
                         delta_content += content_chunk
                         accumulated_text += content_chunk
@@ -3794,8 +3822,8 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     if idx in current_args_buffer:
                         tc_entry['function']['arguments'] = current_args_buffer[idx]
 
-                # If reasoning was accumulated but never followed by content, signal end now
-                if reasoning_text:
+                # If reasoning was accumulated but reasoning_end not yet signaled
+                if reasoning_text and not reasoning_ended:
                     yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
 
                 # Build the complete response message
