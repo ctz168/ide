@@ -193,8 +193,15 @@ def git_status():
 @handle_error
 def git_log():
     count = request.args.get('count', 20)
+    offset = request.args.get('offset', 0)
+    try:
+        count = int(count)
+        offset = int(offset)
+    except (ValueError, TypeError):
+        count = 20
+        offset = 0
     cwd = resolve_cwd()
-    r = git_cmd(f'log --oneline --decorate -n {count} --format="%H|%an|%ae|%at|%s"', cwd=cwd)
+    r = git_cmd(f'log --oneline --decorate -n {count} --skip {offset} --format="%H|%an|%ae|%at|%s"', cwd=cwd)
     if not r['ok']:
         return jsonify({'commits': [], 'error': r['stderr']})
     commits = []
@@ -210,7 +217,7 @@ def git_log():
                     'date': datetime.fromtimestamp(int(parts[3])).isoformat(),
                     'message': parts[4],
                 })
-    return jsonify({'commits': commits})
+    return jsonify({'commits': commits, 'offset': offset, 'count': len(commits)})
 
 
 @bp.route('/api/git/branch', methods=['GET'])

@@ -10,6 +10,8 @@ const GitManager = (() => {
     let statusData = null;
     let logData = [];
     let branchData = [];
+    let _logLoading = false;       // prevent concurrent log loads
+    let _logAllLoaded = false;     // true when server returns fewer than requested
 
     /**
      * Get the current git working directory.
@@ -166,21 +168,50 @@ const GitManager = (() => {
     // ── API: Log ───────────────────────────────────────────────────
 
     /**
-     * Refresh commit log and render
+     * Refresh commit log (reset and load first batch)
      */
     async function refreshLog() {
+        _logAllLoaded = false;
+        logData = [];
+        return await loadMoreLog();
+    }
+
+    /**
+     * Load more commits (incremental / infinite scroll)
+     * Appends to existing logData and renders.
+     */
+    async function loadMoreLog() {
+        if (_logLoading || _logAllLoaded) return logData;
+        _logLoading = true;
+
         try {
             const cwd = getGitCwd();
-            const params = cwd ? `?path=${encodeURIComponent(cwd)}` : '';
-            const resp = await fetch(`/api/git/log${params}`);
+            const offset = logData.length;
+            const params = new URLSearchParams();
+            if (cwd) params.set('path', cwd);
+            params.set('count', 20);
+            params.set('offset', offset);
+
+            const resp = await fetch(`/api/git/log?${params}`);
             if (!resp.ok) throw new Error(`Failed to get log: ${resp.statusText}`);
             const data = await resp.json();
-            logData = Array.isArray(data) ? data : (data.commits || []);
-            renderLogList(logData);
+            const newCommits = Array.isArray(data) ? data : (data.commits || []);
+
+            if (newCommits.length < 20) {
+                _logAllLoaded = true;
+            }
+
+            if (newCommits.length > 0) {
+                logData = logData.concat(newCommits);
+                renderLogList(logData, /* append */ offset > 0);
+            }
+
             return logData;
         } catch (err) {
             showToast(`Git log error: ${err.message}`, 'error');
-            return [];
+            return logData;
+        } finally {
+            _logLoading = false;
         }
     }
 
@@ -938,17 +969,20 @@ const GitManager = (() => {
     /**
      * Render commit log (with expandable file list per commit)
      */
-    function renderLogList(commits) {
+    function renderLogList(commits, append) {
         const el = document.getElementById('git-log-list');
         if (!el) return;
 
         if (!commits || commits.length === 0) {
-            el.innerHTML = '<div class="git-no-log">No commits yet</div>';
+            if (!append) el.innerHTML = '<div class="git-no-log">No commits yet</div>';
             return;
         }
 
+        // Build HTML for new commits only
+        const startIndex = append ? (el.querySelectorAll('.git-log-item').length) : 0;
         let html = '';
-        for (const commit of commits) {
+        for (let i = startIndex; i < commits.length; i++) {
+            const commit = commits[i];
             const hash = commit.hash || commit.oid || commit.id || '';
             const fullHash = commit.full_hash || hash;
             const shortHash = hash.substring(0, 7);
@@ -970,17 +1004,36 @@ const GitManager = (() => {
                 </div>`;
         }
 
-        el.innerHTML = html;
+        if (append) {
+            // Remove old loading indicator if exists
+            const oldLoader = el.querySelector('.git-log-loader');
+            if (oldLoader) oldLoader.remove();
+            el.insertAdjacentHTML('beforeend', html);
+        } else {
+            el.innerHTML = html;
+        }
 
-        // Bind expand/collapse + checkout buttons
-        el.querySelectorAll('.git-log-item').forEach(item => {
+        // Add loading indicator at the bottom (for infinite scroll)
+        if (!_logAllLoaded) {
+            const loader = document.createElement('div');
+            loader.className = 'git-log-loader';
+            loader.textContent = _logLoading ? '加载中...' : '↓ 下滑加载更多';
+            el.appendChild(loader);
+        }
+
+        // Bind events only for newly added items
+        const items = el.querySelectorAll('.git-log-item');
+        for (let i = startIndex; i < items.length; i++) {
+            const item = items[i];
+            if (item._bound) continue;
+            item._bound = true;
+
             // ── Click header to expand/collapse file list ──
             const header = item.querySelector('.git-log-header');
             const expandIcon = item.querySelector('.git-log-expand-icon');
             const filesContainer = item.querySelector('.git-log-files');
 
             const handler = (e) => {
-                // Don't toggle if clicking the checkout button
                 if (e.target.closest('.git-log-checkout-btn')) return;
                 e.stopPropagation();
                 toggleCommitFiles(item);
@@ -1006,7 +1059,24 @@ const GitManager = (() => {
                 e.stopPropagation();
                 checkoutHandler(e);
             });
-        });
+        }
+    }
+
+    /**
+     * Set up infinite scroll on git log list
+     */
+    function initLogInfiniteScroll() {
+        const el = document.getElementById('git-log-list');
+        if (!el) return;
+
+        el.addEventListener('scroll', () => {
+            if (_logLoading || _logAllLoaded) return;
+            // Trigger load when within 50px of bottom
+            const threshold = 50;
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
+                loadMoreLog();
+            }
+        }, { passive: true });
     }
 
     // Track which commits have loaded their file lists
@@ -1484,6 +1554,7 @@ const GitManager = (() => {
 
     function init() {
         wireButtons();
+        initLogInfiniteScroll();
         // Initial refresh
         refresh();
     }
@@ -1497,6 +1568,7 @@ const GitManager = (() => {
             // app.js already loaded, use touch-friendly binding
             _wired = true;
             wireButtons();
+            initLogInfiniteScroll();
             refresh();
         } else {
             // app.js hasn't registered bindTouchButton yet, poll for it
@@ -1505,6 +1577,7 @@ const GitManager = (() => {
                     clearInterval(check);
                     _wired = true;
                     wireButtons();
+                    initLogInfiniteScroll();
                     refresh();
                 }
             }, 10);

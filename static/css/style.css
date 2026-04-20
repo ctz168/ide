@@ -659,6 +659,15 @@ html, body {
     max-height: 200px;
     overflow-y: auto;
     padding: 4px 0;
+    overscroll-behavior-y: contain;
+}
+
+.git-log-loader {
+    padding: 8px 12px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
 }
 
 .git-log-item {
