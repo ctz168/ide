@@ -1182,7 +1182,7 @@ def _tool_edit_file(args):
             content = f.read()
 
         # MultiEdit: atomic multi-replacement mode
-        if replacements and isinstance(replacements, list):
+        if replacements is not None and isinstance(replacements, list) and len(replacements) > 0:
             original_content = content
             total_replacements = 0
             errors = []
@@ -1206,8 +1206,19 @@ def _tool_edit_file(args):
             if total_replacements == 0:
                 return 'Error: No valid replacements provided.'
 
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            # Atomic write (same pattern as _tool_write_file)
+            _dir = os.path.dirname(path) or '.'
+            fd, tmp_path = tempfile.mkstemp(dir=_dir, suffix='.tmp', prefix='.phoneide_edit_')
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
             # Auto-verify: check that new_text exists in written file
             verify_errors = []
             for i, rep in enumerate(replacements):
@@ -1215,9 +1226,17 @@ def _tool_edit_file(args):
                 if new_text and new_text not in content:
                     verify_errors.append(f'Replacement {i+1}: new_text not found after edit (possible whitespace issue)')
             if verify_errors:
-                # Rollback to original
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(original_content)
+                # Rollback to original (atomic)
+                fd2, tmp_path2 = tempfile.mkstemp(dir=_dir, suffix='.tmp', prefix='.phoneide_rollback_')
+                try:
+                    with os.fdopen(fd2, 'w', encoding='utf-8') as f:
+                        f.write(original_content)
+                    os.replace(tmp_path2, path)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path2)
+                    except Exception:
+                        pass
                 return f'Error: Edit verification failed — {"; ".join(verify_errors)}. File rolled back to original. Check whitespace/indentation in your new_text.'
             # Auto-update AST index
             ext = os.path.splitext(path)[1].lower()
@@ -1237,8 +1256,19 @@ def _tool_edit_file(args):
         if count > 1:
             return f'Error: old_text found {count} times — ambiguous match. Provide more surrounding context to uniquely identify the target, or use the "replacements" array parameter for multiple specific edits.'
         new_content = content.replace(old_text, new_text)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
+        # Atomic write
+        _dir = os.path.dirname(path) or '.'
+        fd, tmp_path = tempfile.mkstemp(dir=_dir, suffix='.tmp', prefix='.phoneide_edit_')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise
         # Auto-update AST index
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
@@ -1341,6 +1371,7 @@ def _get_effective_cwd():
 
 
 def _tool_run_command(args):
+    from utils import IS_WINDOWS
     command = args['command']
     timeout = args.get('timeout', 120)
     cwd = args.get('cwd', None) or _get_effective_cwd()
@@ -1352,9 +1383,11 @@ def _tool_run_command(args):
     env = os.environ.copy()
     venv_path = config.get('venv_path', '')
     if venv_path and os.path.exists(venv_path):
-        venv_bin = os.path.join(venv_path, 'bin')
+        _bin_dir = 'Scripts' if IS_WINDOWS else 'bin'
+        venv_bin = os.path.join(venv_path, _bin_dir)
         if os.path.exists(venv_bin):
-            env['PATH'] = venv_bin + ':' + env.get('PATH', '')
+            _path_sep = ';' if IS_WINDOWS else ':'
+            env['PATH'] = venv_bin + _path_sep + env.get('PATH', '')
             env['VIRTUAL_ENV'] = venv_path
     try:
         result = subprocess.run(
@@ -1407,7 +1440,12 @@ def _tool_install_package(args):
     manager = args.get('manager', 'auto')
     config = load_config()
     if manager == 'auto':
-        manager = 'npm' if package_name.startswith('@') or not re.search(r'[a-zA-Z]-[a-zA-Z]', package_name) and os.path.exists(os.path.join(WORKSPACE, 'package.json')) else 'pip'
+        # Explicit parentheses: npm if it looks like an npm package AND package.json exists
+        manager = 'npm' if (
+            package_name.startswith('@') or
+            (not re.search(r'[a-zA-Z]-[a-zA-Z]', package_name) and
+             os.path.exists(os.path.join(WORKSPACE, 'package.json')))
+        ) else 'pip'
     if manager == 'npm':
         cmd = f'npm install {shlex_quote(package_name)}'
     else:
@@ -1426,13 +1464,17 @@ def _tool_install_package(args):
     return _truncate(f'Error installing {package_name} (exit code {r.returncode}):\n{output}')
 
 def _tool_list_packages(args):
+    from utils import IS_WINDOWS
     manager = args.get('manager', 'pip')
     config = load_config()
     if manager == 'npm':
         r = subprocess.run('npm list --depth=0 2>/dev/null', shell=True, capture_output=True, text=True, timeout=30, cwd=WORKSPACE)
         return r.stdout or 'No packages found'
     venv = config.get('venv_path', '')
-    pip = os.path.join(venv, 'bin', 'pip') if venv and os.path.exists(os.path.join(venv, 'bin', 'pip')) else 'pip3'
+    if IS_WINDOWS:
+        pip = os.path.join(venv, 'Scripts', 'pip.exe') if venv and os.path.exists(os.path.join(venv, 'Scripts', 'pip.exe')) else 'pip'
+    else:
+        pip = os.path.join(venv, 'bin', 'pip') if venv and os.path.exists(os.path.join(venv, 'bin', 'pip')) else 'pip3'
     r = subprocess.run(f'{pip} list --format=json', shell=True, capture_output=True, text=True, timeout=30)
     if r.returncode == 0:
         try:
@@ -2308,7 +2350,13 @@ def _tool_delegate_task(args):
     mode = args.get('mode', 'read').strip()
     max_iters = args.get('max_iterations', 8)
     context = args.get('context', '').strip() or None
-    return _run_subagent(task, mode=mode, max_iterations=max_iters, context=context)
+    # Load the current active LLM config so sub-agent uses the same model
+    try:
+        _cfg = load_config()
+        _llm_cfg = get_active_llm_config(_cfg)
+    except Exception:
+        _llm_cfg = None
+    return _run_subagent(task, mode=mode, max_iterations=max_iters, llm_config=_llm_cfg, context=context)
 
 def _tool_parallel_tasks(args):
     """Launch multiple sub-agents in parallel."""
@@ -2759,10 +2807,12 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         if not _knowledge_loaded:
             log_write(f'[phoneide] No .phoneide/ found in: {_phoneide_dirs_to_check}')
 
-    # Inject AST index summary if available (only once per session, then rely on tools)
+    # Inject AST index summary if available (re-inject when index changes)
     try:
-        _ast_cache_key = '_ast_injected_v2'
-        if not _get_phoneide_cache().get(_ast_cache_key) and not project_index.is_indexing and project_index.symbol_count > 0:
+        _ast_cache_key = '_ast_injected_time'
+        _last_injected_time = _get_phoneide_cache().get(_ast_cache_key, 0)
+        if (not project_index.is_indexing and project_index.symbol_count > 0
+                and project_index.last_index_time > _last_injected_time):
             symbols = project_index.get_all_symbols()
             # Show top-level symbols (no parent = module-level)
             top_symbols = {}
@@ -2786,8 +2836,8 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                 sys_prompt += '\n'.join(symbol_lines) + '\n'
                 if project_index.symbol_count > 30:
                     sys_prompt += f'  ... and {project_index.symbol_count - 30} more symbols (use find_definition to look up)\n'
-                log_write(f'[phoneide] AST index injected (one-shot): {project_index.file_count} files, {project_index.symbol_count} symbols')
-                _get_phoneide_cache()[_ast_cache_key] = True
+                log_write(f'[phoneide] AST index injected: {project_index.file_count} files, {project_index.symbol_count} symbols')
+                _get_phoneide_cache()[_ast_cache_key] = project_index.last_index_time
     except Exception as e:
         log_write(f'[phoneide] AST index injection error: {e}')
 
@@ -3442,12 +3492,14 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
 
     compressed_recent = []
     for msg in recent:
+        # Shallow copy to avoid mutating original messages list
+        msg = dict(msg)
         if msg.get('role') == 'tool':
             content = msg.get('content') or ''
             name = msg.get('name', '')
             limit = TOOL_LIMITS_GENTLE.get(name, TOOL_LIMITS_DEFAULT)
             if len(content) > limit:
-                msg = dict(msg, content=content[:limit] + f'\n[compressed: {len(content)}→{limit} chars]')
+                msg['content'] = content[:limit] + f'\n[compressed: {len(content)}→{limit} chars]'
         compressed_recent.append(msg)
 
     all_msgs = [summary_msg] + compressed_recent
@@ -3506,6 +3558,10 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
     """
     if history is None:
         history = load_chat_history()
+
+    # Reset todo list for each new conversation (prevent cross-session leakage)
+    with _active_todos['lock']:
+        _active_todos['todos'] = []
 
     user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
     history.append(user_msg)
@@ -4232,8 +4288,7 @@ def send_chat_stream():
                     if _active_task.get('cancelled'):
                         cancel_event = f"data: {json.dumps({'type': 'cancelled', 'content': 'Task cancelled by user.'})}\n\n"
                         event_queue.put(cancel_event)
-                        with _active_task['lock']:
-                            _active_task['event_buffer'].append(cancel_event)
+                        _active_task['event_buffer'].append(cancel_event)
                         break
                 event_queue.put(sse_event)
                 with _active_task['lock']:
