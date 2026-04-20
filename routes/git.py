@@ -201,7 +201,7 @@ def git_log():
         count = 20
         offset = 0
     cwd = resolve_cwd()
-    r = git_cmd(f'log --oneline --decorate -n {count} --skip {offset} --format="%H|%an|%ae|%at|%s"', cwd=cwd)
+    r = git_cmd(f'log -n {count} --skip {offset} --format="%H|%an|%ae|%at|%s"', cwd=cwd)
     if not r['ok']:
         return jsonify({'commits': [], 'error': r['stderr']})
     commits = []
@@ -537,10 +537,16 @@ def git_commit_diff():
 @bp.route('/api/git/checkout-commit', methods=['POST'])
 @handle_error
 def git_checkout_commit():
-    """Checkout a specific commit hash (detached HEAD) or a file at a commit."""
+    """Checkout a specific commit hash (detached HEAD) or a file at a commit.
+
+    If mode='reset-hard', performs git reset --hard <ref> to truly rollback.
+    If mode='preview' (default), performs git checkout <ref> (detached HEAD, view-only).
+    If filepath is provided, restores that file from the commit.
+    """
     data = request.json or {}
     ref = data.get('ref', '')
     filepath = data.get('filepath', '')
+    mode = data.get('mode', 'preview')  # 'preview' or 'reset-hard'
     cwd = resolve_cwd()
 
     if not ref:
@@ -549,11 +555,14 @@ def git_checkout_commit():
     if filepath:
         # Restore a specific file from a commit: git checkout <ref> -- <file>
         cmd = f'checkout {shlex_quote(ref)} -- {shlex_quote(filepath)}'
+    elif mode == 'reset-hard':
+        # True rollback: move branch pointer to this commit
+        cmd = f'reset --hard {shlex_quote(ref)}'
     else:
-        # Checkout the commit (detached HEAD): git checkout <ref>
+        # Preview mode (detached HEAD): git checkout <ref>
         cmd = f'checkout {shlex_quote(ref)}'
 
     r = git_cmd(cmd, cwd=cwd, timeout=120)
     if not r['ok']:
-        return jsonify({'error': r['stderr'] or 'Checkout failed'}), 500
-    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})
+        return jsonify({'error': r['stderr'] or 'Operation failed'}), 500
+    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr'], 'mode': mode})

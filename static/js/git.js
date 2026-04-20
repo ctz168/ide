@@ -746,43 +746,51 @@ const GitManager = (() => {
         }
     }
 
-    // ── API: Checkout Commit ───────────────────────────────────────
+    // ── API: Checkout / Reset to Commit ────────────────────────────
 
     /**
-     * Checkout a specific commit (detached HEAD) to go back to that version.
+     * Reset the current branch to a specific commit (true rollback).
+     * Uses git reset --hard so the branch pointer actually moves.
      * @param {string} hash - full or short commit hash
      */
     async function checkoutCommit(hash) {
+        const shortHash = hash.substring(0, 7);
+        const branchName = currentBranch || '当前分支';
+
         const confirmed = await confirmDialog(
-            '回到该版本',
-            `确定要回到版本 ${hash.substring(0, 7)} 吗？\n这将进入 detached HEAD 状态。\n之后可以用 git checkout <分支名> 回到最新版本。`
+            '⚠ 回滚到该版本',
+            `确定要将 ${branchName} 回滚到版本 ${shortHash} 吗？\n\n` +
+            `此操作会将分支指针移动到该版本，\n` +
+            `${shortHash} 之后的提交将从分支历史中移除。\n\n` +
+            `⚠ 工作区未提交的修改将全部丢失！\n` +
+            `建议先用 git stash 暂存修改。`
         );
         if (!confirmed) return;
 
-        showToast(`正在切换到 ${hash.substring(0, 7)}...`, 'info');
+        showToast(`正在回滚到 ${shortHash}...`, 'info');
 
         try {
             const gitCwd = getGitCwd();
             const resp = await fetch('/api/git/checkout-commit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ref: hash, path: gitCwd })
+                body: JSON.stringify({ ref: hash, path: gitCwd, mode: 'reset-hard' })
             });
             if (!resp.ok) {
-                const errorMsg = await parseError(resp, '切换版本失败');
+                const errorMsg = await parseError(resp, '回滚失败');
                 throw new Error(errorMsg);
             }
             const data = await resp.json();
-            gitLog(`checkout ${hash.substring(0, 7)}`, data);
-            showToast(`已切换到 ${hash.substring(0, 7)}`, 'success');
+            gitLog(`reset --hard ${shortHash}`, data);
+            showToast(`${branchName} 已回滚到 ${shortHash}`, 'success');
             await refresh();
 
             // Refresh file list
             if (window.FileManager) await window.FileManager.refresh();
             return data;
         } catch (err) {
-            showToast('切换版本失败: ' + err.message, 'error');
-            gitLogSimple(`checkout ${hash.substring(0, 7)}`, err.message);
+            showToast('回滚失败: ' + err.message, 'error');
+            gitLogSimple(`reset --hard ${shortHash}`, err.message);
         }
     }
 

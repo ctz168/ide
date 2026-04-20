@@ -1404,6 +1404,7 @@ html, body {
 
 #output-content {
     flex: 1;
+    min-height: 0;                   /* Critical: allow shrinking below content size for scroll */
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 8px;
@@ -1544,6 +1545,9 @@ html, body {
     position: relative;
     flex: 1;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;  /* allow flex children to shrink below content size */
 }
 .bpanel {
     display: none;
@@ -1551,6 +1555,7 @@ html, body {
     inset: 0;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
     z-index: 0;
     visibility: hidden;
 }
