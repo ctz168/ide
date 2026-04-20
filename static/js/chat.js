@@ -3806,6 +3806,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             searchPrev.disabled = true;
             searchNext.disabled = true;
             clearHighlights();
+            searchMatches = [];          // reset stale entries
+            searchCurrentIndex = -1;
             searchInput.focus();
         }
 
@@ -3962,13 +3964,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // Remove all highlight marks from DOM and restore plain text
             const container = document.getElementById('chat-messages');
             if (!container) return;
-            const marks = container.querySelectorAll('.chat-search-match');
-            for (const mark of marks) {
-                const text = document.createTextNode(mark.textContent);
-                mark.parentNode.replaceChild(text, mark);
+            try {
+                const marks = container.querySelectorAll('.chat-search-match');
+                for (const mark of marks) {
+                    if (!mark.parentNode) continue; // already detached (e.g., by streaming update)
+                    const text = document.createTextNode(mark.textContent);
+                    mark.parentNode.replaceChild(text, mark);
+                }
+                // Normalize: merge adjacent text nodes back together
+                container.normalize();
+            } catch (e) {
+                console.warn('[chat-search] clearHighlights error:', e);
             }
-            // Also remove current class from any leftover
-            container.querySelectorAll('.chat-search-match.current').forEach(el => el.classList.remove('current'));
             _originalTextNodes = [];
         }
 
