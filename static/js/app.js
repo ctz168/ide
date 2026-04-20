@@ -419,6 +419,103 @@ const AppManager = (() => {
     };
     window.RunConfig = RunConfig;
 
+    // ── Run Button Context Menu ─────────────────────────────────
+    function showRunFileMenu(evt) {
+        // Remove any existing menu first
+        document.querySelectorAll('.run-context-menu').forEach(m => m.remove());
+
+        const menu = document.createElement('div');
+        menu.className = 'context-menu run-context-menu';
+
+        const currentRunFile = RunConfig.getRunFile();
+        const currentEditorFile = window.EditorManager ? EditorManager.getCurrentFile() : '';
+
+        // Header: show current run file
+        const header = document.createElement('div');
+        header.style.cssText = 'padding:8px 12px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        header.textContent = currentRunFile ? `当前运行: ${currentRunFile.split('/').pop()}` : '当前运行: 未设置';
+        menu.appendChild(header);
+
+        // Option 1: Use current editor file
+        if (currentEditorFile && currentEditorFile !== currentRunFile) {
+            const btn1 = document.createElement('button');
+            btn1.textContent = `切换到: ${currentEditorFile.split('/').pop()}`;
+            btn1.title = currentEditorFile;
+            btn1.addEventListener('click', () => {
+                RunConfig.setRunFile(currentEditorFile);
+                menu.remove();
+                showToast(`运行文件已切换为: ${currentEditorFile.split('/').pop()}`, 'success');
+            });
+            menu.appendChild(btn1);
+        }
+
+        // Option 2: Choose from file list
+        const btn2 = document.createElement('button');
+        btn2.textContent = '📁 选择其他文件...';
+        btn2.addEventListener('click', async () => {
+            menu.remove();
+            try {
+                const chosen = await showFilePickerDialog('选择运行文件');
+                if (chosen) {
+                    RunConfig.setRunFile(chosen);
+                    showToast(`运行文件已切换为: ${chosen.split('/').pop()}`, 'success');
+                }
+            } catch (err) {
+                showToast('获取文件列表失败', 'error');
+            }
+        });
+        menu.appendChild(btn2);
+
+        // Option 3: Clear run file
+        if (currentRunFile) {
+            const btn3 = document.createElement('button');
+            btn3.className = 'danger';
+            btn3.textContent = '✕ 清除运行文件';
+            btn3.addEventListener('click', () => {
+                RunConfig.clearRunFile();
+                menu.remove();
+                showToast('运行文件已清除，下次将使用当前编辑器文件', 'info');
+            });
+            menu.appendChild(btn3);
+        }
+
+        document.body.appendChild(menu);
+
+        // Position the menu near the button
+        const btnEl = document.getElementById('btn-run');
+        const btnRect = btnEl ? btnEl.getBoundingClientRect() : null;
+        let x, y;
+        if (evt.clientX) {
+            x = evt.clientX;
+            y = evt.clientY;
+        } else if (btnRect) {
+            x = btnRect.left;
+            y = btnRect.bottom + 4;
+        } else {
+            x = 10;
+            y = 40;
+        }
+        // Keep menu within viewport
+        menu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
+        menu.style.top = Math.min(y, window.innerHeight - 160) + 'px';
+
+        // Auto-dismiss
+        setTimeout(() => {
+            document.addEventListener('click', function dismiss(e) {
+                if (!menu.contains(e.target)) {
+                    menu.remove();
+                    document.removeEventListener('click', dismiss);
+                }
+            });
+            document.addEventListener('touchstart', function dismiss(e) {
+                if (!menu.contains(e.target)) {
+                    menu.remove();
+                    document.removeEventListener('touchstart', dismiss);
+                }
+            });
+        }, 10);
+    }
+
     // ── Touch-Friendly Button Binding (Android WebView fix) ──
     // In Android WebView, click events are unreliable on buttons inside
     // transform-animated sidebar panels. We use touchend as the primary
@@ -956,7 +1053,40 @@ const AppManager = (() => {
             if (window.EditorManager) EditorManager.redo();
         });
         // Run
-        document.getElementById('btn-run').addEventListener('click', async () => {
+        const runBtn = document.getElementById('btn-run');
+
+        // Long-press / Right-click on run button → show run file menu
+        let _runBtnLongPressTimer = null;
+        let _runBtnLongPressed = false;
+
+        runBtn.addEventListener('touchstart', (e) => {
+            _runBtnLongPressed = false;
+            _runBtnLongPressTimer = setTimeout(() => {
+                _runBtnLongPressed = true;
+                showRunFileMenu(e.touches[0] || e);
+            }, 500);
+        }, { passive: true });
+
+        runBtn.addEventListener('touchmove', () => {
+            clearTimeout(_runBtnLongPressTimer);
+        }, { passive: true });
+
+        runBtn.addEventListener('touchend', (e) => {
+            clearTimeout(_runBtnLongPressTimer);
+            if (_runBtnLongPressed) {
+                e.preventDefault();
+                _runBtnLongPressed = false;
+            }
+        });
+
+        runBtn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showRunFileMenu(e);
+        });
+
+        runBtn.addEventListener('click', async () => {
+            // Skip if this click was synthesized after a long-press
+            if (_runBtnLongPressed) return;
             if (!window.TerminalManager) return;
             const compiler = document.getElementById('compiler-select');
             const compilerVal = compiler ? compiler.value : 'python3';
