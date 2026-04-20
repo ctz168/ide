@@ -1,4 +1,29 @@
 ---
+Task ID: phoneide-knowledge-fix
+Agent: Main
+Task: 修复 .phoneide/ 项目知识注入不生效的 5 个根因
+
+Work Log:
+- 发现 5 个问题导致 .phoneide/ 项目知识从不被注入系统提示词:
+  1. **变量作用域 Bug (致命)**: `project_dir` 在 `if project:` 块内定义 (line 2833), 但在外层 line 2875 的 `.phoneide/` 查找中被引用. 如果外层 try 失败, NameError 被 `except Exception: pass` 静默吞掉
+  2. **AST 段同类 Bug**: AST 注入段引用了不存在的 `ws` 变量 (应为 `_ws`)
+  3. **零日志**: `log_write` 从未 import, 整个注入过程完全黑盒
+  4. **静默吞错**: 3 处 `except Exception: pass` 将所有错误吞掉, 用户无法排查
+  5. **路径查找范围不足**: 只检查 `project_dir/.phoneide/` 和 `ws/.phoneide/`, PhoneIDE 自身开发时 SERVER_DIR 的父目录不在查找范围内
+- 修复方案:
+  1. 重构变量作用域: 在函数顶部预定义 `_ws`, `_project`, `_project_dir`, 始终有值
+  2. 多级目录查找: project_dir → workspace → SERVER_DIR's parent (自动找到 PhoneIDE 源码目录的 .phoneide/)
+  3. 全量添加日志: 每个 .phoneide/ 查找、加载、错误都有 log_write 记录
+  4. 替换所有 `except Exception: pass` 为 `except Exception as e: log_write(...)`
+  5. 添加前端可见 SSE 事件: 在 agent loop 开始前 yield thinking 事件, 显示 "📂 .phoneide/ loaded: rules.md, architecture.md, conventions.md" 或 "⚠️ .phoneide/ not found"
+- import log_write: from utils import ... log_write
+
+Stage Summary:
+- 文件: routes/chat.py
+- 关键改动: _build_api_messages() 函数完全重构变量作用域 + 多路径查找 + 全量日志 + SSE 通知
+- 现在用户可以在 thinking 消息中看到 .phoneide/ 是否加载成功
+
+---
 Task ID: proxy-redirect-v2-fix
 Agent: Main
 Task: 修复预览代理 JS 不加载 — 彻底重写重定向处理策略

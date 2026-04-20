@@ -41,6 +41,7 @@ from utils import (
     WORKSPACE, SERVER_DIR,
     get_file_type, shlex_quote,
     get_system_info, IS_WINDOWS, get_default_shell,
+    log_write,
 )
 from routes.git import git_cmd
 from routes.browser import create_browser_command, wait_browser_result
@@ -2817,11 +2818,26 @@ def _build_api_messages(messages, llm_config):
         sys_prompt = DEFAULT_SYSTEM_PROMPT
 
     # Inject project-aware workspace info and system environment
+    # Pre-initialize fallback values in case config loading fails
+    _ws = WORKSPACE
+    _project = None
+    _project_dir = os.path.realpath(WORKSPACE)
+
     try:
         from utils import load_config, get_system_info, IS_WINDOWS, get_default_shell, get_default_compiler
         config = load_config()
-        project = config.get('project', None)
-        ws = config.get('workspace', WORKSPACE)
+        _project = config.get('project', None)
+        _ws = config.get('workspace', WORKSPACE)
+
+        # Determine effective project directory (always defined, no scope issues)
+        if _project:
+            candidate = os.path.realpath(os.path.join(_ws, _project))
+            if os.path.isdir(candidate):
+                _project_dir = candidate
+            else:
+                _project_dir = os.path.realpath(_ws)
+        else:
+            _project_dir = os.path.realpath(_ws)
 
         # System environment info
         sys_env_info = f'## System Environment\n{get_system_info()}\nDefault shell: {get_default_shell()}\nDefault Python: {get_default_compiler()}\n'
@@ -2829,41 +2845,29 @@ def _build_api_messages(messages, llm_config):
             sys_env_info += 'Note: This is a Windows system. Use Windows-compatible commands (cmd.exe/PowerShell). Use backslashes for paths in shell commands, forward slashes for file operations in code.\n'
 
         # Always show project directory and workspace root clearly
-        if project:
-            project_dir = os.path.realpath(os.path.join(ws, project))
-            if os.path.isdir(project_dir):
-                workspace_info = (
-                    f'## Current Project & Workspace\n'
-                    f'- Project name: {project}\n'
-                    f'- Project directory (absolute): {project_dir}\n'
-                    f'- Workspace root: {ws}\n'
-                    f'- Server directory: {SERVER_DIR}\n'
-                    f'- All file operations should be scoped to the project directory: {project_dir}'
-                )
-            else:
-                # project path invalid — treat workspace as project directory
-                workspace_info = (
-                    f'## Current Workspace\n'
-                    f'- Project directory (absolute): {os.path.realpath(ws)}\n'
-                    f'- Workspace root: {ws}\n'
-                    f'- Server directory: {SERVER_DIR}\n'
-                    f'- All file operations should be scoped to the project directory: {os.path.realpath(ws)}'
-                )
+        if _project and os.path.isdir(os.path.join(_ws, _project)):
+            workspace_info = (
+                f'## Current Project & Workspace\n'
+                f'- Project name: {_project}\n'
+                f'- Project directory (absolute): {_project_dir}\n'
+                f'- Workspace root: {_ws}\n'
+                f'- Server directory: {SERVER_DIR}\n'
+                f'- All file operations should be scoped to the project directory: {_project_dir}'
+            )
         else:
-            # No project selected — workspace IS the project directory
             workspace_info = (
                 f'## Current Workspace\n'
-                f'- Project directory (absolute): {os.path.realpath(ws)}\n'
-                f'- Workspace root: {ws}\n'
+                f'- Project directory (absolute): {_project_dir}\n'
+                f'- Workspace root: {_ws}\n'
                 f'- Server directory: {SERVER_DIR}\n'
-                f'- All file operations should be scoped to the project directory: {os.path.realpath(ws)}'
+                f'- All file operations should be scoped to the project directory: {_project_dir}'
             )
-    except Exception:
-        from utils import WORKSPACE, SERVER_DIR
+    except Exception as e:
+        log_write(f'[phoneide] Error loading workspace config: {e}')
         sys_env_info = '## System Environment\nOS: Unknown\n'
         workspace_info = (
             f'## Current Workspace\n'
-            f'- Project directory (absolute): {os.path.realpath(WORKSPACE)}\n'
+            f'- Project directory (absolute): {_project_dir}\n'
             f'- Server directory: {SERVER_DIR}'
         )
 
@@ -2871,9 +2875,24 @@ def _build_api_messages(messages, llm_config):
     sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
 
     # Inject project knowledge from .phoneide/ directory (like CLAUDE.md)
-    try:
-        phoneide_dir = os.path.join(project_dir if project and os.path.isdir(os.path.join(ws, project)) else ws, '.phoneide')
-        if os.path.isdir(phoneide_dir):
+    # Check multiple directories: project_dir, workspace, and SERVER_DIR's parent
+    _knowledge_loaded = []  # track which files were loaded (for logging/SSE)
+    _phoneide_dirs_to_check = []
+    # 1. Project directory
+    if _project_dir:
+        _phoneide_dirs_to_check.append(_project_dir)
+    # 2. Workspace root (if different from project_dir)
+    if os.path.realpath(_ws) != _project_dir:
+        _phoneide_dirs_to_check.append(os.path.realpath(_ws))
+    # 3. SERVER_DIR's parent (for PhoneIDE self-development)
+    _server_parent = os.path.dirname(SERVER_DIR)
+    if _server_parent not in [os.path.realpath(d) for d in _phoneide_dirs_to_check]:
+        _phoneide_dirs_to_check.append(_server_parent)
+
+    for _check_dir in _phoneide_dirs_to_check:
+        _phoneide_dir = os.path.join(_check_dir, '.phoneide')
+        if os.path.isdir(_phoneide_dir):
+            log_write(f'[phoneide] Found .phoneide/ at: {_phoneide_dir}')
             knowledge_files = [
                 ('rules.md', 'Project Rules & Guidelines'),
                 ('architecture.md', 'Project Architecture'),
@@ -2881,22 +2900,26 @@ def _build_api_messages(messages, llm_config):
             ]
             knowledge_parts = []
             for fname, title in knowledge_files:
-                fpath = os.path.join(phoneide_dir, fname)
+                fpath = os.path.join(_phoneide_dir, fname)
                 if os.path.isfile(fpath):
                     try:
                         with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read().strip()
                         if content:
                             knowledge_parts.append(f'### {title}\n{content}')
-                    except Exception:
-                        pass
+                            _knowledge_loaded.append(fname)
+                            log_write(f'[phoneide] Loaded {fname} ({len(content)} chars)')
+                    except Exception as e:
+                        log_write(f'[phoneide] Error reading {fpath}: {e}')
             if knowledge_parts:
                 sys_prompt += '\n\n## Project Knowledge (from .phoneide/)\n'
                 sys_prompt += 'The following project-specific context was loaded from .phoneide/ files. '
                 sys_prompt += 'Use this information to follow project conventions and understand the architecture.\n\n'
                 sys_prompt += '\n\n'.join(knowledge_parts) + '\n'
-    except Exception:
-        pass
+            break  # Use the first .phoneide/ directory found
+
+    if not _knowledge_loaded:
+        log_write(f'[phoneide] No .phoneide/ found in: {_phoneide_dirs_to_check}')
 
     # Inject AST index summary if available
     try:
@@ -2907,7 +2930,7 @@ def _build_api_messages(messages, llm_config):
             for name, entries in symbols.items():
                 for fp, d in entries:
                     if not d.get('parent'):
-                        rel = os.path.relpath(fp, ws)
+                        rel = os.path.relpath(fp, _ws)  # Fixed: use _ws instead of undefined ws
                         top_symbols.setdefault(name, []).append((rel, d['kind'], d['line']))
             # Build compact summary
             symbol_lines = []
@@ -2924,8 +2947,9 @@ def _build_api_messages(messages, llm_config):
                 sys_prompt += '\n'.join(symbol_lines[:80]) + '\n'
                 if len(symbol_lines) > 80:
                     sys_prompt += f'  ... and {len(symbol_lines) - 80} more symbols\n'
-    except Exception:
-        pass
+                log_write(f'[phoneide] AST index injected: {project_index.file_count} files, {project_index.symbol_count} symbols')
+    except Exception as e:
+        log_write(f'[phoneide] AST index injection error: {e}')
 
     api_messages = [{'role': 'system', 'content': sys_prompt}]
     for msg in messages:
@@ -3731,6 +3755,32 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
     save_chat_history(history)
     if conv_id:
         save_conversation(conv_id, history)
+
+    # Check and report .phoneide/ project knowledge loading status
+    try:
+        from utils import load_config as _load_cfg
+        _cfg = _load_cfg()
+        _ws_check = _cfg.get('workspace', WORKSPACE)
+        _prj_check = _cfg.get('project', None)
+        _pdir_check = os.path.join(_ws_check, _prj_check) if _prj_check else _ws_check
+        if not os.path.isdir(_pdir_check):
+            _pdir_check = _ws_check
+        _phoneide_check = os.path.join(_pdir_check, '.phoneide')
+        if not os.path.isdir(_phoneide_check):
+            _phoneide_check = os.path.join(os.path.dirname(SERVER_DIR), '.phoneide')
+        if os.path.isdir(_phoneide_check):
+            _md_files = [f for f in ['rules.md', 'architecture.md', 'conventions.md'] if os.path.isfile(os.path.join(_phoneide_check, f))]
+            if _md_files:
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'\U0001f4c2 .phoneide/ loaded: {', '.join(_md_files)}'})}\n\n"
+                log_write(f'[phoneide] SSE: .phoneide/ loaded from {_phoneide_check}: {_md_files}')
+            else:
+                yield f"data: {json.dumps({'type': 'thinking', 'content': '\u26a0\ufe0f .phoneide/ exists but has no content files'})}\n\n"
+                log_write(f'[phoneide] SSE: .phoneide/ empty at {_phoneide_check}')
+        else:
+            yield f"data: {json.dumps({'type': 'thinking', 'content': '\u26a0\ufe0f .phoneide/ not found — no project knowledge loaded'})}\n\n"
+            log_write(f'[phoneide] SSE: .phoneide/ not found, checked {_pdir_check} and {os.path.dirname(SERVER_DIR)}')
+    except Exception as _e:
+        log_write(f'[phoneide] SSE check error: {_e}')
 
     final_content = ''
     total_iterations = 0

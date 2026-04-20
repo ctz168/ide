@@ -30,6 +30,12 @@ const ChatManager = (() => {
     let sseConnectionAlive = false;     // whether the SSE connection is currently alive
     let sseConnectionLostWhileHidden = false; // set to true if SSE dies while page is hidden
 
+    // ── Chat Search State ──────────────────────────────────────────
+    let searchMatches = [];             // array of {el, mark} for each match
+    let searchCurrentIndex = -1;        // current highlighted match index
+    let searchVisible = false;          // whether search bar is shown
+    let _originalTextNodes = [];        // text nodes saved before highlighting (for cleanup)
+
     // ── Constants ──────────────────────────────────────────────────
     const MSG_BACKUP_KEY = 'phoneide_chat_backup'; // localStorage key for crash recovery
     const MSG_BACKUP_INTERVAL = 3000; // save backup every 3s during streaming
@@ -3763,6 +3769,238 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 e.preventDefault();
                 showHistoryDialog();
             });
+        }
+
+        // ── Chat Search ──────────────────────────────────────────────
+        const searchBtn = document.getElementById('chat-search-btn');
+        const searchBar = document.getElementById('chat-search-bar');
+        const searchInput = document.getElementById('chat-search-input');
+        const searchCount = document.getElementById('chat-search-count');
+        const searchPrev = document.getElementById('chat-search-prev');
+        const searchNext = document.getElementById('chat-search-next');
+        const searchClose = document.getElementById('chat-search-close');
+
+        if (searchBtn) {
+            searchBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                toggleSearchBar();
+            });
+        }
+
+        function toggleSearchBar() {
+            if (searchVisible) {
+                closeSearch();
+            } else {
+                openSearch();
+            }
+        }
+
+        function openSearch() {
+            searchVisible = true;
+            searchBar.classList.remove('hidden');
+            searchInput.value = '';
+            searchCount.textContent = '';
+            searchPrev.disabled = true;
+            searchNext.disabled = true;
+            clearHighlights();
+            searchInput.focus();
+        }
+
+        function closeSearch() {
+            searchVisible = false;
+            searchBar.classList.add('hidden');
+            clearHighlights();
+            searchMatches = [];
+            searchCurrentIndex = -1;
+        }
+
+        if (searchClose) {
+            searchClose.addEventListener('click', (e) => {
+                e.preventDefault();
+                closeSearch();
+            });
+        }
+
+        // Search on Enter key
+        if (searchInput) {
+            searchInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        // Shift+Enter → previous match
+                        navigateSearch(-1);
+                    } else {
+                        // Enter → perform search (first time) or next match
+                        if (searchMatches.length === 0) {
+                            doSearch(searchInput.value);
+                        } else {
+                            navigateSearch(1);
+                        }
+                    }
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeSearch();
+                }
+            });
+            // Also search on input change (debounced for live feedback)
+            let _searchDebounce = null;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(_searchDebounce);
+                _searchDebounce = setTimeout(() => {
+                    if (searchInput.value.trim()) {
+                        doSearch(searchInput.value);
+                    } else {
+                        clearHighlights();
+                        searchMatches = [];
+                        searchCurrentIndex = -1;
+                        searchCount.textContent = '';
+                        searchPrev.disabled = true;
+                        searchNext.disabled = true;
+                    }
+                }, 300);
+            });
+        }
+
+        if (searchPrev) {
+            searchPrev.addEventListener('click', () => navigateSearch(-1));
+        }
+        if (searchNext) {
+            searchNext.addEventListener('click', () => navigateSearch(1));
+        }
+
+        function doSearch(query) {
+            query = query.trim();
+            if (!query) {
+                clearHighlights();
+                searchMatches = [];
+                searchCurrentIndex = -1;
+                searchCount.textContent = '';
+                searchPrev.disabled = true;
+                searchNext.disabled = true;
+                return;
+            }
+
+            clearHighlights();
+            searchMatches = [];
+            searchCurrentIndex = -1;
+
+            const container = document.getElementById('chat-messages');
+            if (!container) return;
+
+            // Walk all text nodes within chat-messages and highlight matches
+            const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+                acceptNode(node) {
+                    // Skip text inside search bar, input, or script/style tags
+                    const parent = node.parentElement;
+                    if (!parent) return NodeFilter.FILTER_REJECT;
+                    if (parent.closest('#chat-search-bar') || parent.closest('input') ||
+                        parent.closest('script') || parent.closest('style')) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    if (node.textContent.length === 0) return NodeFilter.FILTER_REJECT;
+                    return NodeFilter.FILTER_ACCEPT;
+                }
+            });
+
+            const allTextNodes = [];
+            while (walker.nextNode()) allTextNodes.push(walker.currentNode);
+
+            // Case-insensitive search
+            const queryLower = query.toLowerCase();
+
+            for (const textNode of allTextNodes) {
+                const text = textNode.textContent;
+                const textLower = text.toLowerCase();
+                let idx = textLower.indexOf(queryLower);
+                if (idx === -1) continue;
+
+                // Save original text for restore
+                _originalTextNodes.push({ node: textNode, text: text });
+
+                // Build new fragment with highlighted spans
+                const frag = document.createDocumentFragment();
+                let lastIdx = 0;
+                while (idx !== -1) {
+                    // Text before match
+                    if (idx > lastIdx) {
+                        frag.appendChild(document.createTextNode(text.substring(lastIdx, idx)));
+                    }
+                    // Highlighted match
+                    const mark = document.createElement('mark');
+                    mark.className = 'chat-search-match';
+                    mark.textContent = text.substring(idx, idx + query.length);
+                    frag.appendChild(mark);
+                    searchMatches.push({ el: mark, node: textNode });
+
+                    lastIdx = idx + query.length;
+                    idx = textLower.indexOf(queryLower, lastIdx);
+                }
+                // Remaining text after last match
+                if (lastIdx < text.length) {
+                    frag.appendChild(document.createTextNode(text.substring(lastIdx)));
+                }
+                textNode.parentNode.replaceChild(frag, textNode);
+            }
+
+            // Update count display
+            if (searchMatches.length > 0) {
+                searchCurrentIndex = 0;
+                searchMatches[0].el.classList.add('current');
+                updateSearchCount();
+                scrollToMatch(0);
+            } else {
+                searchCount.textContent = '0/0';
+                searchPrev.disabled = true;
+                searchNext.disabled = true;
+            }
+        }
+
+        function clearHighlights() {
+            // Restore original text nodes
+            for (const { node, text } of _originalTextNodes) {
+                if (node && node.parentNode) {
+                    node.textContent = text;
+                }
+            }
+            _originalTextNodes = [];
+        }
+
+        function navigateSearch(direction) {
+            if (searchMatches.length === 0) return;
+
+            // Remove current highlight
+            if (searchCurrentIndex >= 0 && searchCurrentIndex < searchMatches.length) {
+                searchMatches[searchCurrentIndex].el.classList.remove('current');
+            }
+
+            // Calculate new index with wrapping
+            searchCurrentIndex += direction;
+            if (searchCurrentIndex >= searchMatches.length) searchCurrentIndex = 0;
+            if (searchCurrentIndex < 0) searchCurrentIndex = searchMatches.length - 1;
+
+            // Highlight new current
+            searchMatches[searchCurrentIndex].el.classList.add('current');
+            updateSearchCount();
+            scrollToMatch(searchCurrentIndex);
+        }
+
+        function updateSearchCount() {
+            const total = searchMatches.length;
+            const current = searchCurrentIndex + 1;
+            searchCount.textContent = total > 0 ? `${current}/${total}` : '';
+            searchPrev.disabled = total <= 1;
+            searchNext.disabled = total <= 1;
+        }
+
+        function scrollToMatch(index) {
+            if (index < 0 || index >= searchMatches.length) return;
+            const el = searchMatches[index].el;
+            // Temporarily disable auto-scroll
+            const prevAutoScroll = autoScrollEnabled;
+            autoScrollEnabled = false;
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Restore auto-scroll after a short delay
+            setTimeout(() => { autoScrollEnabled = prevAutoScroll; }, 1000);
         }
 
         // Mode toggle

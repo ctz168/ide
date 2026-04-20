@@ -335,10 +335,18 @@
             <h3>🤖 AI 助手</h3>
             <div>
                 <button id="chat-new-chat" title="新建对话">📝</button>
-                <button id="chat-settings-btn" title="LLM设置">⚙️</button>
                 <button id="chat-history-btn" title="历史会话">📋</button>
+                <button id="chat-search-btn" title="搜索聊天记录">🔍</button>
+                <button id="chat-settings-btn" title="LLM设置">⚙️</button>
                 <button id="close-right">✕</button>
             </div>
+        </div>
+        <div id="chat-search-bar" class="chat-search-bar hidden">
+            <input type="text" id="chat-search-input" placeholder="搜索聊天记录..." />
+            <span id="chat-search-count" class="chat-search-count"></span>
+            <button id="chat-search-prev" title="上一个匹配">▲</button>
+            <button id="chat-search-next" title="下一个匹配">▼</button>
+            <button id="chat-search-close" title="关闭搜索">✕</button>
         </div>
         <div id="chat-messages"></div>
         <div id="chat-input-area">
