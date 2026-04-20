@@ -2825,6 +2825,10 @@ def _call_llm_stream_raw(messages, llm_config):
                         if fr:
                             delta['_finish_reason'] = fr
                             accumulated_finish_reason = fr
+                        # Pass through reasoning_content for DeepSeek/QwQ/reasoning models
+                        # The delta dict may contain 'reasoning_content' field
+                        if not delta.get('content') and 'reasoning_content' in delta:
+                            delta['_reasoning'] = True
                         yield delta
                 except json.JSONDecodeError:
                     continue
@@ -2840,6 +2844,8 @@ def _call_llm_stream_raw(messages, llm_config):
                         fr = choices[0].get('finish_reason')
                         if fr:
                             delta['_finish_reason'] = fr
+                        if not delta.get('content') and 'reasoning_content' in delta:
+                            delta['_reasoning'] = True
                         yield delta
                 except (json.JSONDecodeError, KeyError):
                     pass
@@ -3403,11 +3409,24 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     current_llm_url = '(unknown)'
 
                 finish_reason = None
+                reasoning_text = ''  # accumulate reasoning/thinking content
                 for delta in _call_llm_stream_raw(context, llm_config):
                     # Capture finish_reason
                     fr = delta.get('_finish_reason')
                     if fr:
                         finish_reason = fr
+
+                    # Handle reasoning_content (DeepSeek-R1, QwQ, etc.)
+                    reasoning_chunk = delta.get('reasoning_content')
+                    if reasoning_chunk:
+                        reasoning_text += reasoning_chunk
+                        yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_chunk})}\n\n"
+                        continue  # Skip further processing for reasoning-only chunks
+
+                    # If we had reasoning and now we're getting content, signal reasoning end
+                    if reasoning_text and content_chunk and not delta.get('_reasoning_sent'):
+                        yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
+                        delta['_reasoning_sent'] = True
 
                     # Handle text content
                     content_chunk = delta.get('content')
@@ -3444,6 +3463,10 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 for idx, tc_entry in enumerate(current_tool_calls):
                     if idx in current_args_buffer:
                         tc_entry['function']['arguments'] = current_args_buffer[idx]
+
+                # If reasoning was accumulated but never followed by content, signal end now
+                if reasoning_text:
+                    yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
 
                 # Build the complete response message
                 response_message = {

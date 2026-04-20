@@ -13,6 +13,9 @@ const ChatManager = (() => {
     let currentAbortController = null; // for aborting SSE streams
     let currentStreamEl = null;       // current streaming message element
     let streamBuffer = '';            // buffer for accumulating streamed text
+    let reasoningEl = null;           // reasoning/thinking collapsible element
+    let reasoningBuffer = '';         // buffer for accumulating reasoning text
+    let reasoningVisible = false;     // whether reasoning section is visible
     let autoScrollEnabled = true;     // auto-scroll state
     let turnIndicator = null;         // turn X/Y element reference
     let iterationCount = 0;           // agent iteration counter
@@ -932,6 +935,72 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
+     * Start or append to the reasoning/thinking block.
+     * Creates a collapsible "💭 Thinking..." section in the chat.
+     */
+    function appendReasoningChunk(chunk) {
+        if (!chunk) return;
+        reasoningBuffer += chunk;
+
+        const container = document.getElementById('chat-messages');
+        if (!container) return;
+
+        if (!reasoningEl) {
+            // Create reasoning wrapper element
+            reasoningEl = document.createElement('div');
+            reasoningEl.className = 'chat-msg reasoning-block';
+
+            const header = document.createElement('div');
+            header.className = 'reasoning-header';
+            header.innerHTML = '<span class="reasoning-icon">💭</span><span class="reasoning-title">Thinking...</span><span class="reasoning-toggle">▾</span>';
+
+            const body = document.createElement('div');
+            body.className = 'reasoning-body';
+            body.style.display = 'block';
+
+            reasoningEl.appendChild(header);
+            reasoningEl.appendChild(body);
+
+            // Toggle collapse/expand
+            header.addEventListener('click', () => {
+                const isHidden = body.style.display === 'none';
+                body.style.display = isHidden ? 'block' : 'none';
+                reasoningEl.querySelector('.reasoning-toggle').textContent = isHidden ? '▾' : '▸';
+            });
+
+            container.appendChild(reasoningEl);
+            reasoningVisible = true;
+        }
+
+        // Update content (throttled innerHTML for performance)
+        const body = reasoningEl.querySelector('.reasoning-body');
+        if (body) {
+            body.textContent = reasoningBuffer;
+        }
+        scrollToBottom();
+    }
+
+    /**
+     * Finalize the reasoning block (model finished thinking, now producing answer)
+     */
+    function finalizeReasoning() {
+        if (!reasoningEl) return;
+        const header = reasoningEl.querySelector('.reasoning-title');
+        if (header) {
+            // Show token count or just "Thought for Xs"
+            header.textContent = `Thought ${reasoningBuffer.length} chars`;
+        }
+        // Auto-collapse after finalizing (keep it tidy)
+        const body = reasoningEl.querySelector('.reasoning-body');
+        const toggle = reasoningEl.querySelector('.reasoning-toggle');
+        if (body) body.style.display = 'none';
+        if (toggle) toggle.textContent = '▸';
+        reasoningEl = null;
+        reasoningBuffer = '';
+        reasoningVisible = false;
+    }
+
+    /**
      * Finalize the current streaming message
      */
     function finalizeStreamMessage() {
@@ -1267,8 +1336,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'reasoning') {
+                        hideTyping();
+                        setExecuteStatus('💭 Reasoning...');
+                        appendReasoningChunk(parsed.content || '');
+                    } else if (eventType === 'reasoning_end') {
+                        finalizeReasoning();
+                        setExecuteStatus('Generating...');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('已取消');
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -1277,6 +1354,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('');
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -1647,8 +1725,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'reasoning') {
+                        // Model reasoning/thinking content (DeepSeek-R1, QwQ, etc.)
+                        hideTyping();
+                        setExecuteStatus('💭 Reasoning...');
+                        appendReasoningChunk(parsed.content || '');
+                    } else if (eventType === 'reasoning_end') {
+                        // Model finished reasoning, now producing answer
+                        finalizeReasoning();
+                        setExecuteStatus('Generating...');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('已取消');
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -1658,6 +1746,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         // Error occurred
                         hasError = true;
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('');  // clear retry status
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -1989,8 +2078,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'reasoning') {
+                        hideTyping();
+                        setExecuteStatus('💭 Reasoning...');
+                        appendReasoningChunk(parsed.content || '');
+                    } else if (eventType === 'reasoning_end') {
+                        finalizeReasoning();
+                        setExecuteStatus('Generating...');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('已取消');
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -1999,6 +2096,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
+                        finalizeReasoning();
                         setExecuteStatus('');
                         if (currentStreamEl && streamBuffer) {
                             finalizeStreamMessage();
@@ -2865,6 +2963,57 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             .tool-toggle-btn:active { transform: scale(0.95); }
             .tool-progress {
                 border-left: 2px solid var(--accent);
+            }
+
+            /* ── Reasoning / Thinking Block ── */
+            .reasoning-block {
+                padding: 4px 10px;
+                margin: 2px 0;
+            }
+            .reasoning-header {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 6px;
+                cursor: pointer;
+                border-radius: var(--radius-sm);
+                user-select: none;
+                -webkit-user-select: none;
+                transition: background 0.15s;
+            }
+            .reasoning-header:hover {
+                background: var(--bg-hover);
+            }
+            .reasoning-header:active {
+                background: var(--bg-active);
+            }
+            .reasoning-icon {
+                font-size: 13px;
+                flex-shrink: 0;
+            }
+            .reasoning-title {
+                font-size: 11px;
+                color: var(--text-muted);
+                flex: 1;
+            }
+            .reasoning-toggle {
+                font-size: 11px;
+                color: var(--text-muted);
+                flex-shrink: 0;
+                width: 14px;
+                text-align: center;
+            }
+            .reasoning-body {
+                padding: 6px 8px 6px 24px;
+                font-family: var(--font-mono);
+                font-size: 11px;
+                color: var(--text-secondary);
+                line-height: 1.5;
+                white-space: pre-wrap;
+                word-break: break-word;
+                max-height: 400px;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
             }
 
             /* ── Chat Role Badge ── */
