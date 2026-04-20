@@ -3910,18 +3910,11 @@ def stop_task():
     # Also stop any running terminal process that was started by the agent
     # The agent loop will check _active_task['cancelled'] and break out
     # Force-stop any running processes in utils.running_processes
-    from utils import running_processes
+    from utils import running_processes, stop_process
     for pid, info in list(running_processes.items()):
         if info.get('running'):
             try:
-                proc = info.get('process')
-                if proc:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=3)
-                    except:
-                        proc.kill()
-                info['running'] = False
+                stop_process(pid)
             except Exception:
                 pass
 

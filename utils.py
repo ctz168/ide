@@ -13,6 +13,7 @@ import shutil
 import traceback
 import uuid
 import fnmatch
+import signal
 from pathlib import Path
 from datetime import datetime
 from functools import wraps
@@ -398,6 +399,11 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
             if IS_WINDOWS:
                 popen_kwargs['encoding'] = 'utf-8'
                 popen_kwargs['errors'] = 'replace'
+                # Create new process group on Windows so we can kill the entire tree
+                popen_kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                # On Linux/macOS, start a new session (process group) so we can killpg
+                popen_kwargs['start_new_session'] = True
             proc = subprocess.Popen(cmd, **popen_kwargs)
             running_processes[proc_id]['process'] = proc
 
@@ -449,15 +455,37 @@ def stop_process(proc_id):
         if proc['process'] and proc['running']:
             proc['running'] = False
             try:
-                proc['process'].terminate()
-                proc['process'].wait(timeout=3)
-                proc['exit_code'] = proc['process'].returncode
+                os_proc = proc['process']
+                pid = os_proc.pid
+                if IS_WINDOWS:
+                    # On Windows, send CTRL_BREAK_EVENT to the process group
+                    # This gracefully stops processes like python, node, etc.
+                    try:
+                        os.kill(pid, signal.CTRL_BREAK_EVENT)
+                        os_proc.wait(timeout=3)
+                    except (OSError, subprocess.TimeoutExpired):
+                        # Fallback: kill the process tree
+                        try:
+                            os_proc.kill()
+                            os_proc.wait(timeout=2)
+                        except:
+                            pass
+                else:
+                    # On Linux/macOS, kill the entire process group
+                    # os.killpg sends signal to all processes in the group
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
+                        os_proc.wait(timeout=3)
+                    except (OSError, subprocess.TimeoutExpired):
+                        # SIGTERM didn't work, force SIGKILL the whole group
+                        try:
+                            os.killpg(os.getpgid(pid), signal.SIGKILL)
+                            os_proc.wait(timeout=2)
+                        except:
+                            pass
+                proc['exit_code'] = os_proc.returncode
             except:
-                try:
-                    proc['process'].kill()
-                    proc['exit_code'] = -9
-                except:
-                    pass
+                pass
             return True
     return False
 
