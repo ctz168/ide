@@ -4061,7 +4061,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         const label = document.createElement('span');
         label.className = 'mode-label';
-        label.textContent = '模式';
+        label.textContent = '';
 
         const select = document.createElement('select');
         select.id = 'chat-mode-select';
