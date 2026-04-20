@@ -8,7 +8,9 @@ import re
 import time
 import platform
 import shutil
+import tempfile
 import subprocess
+import hashlib
 from routes.ast_index import (extract_definitions, find_references_ast, get_file_structure,
                                project_index)
 import fnmatch
@@ -76,14 +78,15 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, and more.
 
 ## Available Tools
-You have **31 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **33 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
-### File & Code Tools (23)
+### File & Code Tools (25)
 - `read_file` / `write_file` / `edit_file` -- Read, create, or modify files
 - `list_directory` / `search_files` / `grep_code` / `glob_files` -- Browse and search the project
 - `run_command` -- Execute shell commands (Python, bash, etc.)
-- `file_info` / `create_directory` / `delete_path` -- File system operations
+- `file_info` / `create_directory` / `delete_path` / `move_file` -- File system operations
+- `append_file` -- Append content to an existing file
 - `file_structure` -- Get a tree-structured overview of a directory
 - `find_definition` / `find_references` -- Jump to symbol definition or find all usages (AST-based)
 - `git_status` / `git_diff` / `git_commit` / `git_log` / `git_checkout` -- Full Git workflow
@@ -767,6 +770,57 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'move_file',
+            'description': (
+                'Move or rename a file or directory. Creates the destination parent directory if needed. '
+                'Useful for reorganizing project structure, renaming files, or moving files between directories. '
+                'Updates the AST index automatically for source code files.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'source': {
+                        'type': 'string',
+                        'description': 'Absolute path of the file/directory to move',
+                    },
+                    'destination': {
+                        'type': 'string',
+                        'description': 'Absolute path of the destination (new name or new location)',
+                    },
+                },
+                'required': ['source', 'destination'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'append_file',
+            'description': (
+                'Append content to an existing file. The content is added at the end of the file. '
+                'A newline is automatically added if the content does not end with one. '
+                'Useful for adding entries to log files, configuration files, or data files. '
+                'For creating new files or replacing content, use write_file instead.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {
+                        'type': 'string',
+                        'description': 'Absolute path to the file to append to (must exist)',
+                    },
+                    'content': {
+                        'type': 'string',
+                        'description': 'Content to append to the file',
+                    },
+                },
+                'required': ['path', 'content'],
+            },
+        },
+    },
     # ── Preview & Debugging Tools ──
     {
         'type': 'function',
@@ -1091,8 +1145,22 @@ def _tool_write_file(args):
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        # P2-3: Atomic write — write to temp file first, then rename
+        # This prevents file corruption if the process crashes mid-write
+        _dir = os.path.dirname(path) or '.'
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=_dir, suffix='.tmp', prefix='.phoneide_write_')
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(content)
+            os.replace(tmp_path, path)  # atomic on POSIX, near-atomic on Windows
+        except Exception:
+            # Clean up temp file if replace failed
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+            raise
         # Auto-update AST index for source files
         ext = os.path.splitext(path)[1].lower()
         if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
@@ -1567,6 +1635,54 @@ def _tool_delete_path(args):
     except Exception as e:
         return f'Error deleting path: {str(e)}'
 
+def _tool_move_file(args):
+    """Move or rename a file/directory."""
+    src = _validate_path(args['source'])
+    dst = _validate_path(args['destination'])
+    if not os.path.exists(src):
+        return f'Error: Source not found: {src}'
+    try:
+        # Create destination parent directory if needed
+        dst_parent = os.path.dirname(dst)
+        if dst_parent:
+            os.makedirs(dst_parent, exist_ok=True)
+        shutil.move(src, dst)
+        # Update AST index: remove old, add new if it's a source file
+        ext_src = os.path.splitext(src)[1].lower()
+        ext_dst = os.path.splitext(dst)[1].lower()
+        if ext_src in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            try:
+                project_index.remove_file(src)
+            except Exception:
+                pass
+        if ext_dst in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            try:
+                if os.path.isfile(dst):
+                    with open(dst, 'rb') as f:
+                        project_index.index_file(dst, f.read())
+            except Exception:
+                pass
+        src_type = 'directory' if os.path.isdir(dst) else 'file'
+        return f'Moved {src_type}: {src} -> {dst}'
+    except Exception as e:
+        return f'Error moving {src} to {dst}: {e}'
+
+def _tool_append_file(args):
+    """Append content to an existing file."""
+    path = _validate_path(args['path'])
+    content = args['content']
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}. Use write_file to create new files.'
+    try:
+        with open(path, 'a', encoding='utf-8') as f:
+            if not content.endswith('\n'):
+                content += '\n'
+            f.write(content)
+        size = os.path.getsize(path)
+        return f'Appended to file: {path} (now {size} bytes)'
+    except Exception as e:
+        return f'Error appending to {path}: {e}'
+
 # ==================== Browser Debugging Tools ====================
 
 def _format_browser_result(result):
@@ -1982,6 +2098,8 @@ _WRITE_SUBAGENT_TOOLS.update({
     'install_package': _tool_install_package,
     'create_directory': _tool_create_directory,
     'delete_path': _tool_delete_path,
+    'move_file': _tool_move_file,
+    'append_file': _tool_append_file,
     'git_status': _tool_git_status,
     'git_diff': _tool_git_diff,
     'git_commit': _tool_git_commit,
@@ -2255,6 +2373,8 @@ _TOOL_HANDLERS = {
     'file_info': _tool_file_info,
     'create_directory': _tool_create_directory,
     'delete_path': _tool_delete_path,
+    'move_file': _tool_move_file,
+    'append_file': _tool_append_file,
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
     'browser_navigate': _tool_browser_navigate,
@@ -2353,6 +2473,94 @@ def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
 
     return results
 
+# ==================== System Prompt Caching & Budget ====================
+_SYSTEM_PROMPT_CACHE = {}  # {cache_key: {'prompt': str, 'tokens': int, 'time': float}}
+_SYSTEM_PROMPT_CACHE_TTL = 60  # seconds — cache the full system prompt for 60s
+_SYSTEM_PROMPT_MAX_TOKENS = 4500  # max tokens for the system prompt
+
+
+def _trim_system_prompt_to_budget(sys_prompt, max_tokens=_SYSTEM_PROMPT_MAX_TOKENS):
+    """Trim system prompt to fit within token budget.
+
+    Trimming priority (least important first):
+    1. AST index / Project Symbols section
+    2. .phoneide/ Project Knowledge section
+    3. System Environment section
+    If still too large, truncate the trailing sections.
+    """
+    estimated = _estimate_tokens(sys_prompt)
+    if estimated <= max_tokens:
+        return sys_prompt
+
+    # Strategy: remove sections from least to most important
+    sections = [
+        ('## Project Symbols', '## Project Knowledge'),
+        ('## Project Knowledge', '## Current Project'),
+        ('## System Environment', '## Current Project'),
+    ]
+
+    for section_start, next_section in sections:
+        if estimated <= max_tokens * 0.85:
+            break
+        start_idx = sys_prompt.find(section_start)
+        if start_idx == -1:
+            continue
+        end_idx = sys_prompt.find(next_section, start_idx)
+        if end_idx == -1:
+            end_idx = len(sys_prompt)
+        # Remove from section_start to just before next_section
+        removed = sys_prompt[start_idx:end_idx]
+        sys_prompt = sys_prompt[:start_idx] + sys_prompt[end_idx:]
+        estimated = _estimate_tokens(sys_prompt)
+        log_write(f'[phoneide] Trimmed system prompt section "{section_start}" ({len(removed)} chars removed, ~{estimated} tokens remaining)')
+
+    # If still too large, hard-truncate the less critical trailing content
+    if estimated > max_tokens:
+        # Keep the core DEFAULT_SYSTEM_PROMPT (usually first ~3500 chars) and trim injections
+        base_prompt_end = sys_prompt.find('\n\n## ')
+        if base_prompt_end > 0 and base_prompt_end < len(sys_prompt) * 0.7:
+            base = sys_prompt[:base_prompt_end]
+            injections = sys_prompt[base_prompt_end:]
+            inj_tokens = _estimate_tokens(injections)
+            budget_left = max_tokens - _estimate_tokens(base)
+            if inj_tokens > budget_left and budget_left > 200:
+                # Keep workspace info (always first injection), trim the rest
+                ws_end = injections.find('\n\n## ', injections.find('## Current') + 10 if '## Current' in injections else 20)
+                if ws_end > 0:
+                    ws_part = injections[:ws_end]
+                    rest = injections[ws_end:]
+                    rest_tokens = _estimate_tokens(rest)
+                    if rest_tokens > budget_left - _estimate_tokens(ws_part):
+                        rest = rest[:int((budget_left - _estimate_tokens(ws_part)) * 4)] + '\n[... trimmed due to token budget ...]\n'
+                    sys_prompt = base + ws_part + rest
+                else:
+                    sys_prompt = base + injections[:int(budget_left * 4)] + '\n[... trimmed due to token budget ...]\n'
+        else:
+            sys_prompt = sys_prompt[:int(max_tokens * 4)] + '\n[... system prompt truncated due to token budget ...]\n'
+        estimated = _estimate_tokens(sys_prompt)
+
+    log_write(f'[phoneide] System prompt trimmed to ~{estimated} tokens (budget: {max_tokens})')
+    return sys_prompt
+
+
+def _get_system_prompt_cache_key(llm_config):
+    """Build a cache key from workspace state and LLM config."""
+    try:
+        from utils import load_config
+        config = load_config()
+        ws = config.get('workspace', WORKSPACE)
+        prj = config.get('project', '')
+        # Include key parts that affect the system prompt
+        raw = f'{ws}|{prj}|{SERVER_DIR}'
+        # Include AST index state
+        raw += f'|ast:{project_index.file_count}:{project_index.symbol_count}:{project_index.last_index_time}'
+        # Include custom prompt
+        raw += f'|{llm_config.get("system_prompt", "")}'
+        return hashlib.md5(raw.encode()).hexdigest()
+    except Exception:
+        return 'error'
+
+
 # ==================== LLM Integration ====================
 def _build_api_messages(messages, llm_config, skip_system_inject=False):
     """Convert chat history to API format with system prompt.
@@ -2390,6 +2598,35 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         return api_messages
 
     # ── Main agent mode: build full system prompt with injections ──
+    # P2-6: Check cache first (60s TTL) — fast path for repeated calls
+    _sp_cache_key = _get_system_prompt_cache_key(llm_config)
+    _sp_now = time.time()
+    _sp_cached = _SYSTEM_PROMPT_CACHE.get(_sp_cache_key)
+    if _sp_cached and (_sp_now - _sp_cached['time'] < _SYSTEM_PROMPT_CACHE_TTL):
+        sys_prompt = _sp_cached['prompt']
+        log_write(f'[phoneide] Using cached system prompt (~{_sp_cached["tokens"]} tokens, age {_sp_now - _sp_cached["time"]:.0f}s)')
+        api_messages = [{'role': 'system', 'content': sys_prompt}]
+        for msg in messages:
+            role = msg.get('role', '')
+            if role == 'system':
+                continue
+            elif role == 'tool':
+                api_messages.append({
+                    'role': 'tool',
+                    'tool_call_id': msg.get('tool_call_id', 'call_default'),
+                    'content': msg.get('content', ''),
+                })
+            elif role == 'assistant' and msg.get('tool_calls'):
+                api_messages.append({
+                    'role': 'assistant',
+                    'content': msg.get('content', None),
+                    'tool_calls': msg['tool_calls'],
+                })
+            elif role in ('user', 'assistant'):
+                api_messages.append({'role': role, 'content': msg.get('content', '')})
+        return api_messages
+
+    # Cache miss — build system prompt from scratch
     custom_prompt = llm_config.get('system_prompt', '').strip()
     if custom_prompt and custom_prompt != DEFAULT_SYSTEM_PROMPT.strip():
         # User has a custom system prompt — prepend the default tool documentation
@@ -2553,6 +2790,22 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                 _get_phoneide_cache()[_ast_cache_key] = True
     except Exception as e:
         log_write(f'[phoneide] AST index injection error: {e}')
+
+    # P2-1: Trim system prompt to token budget
+    sys_prompt = _trim_system_prompt_to_budget(sys_prompt)
+
+    # P2-6: Store in cache for subsequent calls (60s TTL)
+    _sp_tokens = _estimate_tokens(sys_prompt)
+    _SYSTEM_PROMPT_CACHE[_sp_cache_key] = {
+        'prompt': sys_prompt,
+        'tokens': _sp_tokens,
+        'time': time.time(),
+    }
+    # Evict old entries (keep cache size bounded)
+    if len(_SYSTEM_PROMPT_CACHE) > 10:
+        oldest_key = min(_SYSTEM_PROMPT_CACHE, key=lambda k: _SYSTEM_PROMPT_CACHE[k]['time'])
+        del _SYSTEM_PROMPT_CACHE[oldest_key]
+    log_write(f'[phoneide] System prompt built and cached (~{_sp_tokens} tokens)')
 
     api_messages = [{'role': 'system', 'content': sys_prompt}]
     for msg in messages:
@@ -2854,15 +3107,51 @@ def _get_context_budget(llm_config):
 def _ai_summarize_messages(messages, llm_config):
     """Use the LLM to generate a concise summary of conversation messages.
     
+    P2-2: Supports incremental summarization — if an existing summary is found
+    in the messages, it's used as a base context and only new messages since
+    the summary are summarized and merged. This avoids re-summarizing the
+    entire conversation each time.
+    
     Returns summary text string, or None on failure.
     This is used by _compress_context when llm_config is provided.
     """
     if not messages or not llm_config or len(messages) < 3:
         return None
     
+    # P2-2: Find existing summary to use as base context
+    existing_summary = None
+    summary_end_idx = 0
+    for i, msg in enumerate(messages):
+        role = msg.get('role', '')
+        content = (msg.get('content') or '')
+        if role == 'user' and (content.startswith('[Previous Conversation Summary]') or
+                                content.startswith('[Conversation Summary]') or
+                                content.startswith('Earlier conversation summary')):
+            # Extract the summary text (after the prefix line)
+            for prefix in ('[Previous Conversation Summary]\n', '[Conversation Summary]\n', 'Earlier conversation summary:\n'):
+                if content.startswith(prefix):
+                    existing_summary = content[len(prefix):].strip()
+                    break
+            else:
+                existing_summary = content.strip()
+            summary_end_idx = i + 1
+            break
+    
+    # Only summarize messages after the existing summary (incremental)
+    if existing_summary and summary_end_idx < len(messages) - 2:
+        messages_to_summarize = messages[summary_end_idx:]
+        if len(messages_to_summarize) < 3:
+            # Not enough new messages to justify re-summarization
+            return existing_summary
+    elif existing_summary:
+        # Existing summary covers all messages — return as-is
+        return existing_summary
+    else:
+        messages_to_summarize = messages
+    
     # Build compact representation of messages for summarization
     compact = []
-    for msg in messages:
+    for msg in messages_to_summarize:
         role = msg.get('role', '')
         content = (msg.get('content') or '')
         name = msg.get('name', '')
@@ -2887,22 +3176,40 @@ def _ai_summarize_messages(messages, llm_config):
             compact.append(f'[Tool/{name}]: {content[:200]}')
     
     if not compact:
-        return None
+        return existing_summary
     
     conversation_text = '\n'.join(compact)
     
-    summary_prompt = (
-        "Summarize the following conversation between a user and an AI coding assistant. "
-        "Focus on:\n"
-        "1. What the user asked for (goals and requirements)\n"
-        "2. Key files modified (full file paths and what was changed)\n"
-        "3. Important commands run and their results\n"
-        "4. Errors encountered and how they were resolved\n"
-        "5. Current state of work (what is done, what remains)\n\n"
-        "Preserve all file paths, code snippets, function names, and technical details. "
-        "Be concise but complete. This summary will replace the original conversation.\n\n"
-        f"Conversation to summarize:\n{conversation_text}"
-    )
+    # Build prompt based on whether we have an existing summary
+    if existing_summary:
+        summary_prompt = (
+            "You are updating a conversation summary. Below is the existing summary followed by "
+            "NEW conversation that happened after it. Update the summary to incorporate the new information.\n\n"
+            "Focus on:\n"
+            "1. What the user asked for (goals and requirements)\n"
+            "2. Key files modified (full file paths and what was changed)\n"
+            "3. Important commands run and their results\n"
+            "4. Errors encountered and how they were resolved\n"
+            "5. Current state of work (what is done, what remains)\n\n"
+            "Preserve all file paths, code snippets, function names, and technical details. "
+            "Be concise but complete. Keep relevant older context and add new information.\n\n"
+            f"=== EXISTING SUMMARY ===\n{existing_summary}\n\n"
+            f"=== NEW CONVERSATION (to incorporate) ===\n{conversation_text}\n\n"
+            "Provide the UPDATED summary:"
+        )
+    else:
+        summary_prompt = (
+            "Summarize the following conversation between a user and an AI coding assistant. "
+            "Focus on:\n"
+            "1. What the user asked for (goals and requirements)\n"
+            "2. Key files modified (full file paths and what was changed)\n"
+            "3. Important commands run and their results\n"
+            "4. Errors encountered and how they were resolved\n"
+            "5. Current state of work (what is done, what remains)\n\n"
+            "Preserve all file paths, code snippets, function names, and technical details. "
+            "Be concise but complete. This summary will replace the original conversation.\n\n"
+            f"Conversation to summarize:\n{conversation_text}"
+        )
     
     try:
         url, headers = _get_llm_endpoint(llm_config, llm_config.get('model'))
@@ -2921,11 +3228,12 @@ def _ai_summarize_messages(messages, llm_config):
             result = json.loads(resp_body)
             summary = result.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
             if summary:
-                print(f'[AI-SUMMARY] Generated {len(summary)} char summary from {len(messages)} messages')
+                mode = 'incremental' if existing_summary else 'full'
+                print(f'[AI-SUMMARY] Generated {len(summary)} char {mode} summary from {len(messages_to_summarize)} messages')
             return summary
     except Exception as e:
         print(f'[AI-SUMMARY] Failed to generate summary: {e}')
-        return None
+        return existing_summary  # Return existing summary on failure instead of None
 
 
 # ==================== Self-Correction Loop ====================
@@ -2998,6 +3306,37 @@ def _build_self_correction_hint(failed_tools):
 def _has_tool_calls(msg):
     """Check if a message has tool calls."""
     return bool(msg and msg.get('tool_calls'))
+
+
+def _check_self_correction(context, batch_results, self_corrections):
+    """P2-5: Shared self-correction check used by both agent loops.
+
+    Checks if any tool results indicate failures and, if so, builds a
+    correction hint and appends it to context.
+
+    Args:
+        context: The conversation context list (modified in-place).
+        batch_results: List of (tool_name, args, ok, result_str) tuples.
+        self_corrections: Current self-correction counter.
+
+    Returns:
+        (updated_self_corrections, hint_or_None) tuple.
+        If hint is not None, it has already been appended to context.
+    """
+    if self_corrections >= MAX_SELF_CORRECTION_RETRIES:
+        return self_corrections, None
+
+    failed = [(n, a, r) for n, a, ok, r in batch_results
+              if not ok or _is_tool_result_error(n, r)]
+    if not failed:
+        return self_corrections, None
+
+    self_corrections += 1
+    hint = _build_self_correction_hint(failed)
+    context.append({'role': 'user', 'content': hint, 'time': datetime.now().isoformat()})
+
+    print(f'[SELF-CORRECT] #{self_corrections}: {len(failed)} tool(s) failed')
+    return self_corrections, hint
 
 def _compress_context(messages, max_tokens=None, llm_config=None):
     """Smart context compression with AI summarization and code-change preservation.
@@ -3249,15 +3588,9 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
             context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (parallel batch) ===
-            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
-                failed = [(n, a, r) for n, a, ok, r in _batch_results
-                          if not ok or _is_tool_result_error(n, r)]
-                if failed:
-                    self_corrections += 1
-                    hint = _build_self_correction_hint(failed)
-                    _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors, retrying...'})
-                    context.append({'role': 'user', 'content': hint,
-                                    'time': datetime.now().isoformat()})
+            self_corrections, _hint = _check_self_correction(context, _batch_results, self_corrections)
+            if _hint:
+                _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors, retrying...'})
         else:
             # Sequential execution (mixed read/write tools or single tool)
             _batch_results = []
@@ -3298,15 +3631,9 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                 context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (sequential batch) ===
-            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
-                failed = [(n, a, r) for n, a, ok, r in _batch_results
-                          if not ok or _is_tool_result_error(n, r)]
-                if failed:
-                    self_corrections += 1
-                    hint = _build_self_correction_hint(failed)
-                    _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), retrying...'})
-                    context.append({'role': 'user', 'content': hint,
-                                    'time': datetime.now().isoformat()})
+            self_corrections, _hint = _check_self_correction(context, _batch_results, self_corrections)
+            if _hint:
+                _emit({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors, retrying...'})
 
     # Build final assistant message for history
     final_assistant = {
@@ -3678,16 +4005,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (parallel batch) ===
-            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
-                failed = [(n, a, r) for n, a, ok, r in _batch_results
-                          if not ok or _is_tool_result_error(n, r)]
-                if failed:
-                    self_corrections += 1
-                    hint = _build_self_correction_hint(failed)
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), analyzing and retrying...'})}\n\n"
-                    context.append({'role': 'user', 'content': hint,
-                                    'time': datetime.now().isoformat()})
-                    print(f'[SELF-CORRECT] #{self_corrections}: {len(failed)} tool(s) failed in parallel batch')
+            self_corrections, _hint = _check_self_correction(context, _batch_results, self_corrections)
+            if _hint:
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(_batch_results)} tool(s), analyzing and retrying...'})}\n\n"
         else:
             # Sequential execution (mixed read/write tools or single tool)
             _batch_results = []
@@ -3734,17 +4054,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (sequential batch) ===
-            if self_corrections < MAX_SELF_CORRECTION_RETRIES:
-                failed = [(n, a, r) for n, a, ok, r in _batch_results
-                          if not ok or _is_tool_result_error(n, r)]
-                if failed:
-                    self_corrections += 1
-                    hint = _build_self_correction_hint(failed)
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors in {len(failed)} tool(s), analyzing and retrying...'})}\n\n"
-                    context.append({'role': 'user', 'content': hint,
-                                    'time': datetime.now().isoformat()})
-                    # Don't add to history — this is orchestration-level, not user conversation
-                    print(f'[SELF-CORRECT] #{self_corrections}: {len(failed)} tool(s) failed in sequential batch')
+            self_corrections, _hint = _check_self_correction(context, _batch_results, self_corrections)
+            if _hint:
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'Self-correction #{self_corrections}: Detected errors, analyzing and retrying...'})}\n\n"
 
         # Progressive save: persist history after each iteration so retry can resume
         save_chat_history(history)
