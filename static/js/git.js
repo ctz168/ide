@@ -18,20 +18,17 @@ const GitManager = (() => {
      * Returns a path relative to WORKSPACE (e.g. 'myrepo'), or '' if no project.
      */
     function getGitCwd() {
-        // Prefer project path from ProjectManager — this is the authoritative source
+        // Always use project root as git working directory.
+        // Falling back to FileManager.currentPath is dangerous because:
+        // 1. Subdirectories may have their own .git (submodules / nested repos)
+        // 2. Navigating into a subdirectory would change the git context unexpectedly
         if (window.ProjectManager) {
             const proj = window.ProjectManager.getCurrentProject();
             if (proj && proj.project) {
                 return proj.project.replace(/^\//, '');
             }
         }
-        // Fallback: use FileManager's current navigation path
-        if (window.FileManager) {
-            const cp = window.FileManager.currentPath;
-            if (cp && cp !== '') {
-                return cp;
-            }
-        }
+        // No project open — use workspace root
         return '';
     }
 
