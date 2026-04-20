@@ -73,17 +73,19 @@ _SERVER_DIR = SERVER_DIR
 RING_BUFFER_SIZE = 100
 
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
-You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
+You have access to tools that let you read/write files, execute code, search projects, manage git, and more.
 
 ## Available Tools
-You have **47 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **31 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
-### File & Code Tools (19)
+### File & Code Tools (23)
 - `read_file` / `write_file` / `edit_file` -- Read, create, or modify files
-- `list_directory` / `search_files` / `grep_code` -- Browse and search the project
+- `list_directory` / `search_files` / `grep_code` / `glob_files` -- Browse and search the project
 - `run_command` -- Execute shell commands (Python, bash, etc.)
 - `file_info` / `create_directory` / `delete_path` -- File system operations
+- `file_structure` -- Get a tree-structured overview of a directory
+- `find_definition` / `find_references` -- Jump to symbol definition or find all usages (AST-based)
 - `git_status` / `git_diff` / `git_commit` / `git_log` / `git_checkout` -- Full Git workflow
 - `install_package` / `list_packages` -- Python/npm package management
 - `web_search` / `web_fetch` -- Search the web and fetch page content
@@ -96,49 +98,18 @@ For multi-step tasks, think step by step and use tools in sequence.
 - `delegate_task` -- Launch a sub-agent for independent subtasks (supports "read" and "write" modes)
 - `parallel_tasks` -- Launch 2-4 sub-agents simultaneously for independent parallel work
 
-### Browser Debugging Tools (10)
+### Preview & Debugging Tools (4)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
-- `browser_navigate` -- Navigate the preview iframe to any URL (same-origin pages allow full DOM inspection; cross-origin pages load if permitted but DOM access is blocked)
-- `browser_evaluate` -- Execute JavaScript expressions in the page and get results (same-origin only)
-- `browser_inspect` -- Get detailed info about a DOM element (same-origin only)
-- `browser_query_all` -- List all elements matching a CSS selector with summary info (same-origin only)
-- `browser_click` -- Simulate clicking an element (same-origin only)
-- `browser_input` -- Simulate typing text into an input/textarea (same-origin only)
-- `browser_console` -- Get captured console.log/warn/error output from the page (same-origin only)
-- `browser_cookies` -- Read cookies of the preview page (same-origin only)
-- `browser_page_info` -- Get page title, URL, viewport, and scroll position (same-origin only)
-- `browser_open_external` -- Open a URL in the system/default browser (works for any URL including cross-origin)
+- `browser_navigate` -- Navigate the preview iframe to a URL
+- `browser_page_info` -- Get page title, URL, viewport info
+- `browser_console` -- Get captured console.log/warn/error output
+- `server_logs` -- Read IDE server logs to check for backend errors
 
-**Browser Debugging Workflow:**
-1. Use `browser_navigate` to open the target page (same-origin for debugging, cross-origin for preview)
-2. If the page is cross-origin and you need full interaction, use `browser_open_external` instead
-3. Use `browser_page_info` to verify the page loaded
-4. For same-origin pages: use `browser_inspect`/`browser_query_all` to examine, `browser_click`/`browser_input` to interact
-5. Use `browser_evaluate` for custom JS (e.g. get scroll position, check state)
-6. Use `browser_console` to check for errors after interactions
-
-### Python Runtime Debugging Tools (8)
-You can debug Python code execution in real-time:
-- `debug_start` -- Start a debugging session for a Python file
-- `debug_stop` -- Stop the current debug session
-- `debug_set_breakpoints` -- Set breakpoints (list of line numbers) for a file
-- `debug_continue` -- Continue execution after a pause
-- `debug_step` -- Step through code (step_in, step_over, step_out)
-- `debug_inspect` -- Get current variable values and call stack
-- `debug_evaluate` -- Evaluate a Python expression in the current frame
-- `debug_stack` -- Get the current call stack
-
-**Debugging Workflow:**
-1. Use `debug_start` with the file path to begin debugging
-2. Use `debug_set_breakpoints` to set breakpoints at specific lines
-3. Use `debug_continue` to run until a breakpoint is hit
-4. Use `debug_inspect` to see variables and call stack at the current line
-5. Use `debug_evaluate` to evaluate expressions (e.g. check variable values)
-6. Use `debug_step` with action "step_in"/"step_over"/"step_out" to step through code
-7. Use `debug_stop` when done debugging
-
-### Server & Environment Tool (1)
-- `server_logs` -- Read IDE server logs to check for backend errors, startup issues, or runtime exceptions
+**Preview Workflow:**
+1. Use `browser_navigate` to open a page in the preview
+2. Use `browser_page_info` to verify the page loaded
+3. Use `browser_console` to check for JavaScript errors
+4. Use `server_logs` to check for backend errors
 
 ## Task Planning Workflow (MANDATORY — CRITICAL)
 **You MUST use `todo_write` to plan before starting ANY task with 3 or more steps.** This is not optional.
@@ -188,8 +159,6 @@ You can debug Python code execution in real-time:
 4. **Frontend Verification (for web apps)** -- Use `browser_navigate` to load the page in the preview, then:
    - Use `browser_page_info` to verify the page loaded correctly
    - Use `browser_console` to check for JavaScript errors
-   - Use `browser_inspect` / `browser_query_all` to verify UI elements exist and are correct
-   - Use `browser_click` / `browser_input` to test interactive functionality
 5. **Iterate** -- If errors are found, analyze them, fix the code, and re-test
 
 ### Error Handling Strategy:
@@ -197,7 +166,7 @@ You can debug Python code execution in real-time:
 - If `browser_console` shows JS errors → find and fix the frontend bug
 - If `server_logs` shows server errors → investigate and fix the backend issue
 - If `browser_page_info` returns an error or page fails to load → check server status, fix routing/code
-- For complex bugs: use Python debugger (`debug_start` → `debug_set_breakpoints` → `debug_continue` → `debug_inspect`)
+- For complex bugs: add print/logging statements and re-run to narrow down the issue
 
 ### What NOT to do:
 - NEVER modify code and report it as done without testing
@@ -218,13 +187,11 @@ You can debug Python code execution in real-time:
 11. Respect the workspace boundary - all file operations are scoped to the workspace
 12. When running shell commands, be cautious with destructive operations
 13. For browser tools, the preview must be on the "Preview" tab with a page loaded
-14. Browser DOM tools (inspect, click, input, evaluate, etc.) only work with same-origin pages (localhost). Cross-origin pages will load visually but DOM access is blocked by the browser's security policy
-15. Use `browser_open_external` to open any URL in the system browser when iframe access is not needed
-16. **ALWAYS test your code changes** — run the code, check for errors, and verify the fix works before reporting completion
-17. **Use `server_logs` after backend changes** to check for server-side errors
-18. **Use browser tools after frontend changes** to verify the UI renders and functions correctly
-19. **Use `delegate_task` for complex subtasks** — don't try to do everything in one conversation turn
-20. **Use `parallel_tasks` when 2+ subtasks are independent** — save time by running them concurrently
+14. **ALWAYS test your code changes** — run the code, check for errors, and verify the fix works before reporting completion
+15. **Use `server_logs` after backend changes** to check for server-side errors
+16. **Use browser tools after frontend changes** to verify the UI renders and functions correctly
+17. **Use `delegate_task` for complex subtasks** — don't try to do everything in one conversation turn
+18. **Use `parallel_tasks` when 2+ subtasks are independent** — save time by running them concurrently
 
 ## Important: Platform Awareness
 - Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
@@ -800,16 +767,13 @@ AGENT_TOOLS = [
             },
         },
     },
-    # ── Browser Debugging Tools ──
+    # ── Preview & Debugging Tools ──
     {
         'type': 'function',
         'function': {
             'name': 'browser_navigate',
             'description': (
-                'Navigate the built-in preview iframe to a URL. Supports any URL (http/https). '
-                'Same-origin pages (localhost) allow full DOM inspection via other browser tools. '
-                'Cross-origin pages will load if the server permits, but DOM access tools will fail. '
-                'Returns success/error status. Use this first before other browser tools.'
+                'Navigate the built-in preview iframe to a URL. Returns success/error status.'
             ),
             'parameters': {
                 'type': 'object',
@@ -820,114 +784,6 @@ AGENT_TOOLS = [
                     },
                 },
                 'required': ['url'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_evaluate',
-            'description': (
-                'Execute a JavaScript expression in the preview page and return the result. '
-                'Useful for getting page state, checking variables, or running custom queries. '
-                'The expression runs in the page context with full DOM access.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'expression': {
-                        'type': 'string',
-                        'description': 'JavaScript expression to evaluate (e.g. "document.title", "window.scrollY", "JSON.stringify(performance.timing)")',
-                    },
-                },
-                'required': ['expression'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_inspect',
-            'description': (
-                'Inspect a DOM element in the preview page. Returns detailed info: tag name, id, class, '
-                'attributes, text content, computed styles, position/size, visibility status, child count. '
-                'Use CSS selector to target elements (e.g. "#login-btn", ".nav-item", "form input[name=email]")'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the element to inspect',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_query_all',
-            'description': (
-                'List all elements matching a CSS selector in the preview page. Returns up to 50 results '
-                'with tag name, id, class, text preview, visibility, and position. '
-                'Useful for discovering what elements exist on a page.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector (e.g. "button", ".card", "a[href]")',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_click',
-            'description': (
-                'Simulate a mouse click on an element in the preview page. '
-                'Useful for testing button clicks, link navigation, form submissions, etc.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the element to click',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_input',
-            'description': (
-                'Simulate typing text into an input, textarea, or contenteditable element. '
-                'Compatible with React/Vue (uses native value setter). '
-                'Triggers input and change events.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the input/textarea element',
-                    },
-                    'text': {
-                        'type': 'string',
-                        'description': 'Text to type into the element',
-                    },
-                },
-                'required': ['selector', 'text'],
             },
         },
     },
@@ -947,21 +803,7 @@ AGENT_TOOLS = [
             },
         },
     },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_cookies',
-            'description': (
-                'Read cookies from the preview page. Returns parsed cookie name-value pairs. '
-                'Only works for same-origin pages. Returns empty if no cookies are set.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-    },
+
     {
         'type': 'function',
         'function': {
@@ -975,118 +817,6 @@ AGENT_TOOLS = [
                 'properties': {},
                 'required': [],
             },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_open_external',
-            'description': (
-                'Open a URL in the system/default browser. Use this for cross-origin pages '
-                'that cannot be inspected in the preview iframe, or when you want the user to see '
-                'a page in their actual browser. Works with any URL.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'url': {
-                        'type': 'string',
-                        'description': 'URL to open in the system browser',
-                    },
-                },
-                'required': ['url'],
-            },
-        },
-    },
-    # ── Python Runtime Debugging Tools ──
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_start',
-            'description': 'Start a debugging session for a Python file. Accepts both absolute paths and paths relative to the workspace (e.g. "myagent/main.py"). This begins tracing execution with sys.settrace().',
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'file_path': {'type': 'string', 'description': 'Path to the Python file to debug (absolute or relative to workspace)'},
-                    'breakpoints': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Optional list of line numbers to set as initial breakpoints', 'default': []},
-                },
-                'required': ['file_path'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_stop',
-            'description': 'Stop the current debug session.',
-            'parameters': {'type': 'object', 'properties': {}, 'required': []},
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_set_breakpoints',
-            'description': 'Set breakpoints for a file. Replaces all existing breakpoints for that file.',
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'file_path': {'type': 'string', 'description': 'Absolute path to the file'},
-                    'lines': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'List of line numbers to set as breakpoints'},
-                },
-                'required': ['file_path', 'lines'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_continue',
-            'description': 'Continue execution after a pause. Runs until the next breakpoint or program end.',
-            'parameters': {'type': 'object', 'properties': {}, 'required': []},
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_step',
-            'description': 'Step through code. Actions: step_in (next line, enter functions), step_over (next line in same function), step_out (run until returning from current function).',
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'action': {'type': 'string', 'enum': ['step_in', 'step_over', 'step_out'], 'description': 'Stepping action', 'default': 'step_in'},
-                },
-                'required': [],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_inspect',
-            'description': 'Get current debug state including file, line number, function name, local variables, and call stack.',
-            'parameters': {'type': 'object', 'properties': {}, 'required': []},
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_evaluate',
-            'description': 'Evaluate a Python expression in the current debug frame context. Returns the result as a string. Only works when paused.',
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'expression': {'type': 'string', 'description': 'Python expression to evaluate (e.g. "len(data)", "x + y", "type(result)")'},
-                },
-                'required': ['expression'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'debug_stack',
-            'description': 'Get the current call stack as a list of (filename, line, function_name) entries.',
-            'parameters': {'type': 'object', 'properties': {}, 'required': []},
         },
     },
     # ── Server & Environment Tools ──
@@ -1840,43 +1570,6 @@ def _tool_browser_navigate(args):
         return f'Warning: Preview panel may not be active. The page may still be navigating to: {url}\nUse browser_page_info to verify the page loaded.'
     return _format_browser_result(result)
 
-def _tool_browser_evaluate(args):
-    expression = args.get('expression', '')
-    if not expression:
-        return 'Error: expression is required'
-    cmd_id = create_browser_command('evaluate', {'expression': expression})
-    result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
-
-def _tool_browser_inspect(args):
-    selector = args.get('selector', 'body')
-    cmd_id = create_browser_command('inspect', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
-
-def _tool_browser_query_all(args):
-    selector = args.get('selector', '*')
-    cmd_id = create_browser_command('query_all', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
-
-def _tool_browser_click(args):
-    selector = args.get('selector', '')
-    if not selector:
-        return 'Error: selector is required'
-    cmd_id = create_browser_command('click', {'selector': selector})
-    result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
-
-def _tool_browser_input(args):
-    selector = args.get('selector', '')
-    text = args.get('text', '')
-    if not selector:
-        return 'Error: selector is required'
-    cmd_id = create_browser_command('input', {'selector': selector, 'text': text})
-    result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
-
 def _tool_browser_console(args):
     cmd_id = create_browser_command('console', {})
     result = wait_browser_result(cmd_id, timeout=30)
@@ -1892,196 +1585,10 @@ def _tool_browser_console(args):
         return f"Console output ({result.get('count', len(logs))} entries):\n" + '\n'.join(lines[-100:])
     return _format_browser_result(result)
 
-def _tool_browser_cookies(args):
-    cmd_id = create_browser_command('cookies', {})
-    result = wait_browser_result(cmd_id, timeout=30)
-    if not isinstance(result, dict):
-        return str(result)
-    if result.get('ok'):
-        cookies = result.get('cookies', [])
-        raw = result.get('raw', '')
-        if isinstance(cookies, list) and cookies:
-            lines = [f"  {c.get('name','')}: {c.get('value','')}" for c in cookies]
-            return f"Cookies ({len(cookies)} total):\n" + '\n'.join(lines)
-        elif isinstance(cookies, str):
-            return cookies
-        return '(no cookies)'
-    return _format_browser_result(result)
-
 def _tool_browser_page_info(args):
     cmd_id = create_browser_command('page_info', {})
     result = wait_browser_result(cmd_id, timeout=30)
     return _format_browser_result(result)
-
-def _tool_browser_open_external(args):
-    import urllib.request as _urllib_req
-    url = args.get('url', '')
-    if not url:
-        return 'Error: URL is required'
-    if not url.startswith('http://') and not url.startswith('https://'):
-        url = 'https://' + url
-    try:
-        result = _urllib_req.urlopen(
-            _urllib_req.Request('http://localhost:' + str(os.environ.get('PORT', 1239)) + '/api/browser/open-external',
-                               data=json.dumps({'url': url}).encode(),
-                               headers={'Content-Type': 'application/json'},
-                               method='POST'),
-            timeout=10
-        )
-        data = json.loads(result.read())
-        if data.get('ok'):
-            return f'Opened in system browser: {url}'
-        return f'Error: {data.get("error", "unknown")}'
-    except Exception as e:
-        return f'Error: {e}'
-
-def _tool_debug_start(args):
-    from routes.debug import get_session
-    file_path = args.get('file_path', '')
-    breakpoints = args.get('breakpoints', [])
-    if not file_path:
-        return 'Error: file_path is required'
-    # Resolve relative paths against workspace
-    if not os.path.isabs(file_path):
-        resolved = os.path.join(WORKSPACE, file_path)
-        if os.path.isfile(resolved):
-            file_path = resolved
-    if not os.path.isfile(file_path):
-        return f'Error: File not found: {file_path}'
-    session = get_session()
-    if breakpoints:
-        session.set_breakpoints(file_path, breakpoints)
-    ok, msg = session.start(file_path)
-    if not ok:
-        return f'Error: {msg}'
-    # Wait up to 10s for the session to reach paused/stopped/idle state
-    for _ in range(50):
-        time.sleep(0.2)
-        state = session.get_state().get('state', '')
-        if state in ('paused', 'stopped', 'idle'):
-            break
-    state = session.get_state()
-    state_name = state.get('state', 'unknown')
-    if state_name == 'paused':
-        return f'{msg}\nPaused at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
-    if state_name == 'stopped':
-        return f'{msg}\nProgram finished. Check output for results.'
-    return f'{msg}\nSession is {state_name}. Use debug_inspect to check status.'
-
-def _tool_debug_stop(args):
-    from routes.debug import get_session
-    session = get_session()
-    state = session.get_state()
-    if state['state'] in ('idle', 'stopped'):
-        return 'No active debug session to stop'
-    session.stop()
-    return 'Debug session stopped'
-
-def _tool_debug_set_breakpoints(args):
-    from routes.debug import get_session
-    file_path = args.get('file_path', '')
-    lines = args.get('lines', [])
-    if not file_path:
-        return 'Error: file_path is required'
-    # Resolve relative paths against workspace
-    if not os.path.isabs(file_path):
-        resolved = os.path.join(WORKSPACE, file_path)
-        if os.path.isfile(resolved):
-            file_path = resolved
-    session = get_session()
-    session.set_breakpoints(file_path, lines)
-    return f'Breakpoints set for {os.path.basename(file_path)}: lines {lines}'
-
-def _tool_debug_continue(args):
-    from routes.debug import get_session
-    session = get_session()
-    ok = session.resume()
-    if not ok:
-        return 'Error: Not paused'
-    # Wait up to 30s for next pause/stop
-    for _ in range(150):
-        time.sleep(0.2)
-        state = session.get_state().get('state', '')
-        if state in ('paused', 'stopped', 'idle'):
-            break
-    state = session.get_state()
-    state_name = state.get('state', 'running')
-    if state_name == 'paused':
-        return f'Paused at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
-    if state_name == 'stopped':
-        return 'Program finished. Check output for results.'
-    return f'Still running after 30s. Use debug_inspect to check status.'
-
-def _tool_debug_step(args):
-    from routes.debug import get_session
-    action = args.get('action', 'step_in')
-    session = get_session()
-    if action == 'step_over':
-        ok = session.step_over()
-    elif action == 'step_out':
-        ok = session.step_out()
-    else:
-        ok = session.step_in()
-    if not ok:
-        return 'Error: Not paused'
-    # Wait up to 10s for next pause
-    for _ in range(50):
-        time.sleep(0.2)
-        state = session.get_state().get('state', '')
-        if state in ('paused', 'stopped', 'idle'):
-            break
-    state = session.get_state()
-    state_name = state.get('state', 'running')
-    if state_name == 'paused':
-        return f'Stepped ({action}). Now at {os.path.basename(state.get("file", "?"))}:{state.get("line", 0)} in {state.get("func", "?")}()'
-    if state_name == 'stopped':
-        return 'Program finished after step.'
-    return f'Step ({action}) executed. Session is {state_name}.'
-
-def _tool_debug_inspect(args):
-    from routes.debug import get_session
-    session = get_session()
-    state = session.get_state()
-    if state['state'] != 'paused':
-        return f'Session is {state["state"]}, not paused. Use debug_continue or debug_step first.'
-    result = f'File: {os.path.basename(state.get("file", "?"))}\n'
-    result += f'Line: {state.get("line", 0)} in {state.get("func", "?")}()\n\n'
-    result += 'Local Variables:\n'
-    variables = state.get('local_vars', {})
-    if variables:
-        for name, value in variables.items():
-            result += f'  {name} = {value}\n'
-    else:
-        result += '  (no variables)\n'
-    result += f'\nCall Stack ({len(state.get("call_stack", []))} frames):\n'
-    for i, entry in enumerate(reversed(state.get('call_stack', []))):
-        fname = os.path.basename(entry[0]) if entry[0] else '?'
-        result += f'  [{i}] {entry[2]}() at {fname}:{entry[1]}\n'
-    return result
-
-def _tool_debug_evaluate(args):
-    from routes.debug import get_session
-    expression = args.get('expression', '')
-    if not expression:
-        return 'Error: expression is required'
-    session = get_session()
-    result, error = session.evaluate(expression)
-    if error:
-        return f'Error: {error}'
-    return str(result)
-
-def _tool_debug_stack(args):
-    from routes.debug import get_session
-    session = get_session()
-    state = session.get_state()
-    stack = state.get('call_stack', [])
-    if not stack:
-        return 'Call stack is empty'
-    result = f'Call Stack ({len(stack)} frames):\n'
-    for i, entry in enumerate(reversed(stack)):
-        fname = os.path.basename(entry[0]) if entry[0] else '?'
-        result += f'  [{i}] {entry[2]}() at {fname}:{entry[1]}\n'
-    return result
 
 def _tool_server_logs(args):
     count = args.get('count', 50)
@@ -2696,23 +2203,8 @@ _TOOL_HANDLERS = {
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
     'browser_navigate': _tool_browser_navigate,
-    'browser_evaluate': _tool_browser_evaluate,
-    'browser_inspect': _tool_browser_inspect,
-    'browser_query_all': _tool_browser_query_all,
-    'browser_click': _tool_browser_click,
-    'browser_input': _tool_browser_input,
     'browser_console': _tool_browser_console,
-    'browser_cookies': _tool_browser_cookies,
     'browser_page_info': _tool_browser_page_info,
-    'browser_open_external': _tool_browser_open_external,
-    'debug_start': _tool_debug_start,
-    'debug_stop': _tool_debug_stop,
-    'debug_set_breakpoints': _tool_debug_set_breakpoints,
-    'debug_continue': _tool_debug_continue,
-    'debug_step': _tool_debug_step,
-    'debug_inspect': _tool_debug_inspect,
-    'debug_evaluate': _tool_debug_evaluate,
-    'debug_stack': _tool_debug_stack,
     'server_logs': _tool_server_logs,
     # P0+P1 new tools
     'glob_files': _tool_glob_files,
@@ -2760,8 +2252,7 @@ _READONLY_TOOLS = frozenset({
     'file_info', 'file_structure', 'find_definition', 'find_references',
     'list_packages', 'git_status', 'git_diff', 'git_log',
     'web_search', 'web_fetch',
-    'browser_page_info', 'browser_console', 'browser_cookies',
-    'debug_inspect', 'debug_stack', 'server_logs',
+    'browser_page_info', 'browser_console', 'server_logs',
 })
 
 def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
@@ -3316,7 +2807,7 @@ MAX_SELF_CORRECTION_RETRIES = 3
 
 # Tools that should trigger self-correction on failure
 _SELF_CORRECTION_TOOLS = frozenset({
-    'write_file', 'edit_file', 'run_command', 'install_package', 'debug_start',
+    'write_file', 'edit_file', 'run_command', 'install_package',
 })
 
 # Error patterns to detect in tool results
