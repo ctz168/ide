@@ -1968,6 +1968,12 @@ _SUBAGENT_TOOL_DEFS = [t for t in AGENT_TOOLS if t['function']['name'] in _SUBAG
 _WRITE_SUBAGENT_TOOL_DEFS = [t for t in AGENT_TOOLS if t['function']['name'] in _WRITE_SUBAGENT_TOOLS]
 
 # ==================== Todo Storage ====================
+_phoneide_knowledge_cache = {}  # {cache_key_tuple: {content, files, time}}
+
+def _get_phoneide_cache():
+    """Return the module-level .phoneide/ knowledge cache."""
+    return _phoneide_knowledge_cache
+
 _active_todos = {
     'todos': [],
     'lock': threading.Lock(),
@@ -2039,10 +2045,23 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
     sub_tool_defs = _WRITE_SUBAGENT_TOOL_DEFS if is_write_mode else _SUBAGENT_TOOL_DEFS
 
     # Build sub-agent system prompt based on mode
+    # Include workspace/project path so sub-agent knows where to operate
+    try:
+        from utils import load_config
+        _sub_cfg = load_config()
+        _sub_ws = _sub_cfg.get('workspace', WORKSPACE)
+        _sub_prj = _sub_cfg.get('project', None)
+        _sub_project_dir = os.path.join(_sub_ws, _sub_prj) if _sub_prj else _sub_ws
+        if not os.path.isdir(_sub_project_dir):
+            _sub_project_dir = _sub_ws
+    except Exception:
+        _sub_project_dir = WORKSPACE
+
     if is_write_mode:
         system_prompt = (
             'You are a write-capable sub-agent. You can read files, write/edit files, run commands, and manage git.\n'
             'You have access to a full set of tools for code modification.\n'
+            f'Project directory: {_sub_project_dir}\n'
             'IMPORTANT RULES:\n'
             '1. Always read a file before modifying it\n'
             '2. Test your changes with run_command when possible\n'
@@ -2056,6 +2075,7 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
             'You are a research sub-agent. Your job is to gather information and return a concise summary.\n'
             'You have access to read-only tools (read_file, glob_files, grep_code, search_files, list_directory, '
             'file_info, file_structure, find_definition, find_references, web_search, web_fetch).\n'
+            f'Project directory: {_sub_project_dir}\n'
             'Be thorough but concise. Focus on factual findings.\n'
             'When done, provide a clear summary of what you found.'
         )
@@ -2069,7 +2089,7 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
 
     for iteration in range(max_iters):
         try:
-            api_messages = _build_api_messages(sub_context, llm_config)
+            api_messages = _build_api_messages(sub_context, llm_config, skip_system_inject=True)
             payload = {
                 'model': llm_config.get('model', 'gpt-4o-mini'),
                 'messages': api_messages,
@@ -2299,8 +2319,42 @@ def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
     return results
 
 # ==================== LLM Integration ====================
-def _build_api_messages(messages, llm_config):
-    """Convert chat history to API format with system prompt."""
+def _build_api_messages(messages, llm_config, skip_system_inject=False):
+    """Convert chat history to API format with system prompt.
+
+    Args:
+        messages: Chat history list of {role, content, ...} dicts.
+        llm_config: LLM configuration dict.
+        skip_system_inject: If True, do NOT build DEFAULT_SYSTEM_PROMPT or inject
+            .phoneide/ knowledge / AST index. Instead, use the first system message
+            from `messages` as-is. This is used by sub-agents which have their own
+            concise system prompt.
+    """
+
+    if skip_system_inject:
+        # Sub-agent mode: use the system prompt from messages as-is (no injection)
+        api_messages = []
+        for msg in messages:
+            role = msg.get('role', '')
+            if role == 'system':
+                api_messages.append({'role': 'system', 'content': msg.get('content', '')})
+            elif role == 'tool':
+                api_messages.append({
+                    'role': 'tool',
+                    'tool_call_id': msg.get('tool_call_id', 'call_default'),
+                    'content': msg.get('content', ''),
+                })
+            elif role == 'assistant' and msg.get('tool_calls'):
+                api_messages.append({
+                    'role': 'assistant',
+                    'content': msg.get('content', None),
+                    'tool_calls': msg['tool_calls'],
+                })
+            elif role in ('user', 'assistant'):
+                api_messages.append({'role': role, 'content': msg.get('content', '')})
+        return api_messages
+
+    # ── Main agent mode: build full system prompt with injections ──
     custom_prompt = llm_config.get('system_prompt', '').strip()
     if custom_prompt and custom_prompt != DEFAULT_SYSTEM_PROMPT.strip():
         # User has a custom system prompt — prepend the default tool documentation
@@ -2366,7 +2420,7 @@ def _build_api_messages(messages, llm_config):
     sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
 
     # Inject project knowledge from .phoneide/ directory (like CLAUDE.md)
-    # Check multiple directories: project_dir, workspace, and SERVER_DIR's parent
+    # Uses a 30-second TTL cache to avoid re-reading files on every LLM call
     _knowledge_loaded = []  # track which files were loaded (for logging/SSE)
     _phoneide_dirs_to_check = []
     # 1. Project directory
@@ -2380,37 +2434,54 @@ def _build_api_messages(messages, llm_config):
     if _server_parent not in [os.path.realpath(d) for d in _phoneide_dirs_to_check]:
         _phoneide_dirs_to_check.append(_server_parent)
 
-    for _check_dir in _phoneide_dirs_to_check:
-        _phoneide_dir = os.path.join(_check_dir, '.phoneide')
-        if os.path.isdir(_phoneide_dir):
-            log_write(f'[phoneide] Found .phoneide/ at: {_phoneide_dir}')
-            knowledge_files = [
-                ('rules.md', 'Project Rules & Guidelines'),
-                ('architecture.md', 'Project Architecture'),
-                ('conventions.md', 'Coding Conventions'),
-            ]
-            knowledge_parts = []
-            for fname, title in knowledge_files:
-                fpath = os.path.join(_phoneide_dir, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read().strip()
-                        if content:
-                            knowledge_parts.append(f'### {title}\n{content}')
-                            _knowledge_loaded.append(fname)
-                            log_write(f'[phoneide] Loaded {fname} ({len(content)} chars)')
-                    except Exception as e:
-                        log_write(f'[phoneide] Error reading {fpath}: {e}')
-            if knowledge_parts:
-                sys_prompt += '\n\n## Project Knowledge (from .phoneide/)\n'
-                sys_prompt += 'The following project-specific context was loaded from .phoneide/ files. '
-                sys_prompt += 'Use this information to follow project conventions and understand the architecture.\n\n'
-                sys_prompt += '\n\n'.join(knowledge_parts) + '\n'
-            break  # Use the first .phoneide/ directory found
+    # Check cache first (30s TTL)
+    _now = time.time()
+    _cache_key = tuple(_phoneide_dirs_to_check)
+    _phoneide_cache = _get_phoneide_cache()
+    if (_cache_key in _phoneide_cache and
+            _now - _phoneide_cache[_cache_key]['time'] < 30):
+        sys_prompt += _phoneide_cache[_cache_key]['content']
+        _knowledge_loaded = _phoneide_cache[_cache_key]['files']
+        log_write(f'[phoneide] Using cached .phoneide/ content ({len(_knowledge_loaded)} files)')
+    else:
+        for _check_dir in _phoneide_dirs_to_check:
+            _phoneide_dir = os.path.join(_check_dir, '.phoneide')
+            if os.path.isdir(_phoneide_dir):
+                log_write(f'[phoneide] Found .phoneide/ at: {_phoneide_dir}')
+                knowledge_files = [
+                    ('rules.md', 'Project Rules & Guidelines'),
+                    ('architecture.md', 'Project Architecture'),
+                    ('conventions.md', 'Coding Conventions'),
+                ]
+                knowledge_parts = []
+                for fname, title in knowledge_files:
+                    fpath = os.path.join(_phoneide_dir, fname)
+                    if os.path.isfile(fpath):
+                        try:
+                            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read().strip()
+                            if content:
+                                knowledge_parts.append(f'### {title}\n{content}')
+                                _knowledge_loaded.append(fname)
+                                log_write(f'[phoneide] Loaded {fname} ({len(content)} chars)')
+                        except Exception as e:
+                            log_write(f'[phoneide] Error reading {fpath}: {e}')
+                if knowledge_parts:
+                    _injected = '\n\n## Project Knowledge (from .phoneide/)\n'
+                    _injected += 'The following project-specific context was loaded from .phoneide/ files. '
+                    _injected += 'Use this information to follow project conventions and understand the architecture.\n\n'
+                    _injected += '\n\n'.join(knowledge_parts) + '\n'
+                    sys_prompt += _injected
+                    # Store in cache
+                    _phoneide_cache[_cache_key] = {
+                        'content': _injected,
+                        'files': list(_knowledge_loaded),
+                        'time': time.time(),
+                    }
+                break  # Use the first .phoneide/ directory found
 
-    if not _knowledge_loaded:
-        log_write(f'[phoneide] No .phoneide/ found in: {_phoneide_dirs_to_check}')
+        if not _knowledge_loaded:
+            log_write(f'[phoneide] No .phoneide/ found in: {_phoneide_dirs_to_check}')
 
     # Inject AST index summary if available
     try:
@@ -3240,6 +3311,10 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                            daemon=True).start()
     except Exception:
         pass
+
+    # Reset todo list for each new conversation (prevent cross-session leakage)
+    with _active_todos['lock']:
+        _active_todos['todos'] = []
 
     # Pre-save history before starting the loop so retry can recover even if
     # the very first LLM call fails (before any tool execution).
