@@ -4303,7 +4303,9 @@ def send_chat_stream():
             with _active_task['lock']:
                 _active_task['event_buffer'].append(done_event)
         finally:
-            # Signal completion
+            # Signal completion and mark task as no longer running
+            with _active_task['lock']:
+                _active_task['running'] = False
             event_queue.put(None)
 
     # Start the agent in a background thread
@@ -4333,6 +4335,7 @@ def send_chat_stream():
             with _active_task['lock']:
                 _active_task['subscribers'] -= 1
                 if _active_task['subscribers'] <= 0:
+                    # Full cleanup when last subscriber disconnects
                     _active_task['running'] = False
                     _active_task['cancelled'] = False
                     _active_task['conv_id'] = None
@@ -4416,10 +4419,16 @@ def task_reconnect_stream():
         finally:
             with _active_task['lock']:
                 _active_task['subscribers'] -= 1
-                if _active_task['subscribers'] <= 0 and not _active_task['running']:
-                    # Clean up if no more subscribers and task ended
+                if _active_task['subscribers'] <= 0:
+                    # Full cleanup when last subscriber disconnects
+                    _active_task['running'] = False
+                    _active_task['cancelled'] = False
+                    _active_task['conv_id'] = None
+                    _active_task['message'] = None
+                    _active_task['started_at'] = None
                     _active_task['event_queue'] = None
                     _active_task['event_buffer'] = None
+                    _active_task['thread'] = None
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

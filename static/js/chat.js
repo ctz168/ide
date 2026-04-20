@@ -1282,9 +1282,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
             if (!resp.ok) {
                 if (resp.status === 404) {
-                    // Task already finished
-                    addMessage('system', 'Task has already completed.');
-                    showToast('Task already completed', 'info');
+                    // Task already finished — clean up UI state
+                    isReconnecting = false;
+                    isProcessing = false;
+                    setProcessing(false);
                     return;
                 }
                 throw new Error(`Reconnect failed: ${resp.status} ${resp.statusText}`);
