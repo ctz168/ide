@@ -1267,6 +1267,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'cancelled') {
+                        hideTyping();
+                        setExecuteStatus('已取消');
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        addMessage('system', '⏹ 任务已停止');
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
@@ -1640,6 +1647,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'cancelled') {
+                        hideTyping();
+                        setExecuteStatus('已取消');
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        addMessage('system', '⏹ 任务已停止');
                     } else if (eventType === 'error') {
                         // Error occurred
                         hasError = true;
@@ -1975,6 +1989,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(parsed.message || parsed.text || parsed.content || 'Thinking...');
                         hideTyping();
                         showTyping();
+                    } else if (eventType === 'cancelled') {
+                        hideTyping();
+                        setExecuteStatus('已取消');
+                        if (currentStreamEl && streamBuffer) {
+                            finalizeStreamMessage();
+                        }
+                        addMessage('system', '⏹ 任务已停止');
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();

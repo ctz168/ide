@@ -1112,8 +1112,22 @@ const AppManager = (() => {
                 }
             }
         });
-        // Stop
-        document.getElementById('btn-stop').addEventListener('click', () => {
+        // Stop — stops both AI task and terminal process
+        document.getElementById('btn-stop').addEventListener('click', async () => {
+            // 1. Stop AI agent task
+            try {
+                const taskResp = await fetch('/api/chat/task/stop', { method: 'POST' });
+                if (taskResp.ok) {
+                    showToast('AI 任务已停止', 'info');
+                }
+            } catch (_) {}
+
+            // 2. Abort SSE stream in chat
+            if (window.ChatManager && window.ChatManager.abortGeneration) {
+                ChatManager.abortGeneration();
+            }
+
+            // 3. Stop terminal process
             if (window.TerminalManager) TerminalManager.stop();
         });
     }

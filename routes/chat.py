@@ -48,6 +48,7 @@ bp = Blueprint('chat', __name__)
 # ==================== Global Active Task State ====================
 _active_task = {
     'running': False,
+    'cancelled': False,       # True when user requests cancellation
     'conv_id': None,
     'message': None,
     'model_index': None,
@@ -3821,6 +3822,7 @@ def send_chat_stream():
         event_buffer = deque(maxlen=RING_BUFFER_SIZE)
 
         _active_task['running'] = True
+        _active_task['cancelled'] = False
         _active_task['conv_id'] = conv_id
         _active_task['message'] = message
         _active_task['model_index'] = model_index
@@ -3833,6 +3835,14 @@ def send_chat_stream():
         """Background thread: runs the agent loop and puts events into queue + buffer."""
         try:
             for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id, is_retry=is_retry):
+                # Check cancellation before enqueueing
+                with _active_task['lock']:
+                    if _active_task.get('cancelled'):
+                        cancel_event = f"data: {json.dumps({'type': 'cancelled', 'content': 'Task cancelled by user.'})}\n\n"
+                        event_queue.put(cancel_event)
+                        with _active_task['lock']:
+                            _active_task['event_buffer'].append(cancel_event)
+                        break
                 event_queue.put(sse_event)
                 with _active_task['lock']:
                     _active_task['event_buffer'].append(sse_event)
@@ -3877,6 +3887,7 @@ def send_chat_stream():
                 _active_task['subscribers'] -= 1
                 if _active_task['subscribers'] <= 0:
                     _active_task['running'] = False
+                    _active_task['cancelled'] = False
                     _active_task['conv_id'] = None
                     _active_task['message'] = None
                     _active_task['started_at'] = None
@@ -3886,6 +3897,35 @@ def send_chat_stream():
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@bp.route('/api/chat/task/stop', methods=['POST'])
+def stop_task():
+    """Request cancellation of the currently running AI task."""
+    with _active_task['lock']:
+        if not _active_task['running']:
+            return jsonify({'error': 'No task is running'}), 404
+        _active_task['cancelled'] = True
+
+    # Also stop any running terminal process that was started by the agent
+    # The agent loop will check _active_task['cancelled'] and break out
+    # Force-stop any running processes in utils.running_processes
+    from utils import running_processes
+    for pid, info in list(running_processes.items()):
+        if info.get('running'):
+            try:
+                proc = info.get('process')
+                if proc:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except:
+                        proc.kill()
+                info['running'] = False
+            except Exception:
+                pass
+
+    return jsonify({'ok': True, 'message': 'Task cancellation requested'})
 
 
 @bp.route('/api/chat/task/status', methods=['GET'])
