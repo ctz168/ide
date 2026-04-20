@@ -21,6 +21,13 @@ const TerminalManager = (() => {
     let dragStartY = 0;            // touch/mouse Y at drag start
     let dragStartHeight = 0;        // panel height at drag start
     let onProcessComplete = null;   // callback after streamed process finishes
+    let _userScrolling = false;     // user is manually scrolling output
+    let _autoScrollPaused = false;  // auto-scroll is paused due to user scroll
+    let _scrollPauseTimer = null;   // timer to resume auto-scroll after user stops
+    let _pendingScroll = false;     // debounce flag for scroll-to-bottom
+    let _appendBatchTimer = null;   // debounce timer for batch DOM updates
+    let _pendingAppends = [];       // batched append operations
+    let _trimScheduled = false;     // flag to avoid redundant trim calls
 
     // ── Constants ──────────────────────────────────────────────────
     const MIN_PANEL_HEIGHT = 120;
@@ -81,10 +88,88 @@ const TerminalManager = (() => {
         const lines = container.querySelectorAll('.output-line');
         if (lines.length > MAX_OUTPUT_LINES) {
             const removeCount = lines.length - MAX_OUTPUT_LINES;
-            for (let i = 0; i < removeCount; i++) {
-                lines[i].remove();
+            // Batch remove: collect into a DocumentFragment then clear
+            const parent = lines[0].parentNode;
+            if (parent) {
+                // Use a range for efficient batch removal
+                const range = document.createRange();
+                range.setStartBefore(lines[0]);
+                range.setEndBefore(lines[removeCount]);
+                range.deleteContents();
             }
         }
+    }
+
+    /**
+     * Smart scroll-to-bottom: only auto-scroll if the user hasn't scrolled up.
+     * On mobile, respects touch gestures and doesn't fight pull-to-refresh.
+     */
+    function smartScrollToBottom() {
+        if (_pendingScroll) return;
+        _pendingScroll = true;
+        requestAnimationFrame(() => {
+            _pendingScroll = false;
+            if (_autoScrollPaused) return;
+            const container = document.getElementById('output-content');
+            if (!container) return;
+            container.scrollTop = container.scrollHeight;
+        });
+    }
+
+    /**
+     * Detect user scroll on the output container.
+     * If the user scrolls up, pause auto-scroll.
+     * If the user scrolls to the bottom, resume auto-scroll.
+     */
+    function initScrollDetection() {
+        const container = document.getElementById('output-content');
+        if (!container) return;
+
+        // Detect when user scrolls up (away from bottom)
+        container.addEventListener('scroll', () => {
+            const threshold = 50; // pixels from bottom
+            const atBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < threshold;
+
+            if (atBottom) {
+                // User scrolled back to bottom — resume auto-scroll
+                _autoScrollPaused = false;
+                clearTimeout(_scrollPauseTimer);
+            } else {
+                // User scrolled up — pause auto-scroll
+                _autoScrollPaused = true;
+                clearTimeout(_scrollPauseTimer);
+                // Resume auto-scroll after 5 seconds of inactivity
+                _scrollPauseTimer = setTimeout(() => {
+                    _autoScrollPaused = false;
+                    smartScrollToBottom();
+                }, 5000);
+            }
+        }, { passive: true });
+
+        // On touchstart, mark as user scrolling to prevent auto-scroll
+        container.addEventListener('touchstart', () => {
+            _userScrolling = true;
+            // Pause auto-scroll immediately on touch
+            _autoScrollPaused = true;
+            clearTimeout(_scrollPauseTimer);
+        }, { passive: true });
+
+        // On touchend, check if user scrolled to bottom
+        container.addEventListener('touchend', () => {
+            _userScrolling = false;
+            // If already at bottom, resume auto-scroll immediately
+            const threshold = 50;
+            const atBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < threshold;
+            if (atBottom) {
+                _autoScrollPaused = false;
+            } else {
+                // Resume after a delay
+                clearTimeout(_scrollPauseTimer);
+                _scrollPauseTimer = setTimeout(() => {
+                    _autoScrollPaused = false;
+                }, 3000);
+            }
+        }, { passive: true });
     }
 
     // ── API: Compilers ─────────────────────────────────────────────
@@ -971,11 +1056,17 @@ const TerminalManager = (() => {
         const target = currentCmdBlock || container;
         target.appendChild(line);
 
-        // Trim if too many lines
-        trimOutput();
+        // Trim if too many lines (debounced)
+        if (!_trimScheduled) {
+            _trimScheduled = true;
+            requestAnimationFrame(() => {
+                trimOutput();
+                _trimScheduled = false;
+            });
+        }
 
-        // Auto-scroll to bottom
-        container.scrollTop = container.scrollHeight;
+        // Smart auto-scroll: respect user's scroll position
+        smartScrollToBottom();
     }
 
     /**
@@ -1436,6 +1527,7 @@ const TerminalManager = (() => {
         setRunningState(false);
         initKeyboardHandler();
         initVisibilityHandler();
+        initScrollDetection();  // Smart auto-scroll with user scroll detection
 
         // Print startup banner with system info
         printStartupBanner();

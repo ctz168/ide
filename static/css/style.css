@@ -1403,6 +1403,8 @@ html, body {
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-all;
+    overscroll-behavior-y: contain;  /* Prevent pull-to-refresh on mobile */
+    touch-action: pan-y;             /* Allow vertical scroll, prevent browser gestures */
 }
 
 /* ==================== Shell Input Bar ==================== */
@@ -1453,6 +1455,8 @@ html, body {
 .output-line {
     padding: 2px 0;
     border-bottom: 1px solid rgba(49, 50, 68, 0.3);
+    user-select: text;
+    -webkit-user-select: text;
 }
 .output-line:last-child {
     border-bottom: none;
