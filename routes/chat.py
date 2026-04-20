@@ -3795,6 +3795,13 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
     for iteration in range(MAX_AGENT_ITERATIONS):
         total_iterations = iteration + 1
+
+        # Check cancellation before each iteration
+        if _active_task.get('cancelled'):
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Task cancelled by user.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+            return
+
         yield f"data: {json.dumps({'type': 'thinking', 'content': f'Iteration {iteration + 1}: Calling LLM...'})}\n\n"
 
         # Call LLM with streaming
@@ -3821,6 +3828,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 reasoning_text = ''  # accumulate reasoning/thinking content
                 reasoning_ended = False
                 for delta in _call_llm_stream_raw(context, llm_config):
+                    # Check cancellation during LLM streaming
+                    if _active_task.get('cancelled'):
+                        yield f"data: {json.dumps({'type': 'error', 'content': 'Task cancelled by user.'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                        return
+
                     # Capture finish_reason
                     fr = delta.get('_finish_reason')
                     if fr:
@@ -4019,6 +4032,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         # Reset accumulated text for next iteration
         accumulated_text = ''
 
+        # Check cancellation before tool execution
+        if _active_task.get('cancelled'):
+            yield f"data: {json.dumps({'type': 'error', 'content': 'Task cancelled by user.'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+            return
+
         # Try parallel execution for read-only tools
         parallel_results = _execute_tools_parallel(tool_calls_raw)
 
@@ -4052,6 +4071,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             # Sequential execution (mixed read/write tools or single tool)
             _batch_results = []
             for tc in tool_calls_raw:
+                # Check cancellation before each tool
+                if _active_task.get('cancelled'):
+                    yield f"data: {json.dumps({'type': 'error', 'content': 'Task cancelled by user.'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
+                    return
+
                 func = tc.get('function', {})
                 tool_name = func.get('name', '')
                 try:

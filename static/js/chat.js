@@ -1134,13 +1134,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
-     * Abort the current SSE stream
+     * Abort the current SSE stream and request backend cancellation
      */
     function abortGeneration() {
         if (currentAbortController) {
             currentAbortController.abort();
             currentAbortController = null;
         }
+        // Also tell the backend to cancel the running agent loop
+        fetch('/api/chat/task/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+            .catch(() => {}); // fire-and-forget, ignore errors
     }
 
     // ── Send / Processing State ─────────────────────────────────────
