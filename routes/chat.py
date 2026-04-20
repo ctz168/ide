@@ -1400,11 +1400,17 @@ def _tool_run_command(args):
         if result.stderr:
             output += ('\n' if output else '') + result.stderr
         exit_info = f'\n[Exit code: {result.returncode}]'
-        return _truncate((output or '(no output)') + exit_info)
+        full_output = (output or '(no output)') + exit_info
+        # Return error status when command exits with non-zero code
+        if result.returncode != 0:
+            raise RuntimeError(full_output)
+        return _truncate(full_output)
     except subprocess.TimeoutExpired:
-        return f'Error: Command timed out after {timeout} seconds'
+        raise RuntimeError(f'Command timed out after {timeout} seconds')
+    except RuntimeError:
+        raise  # Re-raise RuntimeError (non-zero exit code) without wrapping
     except Exception as e:
-        return f'Error executing command: {str(e)}'
+        raise RuntimeError(f'Error executing command: {str(e)}')
 
 def _tool_git_status(args):
     repo_path = args.get('repo_path', None) or _get_effective_cwd()
