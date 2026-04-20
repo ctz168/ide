@@ -3544,6 +3544,119 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
 MAX_AGENT_ITERATIONS = 100  # Increased from 15 for complex tasks
 MAX_ITERATION_RETRIES = 10
 
+# Valid tool names for fallback detection
+_TOOL_NAMES = frozenset(
+    f.get('function', {}).get('name', '')
+    for f in AGENT_TOOLS
+)
+
+def _try_parse_tool_calls_from_content(content):
+    """Try to parse tool calls from LLM text content.
+
+    Some models (especially non-OpenAI-compatible ones) return tool calls as
+    JSON text in the content field instead of using the proper tool_calls field.
+    This function detects and converts them to the standard tool_calls format.
+
+    Returns list of tool_call dicts (OpenAI format) or None if not detected.
+    """
+    if not content or not content.strip():
+        return None
+
+    import re
+    parsed_calls = []
+
+    # Pattern 1: Standalone JSON objects with "name" and "arguments"
+    # Matches: {"name": "run_command", "arguments": {"command": "...", ...}}
+    standalone_pattern = re.compile(
+        r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*',
+        re.DOTALL
+    )
+    matches = list(standalone_pattern.finditer(content))
+    if matches:
+        # Try to extract complete JSON objects for each match
+        for match in matches:
+            start = match.start()
+            # Find the matching closing brace
+            depth = 0
+            end = start
+            for i in range(start, len(content)):
+                if content[i] == '{':
+                    depth += 1
+                elif content[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            json_str = content[start:end]
+            try:
+                obj = json.loads(json_str)
+                name = obj.get('name', '')
+                arguments = obj.get('arguments', {})
+                if name and name in _TOOL_NAMES:
+                    parsed_calls.append({
+                        'id': f'call_parsed_{name}',
+                        'type': 'function',
+                        'function': {
+                            'name': name,
+                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
+                        },
+                    })
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+    # Pattern 2: Code-fenced tool calls: ```json\n{"name":...}\n```
+    if not parsed_calls:
+        fenced_pattern = re.compile(
+            r'```(?:json|tool_calls?)\s*\n(\{[^`]*\})\s*\n```',
+            re.DOTALL
+        )
+        for m in fenced_pattern.finditer(content):
+            try:
+                obj = json.loads(m.group(1))
+                name = obj.get('name', '')
+                arguments = obj.get('arguments', {})
+                if name and name in _TOOL_NAMES:
+                    parsed_calls.append({
+                        'id': f'call_parsed_{name}',
+                        'type': 'function',
+                        'function': {
+                            'name': name,
+                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
+                        },
+                    })
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+    # Pattern 3: Markdown code block with tool_call (without json/lang marker)
+    if not parsed_calls:
+        # {"name": "...", "arguments": {...}} on its own line
+        line_pattern = re.compile(
+            r'^\s*\{"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*\{.*\}\s*\}\s*$',
+            re.MULTILINE | re.DOTALL
+        )
+        for m in line_pattern.finditer(content):
+            try:
+                obj = json.loads(m.group(0).strip())
+                name = obj.get('name', '')
+                arguments = obj.get('arguments', {})
+                if name and name in _TOOL_NAMES:
+                    parsed_calls.append({
+                        'id': f'call_parsed_{name}',
+                        'type': 'function',
+                        'function': {
+                            'name': name,
+                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
+                        },
+                    })
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+    if parsed_calls:
+        print(f'[AGENT] Parsed {len(parsed_calls)} tool call(s) from content text (model doesn\'t use tool_calls field)')
+        return parsed_calls
+    return None
+
+
 def run_agent_loop(user_message, llm_config, history=None, stream_callback=None):
     """Run the full agent loop: LLM -> tools -> LLM -> ... until final answer.
 
@@ -3991,6 +4104,25 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         content = response_message.get('content', '') or ''
         tool_calls_raw = response_message.get('tool_calls', [])
+
+        # ── Fallback: parse tool calls from content if model doesn't use tool_calls field ──
+        # Some models (e.g. non-OpenAI-compatible) return tool calls as JSON in content instead
+        # of using the proper tool_calls field. Detect and parse them.
+        if not tool_calls_raw and content.strip():
+            _parsed_from_content = _try_parse_tool_calls_from_content(content)
+            if _parsed_from_content:
+                tool_calls_raw = _parsed_from_content
+                content = ''
+                # Remove the leaked tool call text from accumulated display
+                for _tc in _parsed_from_content:
+                    _tc_json = json.dumps(_tc, ensure_ascii=False)
+                    accumulated_text = accumulated_text.replace(_tc_json, '').strip()
+                # Clean up common wrapper patterns
+                import re as _re
+                accumulated_text = _re.sub(r'```json\s*\n?\s*```', '', accumulated_text).strip()
+                accumulated_text = _re.sub(r'```tool_calls?\s*\n?\s*```', '', accumulated_text).strip()
+                if not accumulated_text.strip():
+                    accumulated_text = ''
 
         # Handle completely empty response (no content, no tool calls)
         if not content.strip() and not tool_calls_raw:
