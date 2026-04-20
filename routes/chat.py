@@ -9,6 +9,8 @@ import time
 import platform
 import shutil
 import subprocess
+from routes.ast_index import (extract_definitions, find_references_ast, get_file_structure,
+                               project_index)
 import fnmatch
 import threading
 import queue
@@ -1093,8 +1095,9 @@ AGENT_TOOLS = [
             'name': 'find_definition',
             'description': (
                 'Find the definition location of a function, class, or variable in source code. '
-                'Searches for def/class/func/const/let/var/function declarations matching the given symbol name. '
-                'Returns file path, line number, and surrounding context. Useful for understanding code structure.'
+                'Uses AST (tree-sitter) semantic analysis for precise results — understands scopes, decorators, and nesting. '
+                'Returns file path, line number, kind (function/class/method/constant), parent class, and surrounding context. '
+                'Useful for understanding code structure and jumping to definitions.'
             ),
             'parameters': {
                 'type': 'object',
@@ -1117,8 +1120,9 @@ AGENT_TOOLS = [
         'function': {
             'name': 'find_references',
             'description': (
-                'Find all references/usages of a symbol across the codebase. Automatically excludes the definition line itself. '
-                'Returns file paths, line numbers, and the matching lines. Useful for refactoring and understanding dependencies.'
+                'Find all references/usages of a symbol across the codebase using AST (tree-sitter) analysis. '
+                'Automatically excludes definition lines, string literals, and comments for accurate results. '
+                'Returns file paths, line numbers, and matching lines. Useful for refactoring and understanding dependencies.'
             ),
             'parameters': {
                 'type': 'object',
@@ -1145,9 +1149,9 @@ AGENT_TOOLS = [
         'function': {
             'name': 'file_structure',
             'description': (
-                'Parse a source file and return its structural outline: classes, functions, methods, imports, and top-level variables. '
-                'Supports Python, JavaScript, TypeScript, and Go files. Useful for quickly understanding file organization '
-                'without reading the entire file.'
+                'Parse a source file using AST (tree-sitter) and return its structural outline: classes, functions, methods, imports, and top-level variables. '
+                'Supports Python, JavaScript, TypeScript, and Go files. Shows full parameter lists and parent classes. '
+                'Useful for quickly understanding file organization without reading the entire file.'
             ),
             'parameters': {
                 'type': 'object',
@@ -1346,6 +1350,13 @@ def _tool_write_file(args):
                 os.makedirs(parent, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
+        # Auto-update AST index for source files
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            try:
+                project_index.index_file(path, content.encode('utf-8'))
+            except Exception:
+                pass
         return f'File written successfully: {path} ({os.path.getsize(path)} bytes)'
     except Exception as e:
         return f'Error writing file {path}: {e}'
@@ -1386,6 +1397,13 @@ def _tool_edit_file(args):
 
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
+            # Auto-update AST index
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+                try:
+                    project_index.index_file(path, content.encode('utf-8'))
+                except Exception:
+                    pass
             return f'MultiEdit applied to {path}: {total_replacements} replacement(s) made'
 
         # Legacy single-replacement mode
@@ -1399,6 +1417,13 @@ def _tool_edit_file(args):
         new_content = content.replace(old_text, new_text)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(new_content)
+        # Auto-update AST index
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            try:
+                project_index.index_file(path, new_content.encode('utf-8'))
+            except Exception:
+                pass
         return f'Edited file: {path} ({count} replacement(s) made)'
     except Exception as e:
         return f'Error editing file {path}: {e}'
@@ -2142,31 +2167,18 @@ def _tool_glob_files(args):
     return '\n'.join(lines)
 
 def _tool_find_definition(args):
-    """Find definition of a symbol in source code."""
-    symbol = re.escape(args['symbol'])
+    """Find definition of a symbol using AST (tree-sitter) semantic analysis."""
+    symbol = args['symbol']
     search_path = _validate_path(args.get('path', WORKSPACE))
     if not os.path.isdir(search_path) and not os.path.isfile(search_path):
         return f'Error: Path not found: {search_path}'
 
-    # Definition patterns for different languages
-    patterns = [
-        (r'^(\s*)(def\s+' + symbol + r'\s*\()', 'Python function'),
-        (r'^(\s*)(class\s+' + symbol + r'[\s(:])', 'Python class'),
-        (r'^(\s*)(' + symbol + r'\s*=\s*)', 'Python variable'),
-        (r'^(\s*)(function\s+' + symbol + r'\s*\()', 'JS/TS function'),
-        (r'^(\s*)(const|let|var)\s+' + symbol + r'\s*[\s=]', 'JS/TS variable'),
-        (r'^(\s*)(class\s+' + symbol + r'[\s{])', 'JS/TS class'),
-        (r'^(\s*)(func\s+' + symbol + r'\s*\()', 'Go function'),
-        (r'^(\s*)(type\s+' + symbol + r'\s+struct)', 'Go struct'),
-        (r'^(\s*)(var\s+' + symbol + r'\s+)', 'Go variable'),
-    ]
-    regex = re.compile('|'.join(f'(?P<p{i}>{p})' for i, (p, _) in enumerate(patterns)), re.MULTILINE)
-    kind_map = {f'p{i}': kind for i, (_, kind) in enumerate(patterns)}
-
     skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
+    supported_ext = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'}
     results = []
     search_start = time.time()
 
+    # Collect files to search
     if os.path.isfile(search_path):
         file_list = [search_path]
     else:
@@ -2177,38 +2189,44 @@ def _tool_find_definition(args):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             for fname in files:
                 ext = os.path.splitext(fname)[1].lower()
-                if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.rb', '.php'):
+                if ext in supported_ext:
                     file_list.append(os.path.join(root, fname))
 
+    # Use AST to find definitions
     for fpath in file_list:
-        if time.time() - search_start > 20:
+        if time.time() - search_start > 20 or len(results) >= 20:
             break
         try:
-            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            for i, line in enumerate(lines):
-                m = regex.match(line)
-                if m:
-                    kind = None
-                    for group_name, kind_str in kind_map.items():
-                        if m.group(group_name):
-                            kind = kind_str
-                            break
+            defs = extract_definitions(fpath)
+            for d in defs:
+                if d['name'] == symbol:
                     rel = os.path.relpath(fpath, search_path)
-                    ctx_start = max(0, i - 2)
-                    ctx_end = min(len(lines), i + 6)
-                    context = ''.join(f'  {"→" if j == i else " "} {j+1:>5}\t{lines[j].rstrip()}\n'
-                                      for j in range(ctx_start, ctx_end))
-                    results.append(f'{kind} in {rel}:{i+1}\n{context}')
+                    try:
+                        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = f.readlines()
+                        line_idx = d['line'] - 1
+                        ctx_start = max(0, line_idx - 2)
+                        ctx_end = min(len(lines), line_idx + 6)
+                        context = ''.join(
+                            f'  {"→" if j == line_idx else " "} {j+1:>5}\t{lines[j].rstrip()}\n'
+                            for j in range(ctx_start, ctx_end)
+                        )
+                    except Exception:
+                        context = ''
+                    parent_info = f' (in {d["parent"]})' if d.get('parent') else ''
+                    results.append(f'{d["kind"]}{parent_info} in {rel}:{d["line"]}\n{context}')
         except (PermissionError, OSError):
             continue
 
     if not results:
-        return f'No definition found for "{args["symbol"]}"'
-    return f'Found {len(results)} definition(s) for "{args["symbol"]}":\n' + '\n---\n'.join(results[:20])
+        return f'No definition found for "{symbol}"'
+    return f'Found {len(results)} definition(s) for "{symbol}":\n' + '\n---\n'.join(results[:20])
 
 def _tool_find_references(args):
-    """Find all references/usages of a symbol."""
+    """Find all references/usages of a symbol using AST (tree-sitter).
+    Skips string literals and comments for accurate results.
+    Falls back to regex for unsupported file types.
+    """
     symbol = args['symbol']
     search_path = _validate_path(args.get('path', WORKSPACE))
     if not os.path.isdir(search_path) and not os.path.isfile(search_path):
@@ -2220,10 +2238,8 @@ def _tool_find_references(args):
         skip_dirs.add('tests')
         skip_dirs.add('test')
 
-    # Use word boundary matching for precise symbol search
-    word_pattern = re.escape(symbol)
-    regex = re.compile(r'\b' + word_pattern + r'\b')
-
+    ast_ext = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'}
+    fallback_ext = {'.json', '.yaml', '.yml', '.md', '.html', '.css', '.sh', '.toml', '.cfg', '.ini'}
     results = []
     search_start = time.time()
     max_results = 50
@@ -2238,25 +2254,32 @@ def _tool_find_references(args):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             for fname in files:
                 ext = os.path.splitext(fname)[1].lower()
-                if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.json', '.yaml', '.yml', '.md', '.html', '.css', '.sh', '.rb', '.php', '.toml', '.cfg', '.ini'):
+                if ext in ast_ext or ext in fallback_ext:
                     file_list.append(os.path.join(root, fname))
 
     for fpath in file_list:
         if time.time() - search_start > 20 or len(results) >= max_results:
             break
+        ext = os.path.splitext(fpath)[1].lower()
+        rel = os.path.relpath(fpath, search_path)
+
         try:
-            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            for i, line in enumerate(lines):
-                if regex.search(line):
-                    # Skip pure definition lines (they're in find_definition)
-                    stripped = line.strip()
-                    if (stripped.startswith('def ') or stripped.startswith('class ') or
-                        stripped.startswith('function ') or stripped.startswith('func ') or
-                        re.match(r'^(const|let|var|type)\s+' + word_pattern + r'[\s=:{]', stripped)):
-                        continue
-                    rel = os.path.relpath(fpath, search_path)
-                    results.append(f'{rel}:{i+1}: {line.rstrip()}')
+            if ext in ast_ext:
+                # Use AST for source code files — skips strings/comments
+                refs = find_references_ast(fpath, symbol)
+                for r in refs:
+                    results.append(f'{rel}:{r["line"]}: {r["text"]}')
+            else:
+                # Fallback to regex for config/text files
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                word_pattern = re.escape(symbol)
+                regex = re.compile(r'\b' + word_pattern + r'\b')
+                for i, line in enumerate(lines):
+                    if regex.search(line):
+                        results.append(f'{rel}:{i+1}: {line.rstrip()}')
+                        if len(results) >= max_results:
+                            break
         except (PermissionError, OSError):
             continue
 
@@ -2269,10 +2292,15 @@ def _tool_find_references(args):
     return output
 
 def _tool_file_structure(args):
-    """Parse source file and return structural outline."""
+    """Parse source file and return structural outline using AST (tree-sitter).
+    Falls back to regex for unsupported file types.
+    """
     path = _validate_path(args['path'])
     if not os.path.isfile(path):
         return f'Error: File not found: {path}'
+
+    ext = os.path.splitext(path)[1].lower()
+    rel = os.path.relpath(path, WORKSPACE)
 
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -2280,141 +2308,85 @@ def _tool_file_structure(args):
     except Exception as e:
         return f'Error reading file: {e}'
 
-    ext = os.path.splitext(path)[1].lower()
-    rel = os.path.relpath(path, WORKSPACE)
+    # Try AST first
+    struct = get_file_structure(path)
+    if struct:
+        outline = [f'File: {rel} ({len(lines)} lines) [AST]', '']
+        if struct.get('imports'):
+            outline.append(f'Imports ({len(struct["imports"])}):')
+            for imp in struct['imports'][:30]:
+                outline.append(f'  L{imp["line"]}: {imp["text"]}')
+            if len(struct['imports']) > 30:
+                outline.append(f'  ... and {len(struct["imports"])-30} more imports')
+            outline.append('')
+        if struct.get('classes'):
+            outline.append(f'Classes/Types ({len(struct["classes"])}):')
+            for cls in struct['classes']:
+                outline.append(f'  L{cls["line"]}: {cls["text"]}')
+            outline.append('')
+        if struct.get('functions'):
+            outline.append(f'Functions/Methods ({len(struct["functions"])}):')
+            for fn in struct['functions'][:80]:
+                outline.append(f'  L{fn["line"]}: {fn["text"]}')
+            if len(struct['functions']) > 80:
+                outline.append(f'  ... and {len(struct["functions"])-80} more functions')
+            outline.append('')
+        if struct.get('variables'):
+            outline.append(f'Constants/Variables ({len(struct["variables"])}):')
+            for var in struct['variables'][:20]:
+                parent_info = f' (in {var["parent"]})' if var.get('parent') else ''
+                outline.append(f'  L{var["line"]}: {var["text"]}{parent_info}')
+            outline.append('')
+        total = len(struct.get('imports', [])) + len(struct.get('classes', [])) + \
+                len(struct.get('functions', [])) + len(struct.get('variables', []))
+        outline.append(f'Total: {total} symbols')
+        return '\n'.join(outline)
+
+    # Fallback to regex for unsupported extensions
+    return _file_structure_regex(path, ext, rel, lines)
+
+
+def _file_structure_regex(path, ext, rel, lines):
+    """Regex-based file structure fallback for unsupported file types."""
     outline = [f'File: {rel} ({len(lines)} lines)', '']
+    if ext not in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go'):
+        return f'Unsupported file type: {ext}. Supported: .py, .js, .ts, .tsx, .jsx, .go'
+
+    imports = []
+    classes = []
+    functions = []
+    variables = []
 
     if ext == '.py':
-        # Python structure parsing
-        imports = []
-        classes = []
-        functions = []
-        variables = []
-        current_class = None
         for i, line in enumerate(lines):
             stripped = line.strip()
-            # Imports
             if stripped.startswith('import ') or stripped.startswith('from '):
                 imports.append(f'  L{i+1}: {stripped[:100]}')
-            # Class definitions
             class_m = re.match(r'^(\s*)class\s+(\w+)', line)
             if class_m:
-                indent = len(class_m.group(1))
                 name = class_m.group(2)
-                bases = ''
                 paren = stripped.find('(')
-                if paren > 0:
-                    bases = stripped[paren:stripped.find(')')+1] if ')' in stripped else ''
-                current_class = (name, indent)
+                bases = stripped[paren:stripped.find(')')+1] if paren > 0 and ')' in stripped else ''
                 classes.append(f'  L{i+1}: class {name}{bases}')
-                continue
-            # Function/method definitions
             func_m = re.match(r'^(\s*)(async\s+)?def\s+(\w+)', line)
             if func_m:
-                indent = len(func_m.group(1))
                 name = func_m.group(3)
                 prefix = 'async ' if func_m.group(2) else ''
-                params = ''
                 paren = stripped.find('(')
-                if paren > 0:
-                    end_p = stripped.find(')', paren)
-                    if end_p > 0:
-                        params = stripped[paren:end_p+1]
-                if current_class and indent > current_class[1]:
-                    # Method inside class
-                    functions.append(f'    L{i+1}: {prefix}def {name}{params}')
-                else:
-                    current_class = None
-                    functions.append(f'  L{i+1}: {prefix}def {name}{params}')
-            # Top-level variables
-            elif not stripped.startswith('#') and not stripped.startswith('import') and not stripped.startswith('from') and not stripped.startswith('@'):
-                if re.match(r'^[A-Z_][A-Z_0-9]*\s*=', stripped) and not current_class:
-                    variables.append(f'  L{i+1}: {stripped[:100]}')
-
-        if imports:
-            outline.append(f'Imports ({len(imports)}):')
-            outline.extend(imports[:30])
-            if len(imports) > 30:
-                outline.append(f'  ... and {len(imports)-30} more imports')
-            outline.append('')
-        if classes:
-            outline.append(f'Classes ({len(classes)}):')
-            outline.extend(classes)
-            outline.append('')
-        if functions:
-            outline.append(f'Functions/Methods ({len(functions)}):')
-            outline.extend(functions[:50])
-            if len(functions) > 50:
-                outline.append(f'  ... and {len(functions)-50} more functions')
-            outline.append('')
-        if variables:
-            outline.append(f'Constants ({len(variables)}):')
-            outline.extend(variables[:20])
-            outline.append('')
-
+                params = stripped[paren:stripped.find(')', paren)+1] if paren > 0 and ')' in stripped[paren:] else '()'
+                functions.append(f'  L{i+1}: {prefix}def {name}{params}')
     elif ext in ('.js', '.ts', '.tsx', '.jsx'):
-        # JS/TS structure parsing
-        imports = []
-        classes = []
-        functions = []
-        variables = []
-        current_class = None
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped.startswith('import ') or stripped.startswith('export '):
                 imports.append(f'  L{i+1}: {stripped[:100]}')
             class_m = re.match(r'^(\s*)(export\s+)?(default\s+)?class\s+(\w+)', line)
             if class_m:
-                name = class_m.group(4)
-                current_class = (name, len(class_m.group(1)))
-                classes.append(f'  L{i+1}: class {name}')
-                continue
+                classes.append(f'  L{i+1}: class {class_m.group(4)}')
             func_m = re.match(r'^(\s*)(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)', line)
             if func_m:
-                name = func_m.group(5)
-                current_class = None
-                functions.append(f'  L{i+1}: function {name}')
-                continue
-            # Arrow functions and const/let/var
-            arrow_m = re.match(r'^(\s*)(export\s+)?(const|let|var)\s+(\w+)\s*=', line)
-            if arrow_m:
-                name = arrow_m.group(4)
-                indent = len(arrow_m.group(1))
-                if current_class and indent > current_class[1]:
-                    functions.append(f'    L{i+1}: {name} (property/method)')
-                else:
-                    if '=>' in stripped or 'function' in stripped:
-                        functions.append(f'  L{i+1}: {name} (arrow/function)')
-                    else:
-                        variables.append(f'  L{i+1}: {name}')
-
-        if imports:
-            outline.append(f'Imports ({len(imports)}):')
-            outline.extend(imports[:30])
-            if len(imports) > 30:
-                outline.append(f'  ... and {len(imports)-30} more imports')
-            outline.append('')
-        if classes:
-            outline.append(f'Classes ({len(classes)}):')
-            outline.extend(classes)
-            outline.append('')
-        if functions:
-            outline.append(f'Functions ({len(functions)}):')
-            outline.extend(functions[:50])
-            if len(functions) > 50:
-                outline.append(f'  ... and {len(functions)-50} more functions')
-            outline.append('')
-        if variables:
-            outline.append(f'Variables ({len(variables)}):')
-            outline.extend(variables[:20])
-            outline.append('')
-
+                functions.append(f'  L{i+1}: function {func_m.group(5)}')
     elif ext == '.go':
-        # Go structure parsing
-        imports = []
-        functions = []
-        types = []
-        variables = []
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped.startswith('import '):
@@ -2424,34 +2396,28 @@ def _tool_file_structure(args):
                 functions.append(f'  L{i+1}: func {func_m.group(1)}')
             type_m = re.match(r'^\s*type\s+(\w+)\s+struct', line)
             if type_m:
-                types.append(f'  L{i+1}: type {type_m.group(1)} struct')
-            var_m = re.match(r'^\s*var\s+(\w+)', line)
-            if var_m:
-                variables.append(f'  L{i+1}: var {var_m.group(1)}')
+                classes.append(f'  L{i+1}: type {type_m.group(1)} struct')
 
-        if imports:
-            outline.append(f'Imports ({len(imports)}):')
-            outline.extend(imports[:20])
-            outline.append('')
-        if types:
-            outline.append(f'Types ({len(types)}):')
-            outline.extend(types)
-            outline.append('')
-        if functions:
-            outline.append(f'Functions ({len(functions)}):')
-            outline.extend(functions[:50])
-            outline.append('')
-        if variables:
-            outline.append(f'Variables ({len(variables)}):')
-            outline.extend(variables[:20])
-            outline.append('')
-    else:
-        return f'Unsupported file type: {ext}. Supported: .py, .js, .ts, .tsx, .jsx, .go'
+    if imports:
+        outline.append(f'Imports ({len(imports)}):')
+        outline.extend(imports[:30])
+        outline.append('')
+    if classes:
+        outline.append(f'Classes ({len(classes)}):')
+        outline.extend(classes)
+        outline.append('')
+    if functions:
+        outline.append(f'Functions ({len(functions)}):')
+        outline.extend(functions[:50])
+        outline.append('')
+    if variables:
+        outline.append(f'Constants ({len(variables)}):')
+        outline.extend(variables[:20])
+        outline.append('')
 
-    total_items = sum(1 for line in outline if line.startswith('  L'))
+    total_items = len(imports) + len(classes) + len(functions) + len(variables)
     if total_items == 0:
         return f'No structure found in {rel} (empty or unrecognized format)'
-
     outline.append(f'Total: {total_items} symbols')
     return '\n'.join(outline)
 
@@ -2902,6 +2868,63 @@ def _build_api_messages(messages, llm_config):
 
     # Replace or append system environment and workspace info
     sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
+
+    # Inject project knowledge from .phoneide/ directory (like CLAUDE.md)
+    try:
+        phoneide_dir = os.path.join(project_dir if project and os.path.isdir(os.path.join(ws, project)) else ws, '.phoneide')
+        if os.path.isdir(phoneide_dir):
+            knowledge_files = [
+                ('rules.md', 'Project Rules & Guidelines'),
+                ('architecture.md', 'Project Architecture'),
+                ('conventions.md', 'Coding Conventions'),
+            ]
+            knowledge_parts = []
+            for fname, title in knowledge_files:
+                fpath = os.path.join(phoneide_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read().strip()
+                        if content:
+                            knowledge_parts.append(f'### {title}\n{content}')
+                    except Exception:
+                        pass
+            if knowledge_parts:
+                sys_prompt += '\n\n## Project Knowledge (from .phoneide/)\n'
+                sys_prompt += 'The following project-specific context was loaded from .phoneide/ files. '
+                sys_prompt += 'Use this information to follow project conventions and understand the architecture.\n\n'
+                sys_prompt += '\n\n'.join(knowledge_parts) + '\n'
+    except Exception:
+        pass
+
+    # Inject AST index summary if available
+    try:
+        if not project_index.is_indexing and project_index.symbol_count > 0:
+            symbols = project_index.get_all_symbols()
+            # Show top-level symbols (no parent = module-level)
+            top_symbols = {}
+            for name, entries in symbols.items():
+                for fp, d in entries:
+                    if not d.get('parent'):
+                        rel = os.path.relpath(fp, ws)
+                        top_symbols.setdefault(name, []).append((rel, d['kind'], d['line']))
+            # Build compact summary
+            symbol_lines = []
+            for name in sorted(top_symbols.keys()):
+                locs = top_symbols[name]
+                if len(locs) <= 3:
+                    for rel, kind, line in locs:
+                        symbol_lines.append(f'  {kind} {name} ({rel}:{line})')
+                else:
+                    symbol_lines.append(f'  {name} ({len(locs)} definitions)')
+            if symbol_lines:
+                sys_prompt += f'\n\n## Project Symbol Index ({project_index.file_count} files, {project_index.symbol_count} symbols)\n'
+                sys_prompt += 'Top-level symbols in the project:\n'
+                sys_prompt += '\n'.join(symbol_lines[:80]) + '\n'
+                if len(symbol_lines) > 80:
+                    sys_prompt += f'  ... and {len(symbol_lines) - 80} more symbols\n'
+    except Exception:
+        pass
 
     api_messages = [{'role': 'system', 'content': sys_prompt}]
     for msg in messages:
@@ -3658,6 +3681,21 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
     # Compress context if needed (with AI summarization for history-level compression)
     context, _ = _compress_context(history, max_tokens=_get_context_budget(llm_config), llm_config=llm_config)
+
+    # Trigger background AST index if stale or empty (runs in daemon thread)
+    try:
+        from utils import load_config
+        cfg = load_config()
+        ws = cfg.get('workspace', WORKSPACE)
+        prj = cfg.get('project', None)
+        project_root = os.path.join(ws, prj) if prj else ws
+        if os.path.isdir(project_root) and (project_index.file_count == 0 or
+                (time.time() - project_index.last_index_time > 300)):
+            threading.Thread(target=project_index.index_project,
+                           args=(project_root,), kwargs={'max_files': 1000, 'max_time': 10},
+                           daemon=True).start()
+    except Exception:
+        pass
 
     # Pre-save history before starting the loop so retry can recover even if
     # the very first LLM call fails (before any tool execution).
