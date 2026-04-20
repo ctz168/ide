@@ -73,7 +73,7 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, **debug web pages in the built-in preview**, and more.
 
 ## Available Tools
-You have **38 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **47 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
 ### File & Code Tools (19)
@@ -84,6 +84,14 @@ For multi-step tasks, think step by step and use tools in sequence.
 - `git_status` / `git_diff` / `git_commit` / `git_log` / `git_checkout` -- Full Git workflow
 - `install_package` / `list_packages` -- Python/npm package management
 - `web_search` / `web_fetch` -- Search the web and fetch page content
+
+### Task Planning & Tracking (2)
+- `todo_write` -- Create or update a task plan (use BEFORE complex multi-step tasks)
+- `todo_read` -- Read current todo list to check progress
+
+### Sub-Agent Tools (2)
+- `delegate_task` -- Launch a sub-agent for independent subtasks (supports "read" and "write" modes)
+- `parallel_tasks` -- Launch 2-4 sub-agents simultaneously for independent parallel work
 
 ### Browser Debugging Tools (10)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
@@ -1111,22 +1119,81 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Task Planning & Tracking ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'todo_write',
+            'description': (
+                'Create or update a task plan with a list of todo items. Each item has an id, content, status (pending/in_progress/completed), '
+                'and priority (high/medium/low). Use this BEFORE starting any complex multi-step task to plan your approach. '
+                'Update the status as you progress — mark items in_progress when working on them and completed when done. '
+                'This helps you stay organized and avoid missing steps. The todo list is displayed to the user in real-time.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'todos': {
+                        'type': 'array',
+                        'description': 'The updated todo list (replaces the entire list)',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'id': {'type': 'string', 'description': 'Unique identifier for this todo item'},
+                                'content': {'type': 'string', 'description': 'Description of the task'},
+                                'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed'], 'description': 'Task status'},
+                                'priority': {'type': 'string', 'enum': ['high', 'medium', 'low'], 'description': 'Priority level'},
+                            },
+                            'required': ['id', 'content', 'status'],
+                        },
+                    },
+                },
+                'required': ['todos'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'todo_read',
+            'description': (
+                'Read the current todo list. Returns all todo items with their id, content, status, and priority. '
+                'Use this to check your progress on a task plan.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
+    # ── Sub-Agent Tools ──
     {
         'type': 'function',
         'function': {
             'name': 'delegate_task',
             'description': (
-                'Launch a lightweight sub-agent to handle an independent, well-defined subtask (e.g. "explore project architecture", '
-                '"find all API endpoints", "summarize test coverage"). The sub-agent has its own context and can only use read-only tools '
-                '(read_file, glob_files, grep_code, search_files, list_directory, file_info, file_structure, find_definition, find_references). '
-                'Returns a concise summary. Max 15 iterations. Use this for exploration/research tasks to avoid polluting the main conversation context.'
+                'Launch a sub-agent to handle an independent, well-defined subtask. Supports two modes:\n'
+                '- "read" (default): Read-only exploration/research — can use read_file, glob_files, grep_code, search_files, '
+                'list_directory, file_info, file_structure, find_definition, find_references, web_search, web_fetch. '
+                'Use this for code analysis, architecture exploration, finding usages, summarizing code, etc.\n'
+                '- "write": Full write-capable sub-agent — has access to ALL tools (read, write, edit, run commands, git, etc.). '
+                'Use this for parallel code modifications (e.g. "create unit tests for module X", "add error handling to all API routes"). '
+                'The sub-agent runs independently with its own context and returns a summary of what it did.\n'
+                'Max 15 iterations. Returns a concise summary of findings or changes made.'
             ),
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'task': {
                         'type': 'string',
-                        'description': 'A clear description of the subtask to perform. Be specific about what information to gather or analyze.',
+                        'description': 'A clear description of the subtask to perform. Be specific about what to gather, analyze, or modify.',
+                    },
+                    'mode': {
+                        'type': 'string',
+                        'enum': ['read', 'write'],
+                        'description': '"read" for exploration only (safe, default). "write" for tasks that need to modify files or run commands.',
+                        'default': 'read',
                     },
                     'max_iterations': {
                         'type': 'integer',
@@ -1134,6 +1201,39 @@ AGENT_TOOLS = [
                     },
                 },
                 'required': ['task'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'parallel_tasks',
+            'description': (
+                'Launch multiple sub-agents simultaneously to handle independent subtasks in parallel. '
+                'Each task runs in its own thread with its own context. Supports both "read" and "write" modes per task. '
+                'Use this when you have 2-4 independent subtasks that can be done concurrently (e.g. '
+                'simultaneously analyze different modules, create tests for different files, or refactor different components). '
+                'All tasks must be truly independent — do NOT have them modify the same files. '
+                'Returns a combined summary of all results. Max 4 parallel tasks.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'tasks': {
+                        'type': 'array',
+                        'description': 'List of tasks to run in parallel (max 4)',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'task': {'type': 'string', 'description': 'Description of the subtask'},
+                                'mode': {'type': 'string', 'enum': ['read', 'write'], 'description': '"read" or "write" (default: "read")'},
+                                'max_iterations': {'type': 'integer', 'description': 'Max iterations (1-15). Default: 8'},
+                            },
+                            'required': ['task'],
+                        },
+                    },
+                },
+                'required': ['tasks'],
             },
         },
     },
@@ -2313,7 +2413,7 @@ def _tool_file_structure(args):
     outline.append(f'Total: {total_items} symbols')
     return '\n'.join(outline)
 
-# Read-only tools available to sub-agents
+# Read-only tools available to sub-agents (read mode)
 _SUBAGENT_TOOLS = {
     'read_file': _tool_read_file,
     'glob_files': _tool_glob_files,
@@ -2324,33 +2424,127 @@ _SUBAGENT_TOOLS = {
     'file_structure': _tool_file_structure,
     'find_definition': _tool_find_definition,
     'find_references': _tool_find_references,
+    'web_search': _tool_web_search,
+    'web_fetch': _tool_web_fetch,
 }
 
-# Read-only tool definitions for sub-agent API calls
+# Write-capable tools for sub-agents (write mode) — includes all read tools + write/edit/run
+_WRITE_SUBAGENT_TOOLS = dict(_SUBAGENT_TOOLS)
+_WRITE_SUBAGENT_TOOLS.update({
+    'write_file': _tool_write_file,
+    'edit_file': _tool_edit_file,
+    'run_command': _tool_run_command,
+    'install_package': _tool_install_package,
+    'create_directory': _tool_create_directory,
+    'delete_path': _tool_delete_path,
+    'git_status': _tool_git_status,
+    'git_diff': _tool_git_diff,
+    'git_commit': _tool_git_commit,
+    'git_log': _tool_git_log,
+    'git_checkout': _tool_git_checkout,
+})
+
+# Tool definitions for sub-agent API calls (read mode)
 _SUBAGENT_TOOL_DEFS = [t for t in AGENT_TOOLS if t['function']['name'] in _SUBAGENT_TOOLS]
 
-def _tool_delegate_task(args):
-    """Launch a lightweight sub-agent for exploration/research tasks."""
-    task = args.get('task', '').strip()
+# Tool definitions for write-mode sub-agents
+_WRITE_SUBAGENT_TOOL_DEFS = [t for t in AGENT_TOOLS if t['function']['name'] in _WRITE_SUBAGENT_TOOLS]
+
+# ==================== Todo Storage ====================
+_active_todos = {
+    'todos': [],
+    'lock': threading.Lock(),
+}
+
+def _tool_todo_read(args):
+    """Read the current todo list."""
+    with _active_todos['lock']:
+        todos = _active_todos['todos']
+    if not todos:
+        return 'No active todos.'
+    lines = []
+    for t in todos:
+        status_icon = {'pending': '○', 'in_progress': '◐', 'completed': '●'}.get(t.get('status', ''), '○')
+        priority_tag = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(t.get('priority', ''), '')
+        lines.append(f'{status_icon} [{t.get("id", "?")}] {priority_tag} {t.get("content", "")} ({t.get("status", "pending")})')
+    return '\n'.join(lines)
+
+def _tool_todo_write(args):
+    """Write/update the todo list."""
+    todos = args.get('todos')
+    if not isinstance(todos, list):
+        return 'Error: todos must be an array of {id, content, status} objects'
+    # Validate each item
+    for i, t in enumerate(todos):
+        if not isinstance(t, dict):
+            return f'Error: todo[{i}] must be an object'
+        if not t.get('id') or not t.get('content') or not t.get('status'):
+            return f'Error: todo[{i}] missing required fields (id, content, status)'
+        if t.get('status') not in ('pending', 'in_progress', 'completed'):
+            return f'Error: todo[{i}] invalid status "{t.get("status")}", must be pending/in_progress/completed'
+        if t.get('priority') and t.get('priority') not in ('high', 'medium', 'low'):
+            return f'Error: todo[{i}] invalid priority "{t.get("priority")}", must be high/medium/low'
+    with _active_todos['lock']:
+        _active_todos['todos'] = todos
+    # Build summary
+    total = len(todos)
+    completed = sum(1 for t in todos if t.get('status') == 'completed')
+    in_progress = sum(1 for t in todos if t.get('status') == 'in_progress')
+    pending = total - completed - in_progress
+    return f'Todo list updated: {total} items ({completed} completed, {in_progress} in progress, {pending} pending)'
+
+# ==================== Sub-Agent Engine ====================
+def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
+    """Core sub-agent execution engine. Used by both delegate_task and parallel_tasks.
+
+    Args:
+        task: Task description string.
+        mode: 'read' for read-only tools, 'write' for full tools.
+        max_iterations: Max agent loop iterations (1-15).
+        llm_config: LLM config dict. If None, loads from default.
+
+    Returns:
+        Summary string of what the sub-agent found/did.
+    """
     if not task:
         return 'Error: task description is required'
-    max_iters = min(max(args.get('max_iterations', 8), 1), 15)
+    max_iters = min(max(max_iterations, 1), 15)
 
-    try:
-        config = load_config()
-        llm_config = get_active_llm_config(config)
-    except Exception as e:
-        return f'Error loading LLM config: {e}'
+    if llm_config is None:
+        try:
+            config = load_config()
+            llm_config = get_active_llm_config(config)
+        except Exception as e:
+            return f'Error loading LLM config: {e}'
 
-    # Build sub-agent context
-    sub_context = [
-        {'role': 'system', 'content': (
+    is_write_mode = (mode == 'write')
+    sub_tools = _WRITE_SUBAGENT_TOOLS if is_write_mode else _SUBAGENT_TOOLS
+    sub_tool_defs = _WRITE_SUBAGENT_TOOL_DEFS if is_write_mode else _SUBAGENT_TOOL_DEFS
+
+    # Build sub-agent system prompt based on mode
+    if is_write_mode:
+        system_prompt = (
+            'You are a write-capable sub-agent. You can read files, write/edit files, run commands, and manage git.\n'
+            'You have access to a full set of tools for code modification.\n'
+            'IMPORTANT RULES:\n'
+            '1. Always read a file before modifying it\n'
+            '2. Test your changes with run_command when possible\n'
+            '3. Use edit_file for targeted changes, write_file only for new files\n'
+            '4. When done, provide a clear summary of ALL changes you made (files modified/created)\n'
+            '5. If you encounter errors, try to fix them before reporting\n'
+            '6. Be efficient — minimize unnecessary iterations'
+        )
+    else:
+        system_prompt = (
             'You are a research sub-agent. Your job is to gather information and return a concise summary.\n'
             'You have access to read-only tools (read_file, glob_files, grep_code, search_files, list_directory, '
-            'file_info, file_structure, find_definition, find_references).\n'
+            'file_info, file_structure, find_definition, find_references, web_search, web_fetch).\n'
             'Be thorough but concise. Focus on factual findings.\n'
             'When done, provide a clear summary of what you found.'
-        )},
+        )
+
+    sub_context = [
+        {'role': 'system', 'content': system_prompt},
         {'role': 'user', 'content': task},
     ]
 
@@ -2359,13 +2553,12 @@ def _tool_delegate_task(args):
     for iteration in range(max_iters):
         try:
             api_messages = _build_api_messages(sub_context, llm_config)
-            # Remove tools from main payload for sub-agent, use read-only subset
             payload = {
                 'model': llm_config.get('model', 'gpt-4o-mini'),
                 'messages': api_messages,
                 'temperature': 0.3,
                 'max_tokens': 4096,
-                'tools': _SUBAGENT_TOOL_DEFS,
+                'tools': sub_tool_defs,
                 'tool_choice': 'auto',
             }
             url, headers = _get_llm_endpoint(llm_config, payload['model'])
@@ -2374,7 +2567,8 @@ def _tool_delegate_task(args):
             with _urllib_opener.open(req, timeout=120) as resp:
                 response = json.loads(resp.read().decode('utf-8'))
         except Exception as e:
-            return f'Sub-agent error (iteration {iteration+1}): {str(e)}'
+            tool_results_summary.append(f'[Error iteration {iteration+1}] {str(e)}')
+            break
 
         choice = response.get('choices', [{}])[0]
         message = choice.get('message', {})
@@ -2398,14 +2592,14 @@ def _tool_delegate_task(args):
             except json.JSONDecodeError:
                 tool_args = {}
 
-            handler = _SUBAGENT_TOOLS.get(tool_name)
+            handler = sub_tools.get(tool_name)
             if handler:
                 try:
                     result = handler(tool_args)
                 except Exception as e:
                     result = f'Error: {e}'
             else:
-                result = f'Error: Sub-agent cannot use tool "{tool_name}" (not in read-only set)'
+                result = f'Error: Sub-agent cannot use tool "{tool_name}" (not available in {mode} mode)'
 
             tool_results_summary.append(f'[{tool_name}] {_truncate(result, 300)}')
             sub_context.append({
@@ -2415,10 +2609,61 @@ def _tool_delegate_task(args):
                 'content': result,
             })
 
-    # Return the sub-agent's findings
-    output = f'Sub-agent completed ({iteration+1}/{max_iters} iterations):\n\n'
+    mode_label = 'Write' if is_write_mode else 'Read'
+    output = f'[{mode_label} sub-agent] Completed ({min(iteration+1, max_iters)}/{max_iters} iterations):\n\n'
     output += '\n'.join(tool_results_summary)
     return _truncate(output, 15000)
+
+def _tool_delegate_task(args):
+    """Launch a sub-agent for a subtask. Supports read and write modes."""
+    task = args.get('task', '').strip()
+    mode = args.get('mode', 'read').strip()
+    max_iters = args.get('max_iterations', 8)
+    return _run_subagent(task, mode=mode, max_iterations=max_iters)
+
+def _tool_parallel_tasks(args):
+    """Launch multiple sub-agents in parallel."""
+    tasks = args.get('tasks', [])
+    if not isinstance(tasks, list) or len(tasks) == 0:
+        return 'Error: tasks must be a non-empty array of {task, mode?} objects'
+    if len(tasks) > 4:
+        return 'Error: max 4 parallel tasks supported'
+    for i, t in enumerate(tasks):
+        if not t.get('task'):
+            return f'Error: tasks[{i}] missing required "task" field'
+
+    # Load LLM config once
+    try:
+        config = load_config()
+        llm_config = get_active_llm_config(config)
+    except Exception as e:
+        return f'Error loading LLM config: {e}'
+
+    # Run sub-agents in parallel threads
+    results = [None] * len(tasks)
+
+    def _run_one(idx, task_def):
+        task_text = task_def.get('task', '')
+        mode = task_def.get('mode', 'read').strip()
+        max_iters = task_def.get('max_iterations', 8)
+        results[idx] = _run_subagent(task_text, mode=mode, max_iterations=max_iters, llm_config=llm_config)
+
+    threads = []
+    for i, t in enumerate(tasks):
+        thread = threading.Thread(target=_run_one, args=(i, t))
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join(timeout=300)  # 5 min max per parallel batch
+
+    # Combine results
+    output_parts = [f'=== Parallel Tasks Results ({len(tasks)} tasks) ===']
+    for i, result in enumerate(results):
+        mode_label = tasks[i].get('mode', 'read')
+        output_parts.append(f'\n--- Task {i+1} [{mode_label}]: {tasks[i].get("task", "")[:80]} ---')
+        output_parts.append(result if result else '(task did not return a result)')
+    return _truncate('\n'.join(output_parts), 15000)
 
 _TOOL_HANDLERS = {
     'read_file': _tool_read_file,
@@ -2465,6 +2710,9 @@ _TOOL_HANDLERS = {
     'find_references': _tool_find_references,
     'file_structure': _tool_file_structure,
     'delegate_task': _tool_delegate_task,
+    'parallel_tasks': _tool_parallel_tasks,
+    'todo_write': _tool_todo_write,
+    'todo_read': _tool_todo_read,
 }
 
 def execute_agent_tool(name, arguments):
@@ -3113,6 +3361,8 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'find_definition': 3000, 'find_references': 2000,
         'run_command': 3000, 'web_fetch': 2000,
         'delegate_task': 3000,
+        'parallel_tasks': 6000,
+        'todo_write': 100, 'todo_read': 100,
     }
     TOOL_LIMITS_DEFAULT = 4000
 

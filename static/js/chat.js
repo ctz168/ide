@@ -93,9 +93,64 @@ const ChatManager = (() => {
         find_references:     '🔗',
         file_structure:      '🏗️',
         delegate_task:       '🤖',
+        parallel_tasks:      '🔄',
+        todo_write:          '📋',
+        todo_read:           '📋',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"
+
+    // ==================== Todo Panel ====================
+    let todoPanelEl = null;
+    let currentTodoData = [];
+
+    function createOrUpdateTodoPanel(todos) {
+        if (Array.isArray(todos)) {
+            currentTodoData = todos;
+        }
+        if (!todoPanelEl) {
+            todoPanelEl = document.createElement('div');
+            todoPanelEl.className = 'todo-panel';
+            todoPanelEl.id = 'ai-todo-panel';
+            const chatContainer = document.getElementById('chat-messages');
+            if (chatContainer) {
+                chatContainer.parentElement.insertBefore(todoPanelEl, chatContainer);
+            }
+        }
+        if (currentTodoData.length === 0) {
+            todoPanelEl.style.display = 'none';
+            return;
+        }
+        todoPanelEl.style.display = 'block';
+        const completed = currentTodoData.filter(t => t.status === 'completed').length;
+        const total = currentTodoData.length;
+        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        let html = '<div class="todo-panel-header" onclick="document.getElementById(\'ai-todo-panel-body\').classList.toggle(\'collapsed\')">';
+        html += '<span class="todo-panel-title">📋 Task Plan</span>';
+        html += '<span class="todo-panel-progress">' + completed + '/' + total + ' (' + pct + '%)</span>';
+        html += '<div class="todo-panel-bar"><div class="todo-panel-bar-fill" style="width:' + pct + '%"></div></div>';
+        html += '</div>';
+        html += '<div id="ai-todo-panel-body" class="todo-panel-body">';
+        currentTodoData.forEach(function(t) {
+            const isCompleted = t.status === 'completed';
+            const isInProgress = t.status === 'in_progress';
+            let statusClass = 'todo-pending';
+            if (isCompleted) statusClass = 'todo-completed';
+            else if (isInProgress) statusClass = 'todo-inprogress';
+            const icon = isCompleted ? '✅' : (isInProgress ? '🔄' : '⬜');
+            const pri = t.priority === 'high' ? '🔴' : (t.priority === 'medium' ? '🟡' : (t.priority === 'low' ? '🟢' : ''));
+            html += '<div class="todo-item ' + statusClass + '">' + icon + ' ' + pri + ' <span>' + escHtml(t.content) + '</span></div>';
+        });
+        html += '</div>';
+        todoPanelEl.innerHTML = html;
+    }
+
+    function hideTodoPanel() {
+        currentTodoData = [];
+        if (todoPanelEl) {
+            todoPanelEl.style.display = 'none';
+        }
+    }
 
     // Plan mode system prompt
     const PLAN_MODE_PROMPT = `[PLAN MODE] Please analyze the request and create a detailed execution plan in Markdown format. Include:
@@ -1292,6 +1347,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             toolResultStr,
                             ok
                         );
+                        // Update todo panel if todo_write was called
+                        if (lastToolName === 'todo_write' && lastToolArgs && lastToolArgs.todos) {
+                            createOrUpdateTodoPanel(lastToolArgs.todos);
+                        }
                         // Save tool result to messages[] so backup includes it
                         messages.push({
                             role: 'tool',
@@ -1678,6 +1737,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             toolResultStr,
                             ok
                         );
+                        // Update todo panel if todo_write was called
+                        if (lastToolName === 'todo_write' && lastToolArgs && lastToolArgs.todos) {
+                            createOrUpdateTodoPanel(lastToolArgs.todos);
+                        }
                         // Save tool result to messages[] so backup includes it
                         messages.push({
                             role: 'tool',
@@ -2034,6 +2097,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             toolResultStr,
                             ok
                         );
+                        // Update todo panel if todo_write was called
+                        if (lastToolName === 'todo_write' && lastToolArgs && lastToolArgs.todos) {
+                            createOrUpdateTodoPanel(lastToolArgs.todos);
+                        }
                         // Save tool result to messages[] so backup includes it
                         messages.push({
                             role: 'tool',
@@ -3014,6 +3081,82 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 max-height: 400px;
                 overflow-y: auto;
                 -webkit-overflow-scrolling: touch;
+            }
+
+            /* ── Todo Panel ── */
+            .todo-panel {
+                background: var(--surface-0);
+                border: 1px solid var(--border-subtle);
+                border-radius: var(--radius);
+                margin: 6px 8px;
+                overflow: hidden;
+                font-size: 12px;
+            }
+            .todo-panel-header {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                padding: 8px 10px;
+                cursor: pointer;
+                user-select: none;
+                -webkit-user-select: none;
+                background: var(--surface-1);
+                border-bottom: 1px solid var(--border-subtle);
+            }
+            .todo-panel-header:active {
+                background: var(--surface-2);
+            }
+            .todo-panel-title {
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--text-primary);
+            }
+            .todo-panel-progress {
+                font-size: 11px;
+                color: var(--text-muted);
+                font-family: var(--font-mono);
+            }
+            .todo-panel-bar {
+                height: 4px;
+                background: var(--surface-2);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            .todo-panel-bar-fill {
+                height: 100%;
+                background: var(--accent);
+                border-radius: 2px;
+                transition: width 0.3s ease;
+            }
+            .todo-panel-body {
+                padding: 6px 10px;
+                max-height: 300px;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                transition: max-height 0.2s ease, padding 0.2s ease;
+            }
+            .todo-panel-body.collapsed {
+                max-height: 0;
+                padding: 0 10px;
+                overflow: hidden;
+            }
+            .todo-item {
+                padding: 4px 2px;
+                line-height: 1.5;
+                border-bottom: 1px solid var(--border-subtle);
+                color: var(--text-secondary);
+                font-size: 12px;
+            }
+            .todo-item:last-child {
+                border-bottom: none;
+            }
+            .todo-item.todo-completed {
+                opacity: 0.6;
+                text-decoration: line-through;
+            }
+            .todo-item.todo-inprogress {
+                color: var(--accent);
+                font-weight: 500;
             }
 
             /* ── Chat Role Badge ── */
