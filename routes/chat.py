@@ -977,6 +977,10 @@ AGENT_TOOLS = [
                         'type': 'integer',
                         'description': 'Max iterations for the sub-agent (1-15). Default: 8',
                     },
+                    'context': {
+                        'type': 'string',
+                        'description': 'Optional context from the main agent (e.g. relevant file paths, current state, previous findings). This helps the sub-agent work more efficiently without re-discovering what you already know.',
+                    },
                 },
                 'required': ['task'],
             },
@@ -1006,6 +1010,7 @@ AGENT_TOOLS = [
                                 'task': {'type': 'string', 'description': 'Description of the subtask'},
                                 'mode': {'type': 'string', 'enum': ['read', 'write'], 'description': '"read" or "write" (default: "read")'},
                                 'max_iterations': {'type': 'integer', 'description': 'Max iterations (1-15). Default: 8'},
+                                'context': {'type': 'string', 'description': 'Optional context from main agent'},
                             },
                             'required': ['task'],
                         },
@@ -1026,10 +1031,16 @@ def _validate_path(path):
         raise ValueError(f'Access denied: path "{path}" is outside workspace')
     return real_path
 
-def _truncate(text, limit=30000):
-    """Truncate text to limit characters, appending [truncated] marker if needed."""
+def _truncate(text, limit=30000, tail=3000):
+    """Truncate text to limit characters, keeping head and tail for context."""
     if len(text) > limit:
-        return text[:limit] + '\n\n[truncated: output too long, showed first ' + str(limit) + ' of ' + str(len(text)) + ' characters]'
+        kept_head = text[:limit]
+        kept_tail = text[-tail:] if tail > 0 else ''
+        parts = [kept_head]
+        parts.append(f'\n\n[... truncated: showing first {limit} of {len(text)} characters ...]')
+        if kept_tail:
+            parts.append(f'\n\n[... last {tail} characters ...]\n{kept_tail}')
+        return ''.join(parts)
     return text
 
 # ==================== Tool Execution ====================
@@ -1129,6 +1140,17 @@ def _tool_edit_file(args):
 
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
+            # Auto-verify: check that new_text exists in written file
+            verify_errors = []
+            for i, rep in enumerate(replacements):
+                new_text = rep.get('new_text', '')
+                if new_text and new_text not in content:
+                    verify_errors.append(f'Replacement {i+1}: new_text not found after edit (possible whitespace issue)')
+            if verify_errors:
+                # Rollback to original
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(original_content)
+                return f'Error: Edit verification failed — {"; ".join(verify_errors)}. File rolled back to original. Check whitespace/indentation in your new_text.'
             # Auto-update AST index
             ext = os.path.splitext(path)[1].lower()
             if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
@@ -1145,7 +1167,7 @@ def _tool_edit_file(args):
         if count == 0:
             return f'Error: old_text not found in file. Make sure the text matches exactly (including whitespace).'
         if count > 1:
-            return f'Warning: old_text found {count} times. All occurrences will be replaced. Use more context to be specific.\nReplacements made: {count}'
+            return f'Error: old_text found {count} times — ambiguous match. Provide more surrounding context to uniquely identify the target, or use the "replacements" array parameter for multiple specific edits.'
         new_content = content.replace(old_text, new_text)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(new_content)
@@ -1163,6 +1185,7 @@ def _tool_edit_file(args):
 def _tool_list_directory(args):
     path = _validate_path(args.get('path', WORKSPACE))
     show_hidden = args.get('show_hidden', False)
+    verbose = args.get('verbose', False)
     if not os.path.isdir(path):
         return f'Error: Directory not found: {path}'
     items = []
@@ -1173,11 +1196,16 @@ def _tool_list_directory(args):
         try:
             st = os.stat(full)
             is_dir = os.path.isdir(full)
-            ftype = 'dir' if is_dir else get_file_type(entry)
-            perm = oct(st.st_mode)[-3:]
-            mod_time = datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-            sz = st.st_size
-            items.append(f'  {"[DIR]" if is_dir else "[FILE]"} {perm} {mod_time} {sz:>10}  {entry}  ({ftype})')
+            if verbose:
+                ftype = 'dir' if is_dir else get_file_type(entry)
+                perm = oct(st.st_mode)[-3:]
+                mod_time = datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                sz = st.st_size
+                items.append(f'  {"[DIR]" if is_dir else "[FILE]"} {perm} {mod_time} {sz:>10}  {entry}  ({ftype})')
+            else:
+                sz = st.st_size
+                sz_str = f'{sz}' if sz < 1024 else f'{sz/1024:.0f}K' if sz < 1048576 else f'{sz/1048576:.1f}M'
+                items.append(f'  {"[DIR]" if is_dir else "[FILE]"} {sz_str:>8}  {entry}')
         except (PermissionError, OSError):
             items.append(f'  [??]  {entry}  (permission denied)')
     header = f'Directory: {path} ({len(items)} entries)'
@@ -2017,7 +2045,7 @@ def _tool_todo_write(args):
     return f'Todo list updated: {total} items ({completed} completed, {in_progress} in progress, {pending} pending)'
 
 # ==================== Sub-Agent Engine ====================
-def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
+def _run_subagent(task, mode='read', max_iterations=8, llm_config=None, context=None):
     """Core sub-agent execution engine. Used by both delegate_task and parallel_tasks.
 
     Args:
@@ -2080,9 +2108,14 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None):
             'When done, provide a clear summary of what you found.'
         )
 
+    # Build task message with optional context from main agent
+    user_msg = task
+    if context:
+        user_msg = f'[Context from main agent]\n{context}\n\n[Sub-task]\n{task}'
+
     sub_context = [
         {'role': 'system', 'content': system_prompt},
-        {'role': 'user', 'content': task},
+        {'role': 'user', 'content': user_msg},
     ]
 
     tool_results_summary = []
@@ -2156,7 +2189,8 @@ def _tool_delegate_task(args):
     task = args.get('task', '').strip()
     mode = args.get('mode', 'read').strip()
     max_iters = args.get('max_iterations', 8)
-    return _run_subagent(task, mode=mode, max_iterations=max_iters)
+    context = args.get('context', '').strip() or None
+    return _run_subagent(task, mode=mode, max_iterations=max_iters, context=context)
 
 def _tool_parallel_tasks(args):
     """Launch multiple sub-agents in parallel."""
@@ -2183,7 +2217,8 @@ def _tool_parallel_tasks(args):
         task_text = task_def.get('task', '')
         mode = task_def.get('mode', 'read').strip()
         max_iters = task_def.get('max_iterations', 8)
-        results[idx] = _run_subagent(task_text, mode=mode, max_iterations=max_iters, llm_config=llm_config)
+        ctx = task_def.get('context', '').strip() or None
+        results[idx] = _run_subagent(task_text, mode=mode, max_iterations=max_iters, llm_config=llm_config, context=ctx)
 
     threads = []
     for i, t in enumerate(tasks):
@@ -2471,6 +2506,10 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                     _injected += 'The following project-specific context was loaded from .phoneide/ files. '
                     _injected += 'Use this information to follow project conventions and understand the architecture.\n\n'
                     _injected += '\n\n'.join(knowledge_parts) + '\n'
+                    # Truncate to ~4000 chars to prevent system prompt bloat
+                    if len(_injected) > 4000:
+                        _injected = _injected[:4000] + '\n\n[... .phoneide/ content truncated — use read_file for full details ...]\n'
+                        log_write(f'[phoneide] .phoneide/ content truncated to 4000 chars')
                     sys_prompt += _injected
                     # Store in cache
                     _phoneide_cache[_cache_key] = {
@@ -2483,20 +2522,21 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         if not _knowledge_loaded:
             log_write(f'[phoneide] No .phoneide/ found in: {_phoneide_dirs_to_check}')
 
-    # Inject AST index summary if available
+    # Inject AST index summary if available (only once per session, then rely on tools)
     try:
-        if not project_index.is_indexing and project_index.symbol_count > 0:
+        _ast_cache_key = '_ast_injected_v2'
+        if not _get_phoneide_cache().get(_ast_cache_key) and not project_index.is_indexing and project_index.symbol_count > 0:
             symbols = project_index.get_all_symbols()
             # Show top-level symbols (no parent = module-level)
             top_symbols = {}
             for name, entries in symbols.items():
                 for fp, d in entries:
                     if not d.get('parent'):
-                        rel = os.path.relpath(fp, _ws)  # Fixed: use _ws instead of undefined ws
+                        rel = os.path.relpath(fp, _ws)
                         top_symbols.setdefault(name, []).append((rel, d['kind'], d['line']))
-            # Build compact summary
+            # Build compact summary — limit to 30 symbols to save tokens
             symbol_lines = []
-            for name in sorted(top_symbols.keys()):
+            for name in sorted(top_symbols.keys())[:30]:
                 locs = top_symbols[name]
                 if len(locs) <= 3:
                     for rel, kind, line in locs:
@@ -2504,12 +2544,13 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                 else:
                     symbol_lines.append(f'  {name} ({len(locs)} definitions)')
             if symbol_lines:
-                sys_prompt += f'\n\n## Project Symbol Index ({project_index.file_count} files, {project_index.symbol_count} symbols)\n'
-                sys_prompt += 'Top-level symbols in the project:\n'
-                sys_prompt += '\n'.join(symbol_lines[:80]) + '\n'
-                if len(symbol_lines) > 80:
-                    sys_prompt += f'  ... and {len(symbol_lines) - 80} more symbols\n'
-                log_write(f'[phoneide] AST index injected: {project_index.file_count} files, {project_index.symbol_count} symbols')
+                sys_prompt += f'\n\n## Project Symbols ({project_index.file_count} files, {project_index.symbol_count} symbols)\n'
+                sys_prompt += 'Use find_definition/find_references for detailed lookup.\n'
+                sys_prompt += '\n'.join(symbol_lines) + '\n'
+                if project_index.symbol_count > 30:
+                    sys_prompt += f'  ... and {project_index.symbol_count - 30} more symbols (use find_definition to look up)\n'
+                log_write(f'[phoneide] AST index injected (one-shot): {project_index.file_count} files, {project_index.symbol_count} symbols')
+                _get_phoneide_cache()[_ast_cache_key] = True
     except Exception as e:
         log_write(f'[phoneide] AST index injection error: {e}')
 
@@ -2778,8 +2819,22 @@ def _call_llm_stream_raw(messages, llm_config):
 
 # ==================== Context Window Management ====================
 def _estimate_tokens(text):
-    """Rough token estimation: ~4 characters per token."""
-    return len(text) // 4
+    """Estimate token count. Uses tiktoken if available, otherwise heuristic.
+    
+    Chinese/CJK ~1.5 tokens per character, Latin ~0.25 tokens per character.
+    Fallback is more accurate than len//4 for mixed-language content.
+    """
+    if not text:
+        return 0
+    try:
+        import tiktoken
+        _enc = tiktoken.get_encoding("cl100k_base")
+        return len(_enc.encode(text))
+    except Exception:
+        pass
+    # Heuristic: CJK chars cost ~1.5 tokens, other chars ~0.25 tokens
+    cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+    return int(cjk * 1.5 + (len(text) - cjk) * 0.25)
 
 
 def _get_context_budget(llm_config):
