@@ -655,7 +655,7 @@ def git_checkout_commit():
 # In-memory store for pending device code polls
 _github_oauth_pending = {}  # device_code -> { thread, stop_event, result }
 
-GITHUB_CLIENT_ID = 'Ov23liFzK7dGqVBqqyEB'  # PhoneIDE GitHub App
+GITHUB_CLIENT_ID = 'Ov23liFzK7dGqVBqqyEB'  # PhoneIDE GitHub App (may need recreation)
 GITHUB_SCOPES = 'repo,read:org,gist'
 
 
@@ -695,7 +695,13 @@ def github_auth_start():
     })
 
     if 'error' in resp:
-        return jsonify({'error': resp.get('error_description', resp.get('error', 'Failed to start GitHub auth'))}), 400
+        error_detail = resp.get('error_description', resp.get('error', 'Failed to start GitHub auth'))
+        http_code = 400
+        # If the OAuth App doesn't exist (404), tell the frontend to fall back to token
+        if 'Not Found' in str(resp.get('error', '')) or '404' in str(resp.get('error', '')):
+            error_detail = 'GitHub OAuth 应用未配置，请使用 Token 方式登录'
+            http_code = 404
+        return jsonify({'error': error_detail, 'oauth_unavailable': True}), http_code
 
     device_code = resp.get('device_code', '')
     user_code = resp.get('user_code', '')

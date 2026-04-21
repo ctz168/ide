@@ -1620,6 +1620,12 @@ const GitManager = (() => {
                 });
                 if (!startResp.ok) {
                     const errData = await startResp.json().catch(() => ({}));
+                    // If OAuth is unavailable (404), fall back to token input
+                    if (errData.oauth_unavailable || startResp.status === 404) {
+                        showToast('OAuth 暂不可用，请使用 Token 登录', 'info');
+                        showTokenConfig();
+                        return;
+                    }
                     throw new Error(errData.error || '获取授权码失败');
                 }
                 const authData = await startResp.json();
