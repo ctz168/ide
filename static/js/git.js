@@ -1599,8 +1599,9 @@ const GitManager = (() => {
     // ── GitHub Login (Token-based) ─────────────────────────────
 
     /**
-     * Show GitHub login — check status first, then show token config.
-     * OAuth is disabled (App expired), so we use PAT token directly.
+     * Show GitHub login — check status first, then start Device Flow.
+     * Device Flow: request device code → show user_code → poll for token.
+     * Falls back to token input if OAuth App is not configured.
      */
     function showGithubLogin() {
         (async () => {
@@ -1637,9 +1638,176 @@ const GitManager = (() => {
                 }
             } catch (_e) {}
 
-            // Not logged in — show token config dialog
-            showTokenConfig();
+            // Not logged in — start Device Flow OAuth
+            await startDeviceFlow();
         })();
+    }
+
+    /**
+     * GitHub Device Flow: request code, show to user, poll for token.
+     */
+    async function startDeviceFlow() {
+        try {
+            window.showToast('正在请求 GitHub 授权...', 'info');
+
+            const startResp = await fetch('/api/git/github/auth/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+
+            const data = await startResp.json();
+
+            if (data.oauth_unavailable || !data.ok) {
+                // OAuth App not configured — fall back to token input
+                window.showToast(data.error || 'OAuth 未配置', 'error');
+                showTokenConfig();
+                return;
+            }
+
+            if (!data.user_code) {
+                window.showToast('获取授权码失败', 'error');
+                showTokenConfig();
+                return;
+            }
+
+            // Show device flow dialog with user_code
+            await showDeviceCodeDialog(data);
+
+        } catch (err) {
+            window.showToast('GitHub 授权失败: ' + err.message, 'error');
+            showTokenConfig();
+        }
+    }
+
+    /**
+     * Show the Device Code dialog with user_code and polling progress.
+     */
+    async function showDeviceCodeDialog(data) {
+        const { user_code, verification_uri, device_code, expires_in = 900 } = data;
+
+        const bodyHTML = `
+            <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+                <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;text-align:center;">
+                    请在浏览器中打开以下链接，输入验证码完成授权：
+                </div>
+                <a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener"
+                   style="color:var(--accent);font-size:14px;font-weight:600;text-decoration:none;word-break:break-all;text-align:center;">
+                    ${escapeHTML(verification_uri)}
+                </a>
+                <div style="background:var(--bg-tertiary);border:2px dashed var(--accent);border-radius:10px;padding:12px 20px;text-align:center;min-width:180px;">
+                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">验证码</div>
+                    <div style="font-size:24px;font-weight:700;letter-spacing:3px;color:var(--accent);font-family:monospace;">${escapeHTML(user_code)}</div>
+                </div>
+                <button id="device-copy-btn" style="font-size:12px;color:var(--text-muted);background:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;">
+                    复制验证码
+                </button>
+                <div id="device-status" style="font-size:12px;color:var(--text-muted);">等待授权中...</div>
+            </div>`;
+
+        if (!window.showDialog) {
+            // Fallback: just show the code
+            window.prompt('请打开 ' + verification_uri + ' 并输入验证码:', user_code);
+            return;
+        }
+
+        // Show dialog (non-blocking — we need to poll in background)
+        const overlay = document.getElementById('dialog-overlay');
+        const dialogTitle = document.getElementById('dialog-title');
+        const dialogBody = document.getElementById('dialog-body');
+        const dialogButtons = document.getElementById('dialog-buttons');
+
+        dialogTitle.textContent = '🔐 GitHub 授权';
+        dialogBody.innerHTML = bodyHTML;
+        dialogButtons.innerHTML = '';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = '取消';
+        cancelBtn.className = 'btn-cancel';
+        cancelBtn.onclick = () => {
+            overlay.classList.add('hidden');
+            // Stop polling
+        };
+        dialogButtons.appendChild(cancelBtn);
+
+        overlay.classList.remove('hidden');
+
+        // Copy button
+        const copyBtn = document.getElementById('device-copy-btn');
+        if (copyBtn) {
+            copyBtn.onclick = () => {
+                navigator.clipboard.writeText(user_code).then(() => {
+                    copyBtn.textContent = '已复制!';
+                    setTimeout(() => { copyBtn.textContent = '复制验证码'; }, 2000);
+                }).catch(() => {
+                    // Fallback copy
+                    const ta = document.createElement('textarea');
+                    ta.value = user_code;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    copyBtn.textContent = '已复制!';
+                    setTimeout(() => { copyBtn.textContent = '复制验证码'; }, 2000);
+                });
+            };
+        }
+
+        // Start polling for token
+        let polling = true;
+        const cancelHandler = () => { polling = false; };
+        overlay.addEventListener('touchend', (e) => {
+            if (e.target === overlay) { polling = false; }
+        }, { once: true });
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) { polling = false; }
+        }, { once: true });
+
+        const statusEl = document.getElementById('device-status');
+        const startTime = Date.now();
+
+        while (polling) {
+            await new Promise(r => setTimeout(r, 5000)); // Poll every 5 seconds
+
+            if (!polling) break;
+
+            // Update elapsed time
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            if (statusEl) {
+                statusEl.textContent = `等待授权中... (${mins}:${secs.toString().padStart(2, '0')})`;
+            }
+
+            try {
+                const pollResp = await fetch('/api/git/github/auth/poll', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ device_code })
+                });
+                const pollData = await pollResp.json();
+
+                if (pollData.done) {
+                    polling = false;
+                    if (pollData.success) {
+                        if (statusEl) statusEl.textContent = '✅ 授权成功！';
+                        if (window.showToast) window.showToast('GitHub 授权成功！', 'success');
+                        window.dispatchEvent(new CustomEvent('github:auth-success', {
+                            detail: { token: pollData.token }
+                        }));
+                        await refresh();
+                    } else {
+                        if (statusEl) statusEl.textContent = '❌ ' + (pollData.error || '授权失败');
+                        if (window.showToast) window.showToast('GitHub 授权失败: ' + (pollData.error || ''), 'error');
+                    }
+                    // Auto-close dialog after 2 seconds
+                    setTimeout(() => { overlay.classList.add('hidden'); }, 2000);
+                    break;
+                }
+            } catch (_e) {
+                // Network error, keep polling
+            }
+        }
     }
 
     function wireButtons() {
