@@ -2959,12 +2959,3 @@ button, .file-item, .search-result-item, .git-change-item {
 .chat-msg .tool-name[data-tool^="browser_"] {
     color: var(--orange) !important;
 }
-
-/* Make the preview panel tab stand out slightly */
-#bottom-tabs .btab[data-btab="browser"] {
-    color: var(--teal);
-}
-#bottom-tabs .btab[data-btab="browser"].active {
-    color: var(--teal);
-    border-bottom-color: var(--teal);
-}
