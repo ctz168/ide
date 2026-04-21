@@ -4,6 +4,13 @@ const AppManager = (() => {
     let initialized = false;
 
     // ── Toast Notification ──
+    // Notification throttle: coalesce rapid messages to avoid flooding Android
+    // notification bar when agent produces many sequential toasts.
+    let _notifyTimer = null;
+    let _pendingNotify = null;
+    let _lastNotifyTime = 0;
+    const NOTIFY_COOLDOWN = 3000; // ms between Android notifications
+
     function showToast(message, type = 'info', duration = 2500) {
         const toast = document.getElementById('toast');
         if (!toast) return;
@@ -14,8 +21,53 @@ const AppManager = (() => {
         toast._timer = setTimeout(() => {
             toast.className = 'hidden';
         }, duration);
+
+        // Forward to Android notification bar (only inside PhoneIDE APK)
+        if (window.AndroidBridge && window.AndroidBridge.showNotification) {
+            // Only push to notification bar for errors/warnings/success (skip 'info' noise)
+            const shouldNotify = (type === 'error' || type === 'warning' || type === 'success');
+            if (shouldNotify) {
+                const title = type === 'error' ? 'PhoneIDE Error'
+                    : type === 'warning' ? 'PhoneIDE Warning'
+                    : 'PhoneIDE';
+                const now = Date.now();
+                const elapsed = now - _lastNotifyTime;
+                if (elapsed < NOTIFY_COOLDOWN) {
+                    // Too soon — buffer the latest message, send after cooldown
+                    clearTimeout(_notifyTimer);
+                    _pendingNotify = { title, message, type, duration };
+                    _notifyTimer = setTimeout(() => {
+                        if (_pendingNotify) {
+                            window.AndroidBridge.showNotification(
+                                _pendingNotify.title,
+                                _pendingNotify.message,
+                                _pendingNotify.type,
+                                _pendingNotify.duration || 5000
+                            );
+                            _pendingNotify = null;
+                            _lastNotifyTime = Date.now();
+                        }
+                    }, NOTIFY_COOLDOWN - elapsed);
+                } else {
+                    window.AndroidBridge.showNotification(title, message, type, duration || 5000);
+                    _lastNotifyTime = now;
+                }
+            }
+        }
     }
     window.showToast = showToast;
+
+    /**
+     * Explicitly push an Android notification (bypasses throttle).
+     * For use by chat/agent when important events happen (task done, errors, etc.)
+     * that should always reach the notification bar regardless of throttle state.
+     */
+    function notifyAndroid(title, message, type = 'info', durationMs = 5000) {
+        if (window.AndroidBridge && window.AndroidBridge.showNotification) {
+            window.AndroidBridge.showNotification(title, message, type, durationMs);
+        }
+    }
+    window.notifyAndroid = notifyAndroid;
 
     // ── Dialog ──
     function showDialog(title, bodyHTML, buttons = []) {

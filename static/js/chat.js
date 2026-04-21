@@ -1420,6 +1420,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         addMessage('system', '⏹ 任务已停止');
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE', 'AI 任务已停止', 'warning', 3000);
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
@@ -1430,6 +1431,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         }
                         const errMsg = parsed.content || parsed.message || parsed.error || rawData;
                         addMessage('error', errMsg, { retryable: true });
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE Error', errMsg.substring(0, 200), 'error', 8000);
                     } else if (eventType === 'done') {
                         hideTyping();
                         let finalizedEl = null;
@@ -1448,6 +1450,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         setExecuteStatus(summary);
                         playCompletionSound();
                         showToast('✅ Task completed successfully!', 'success', 3000);
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE', `✅ Task done ${summary}`, 'success', 5000);
                     }
                 }
             }
