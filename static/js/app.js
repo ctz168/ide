@@ -1750,14 +1750,35 @@ const AppManager = (() => {
             const method = data.method || 'zip';
 
             if (progressEl) progressEl.style.width = '100%';
-            statusEl.innerHTML = `✅ 更新完成 (${method})! 页面将在几秒后刷新...`;
+            statusEl.innerHTML = `✅ 更新完成 (${method})! 正在重启服务器...`;
 
             showToast(`更新完成, 正在重启...`, 'success', 3000);
 
-            // Reload page after delay
-            setTimeout(() => {
-                window.location.reload();
-            }, 3000);
+            // Restart the Python server process so it loads the new code,
+            // then reload the page once the server is back online.
+            try {
+                const restartResp = await fetch('/api/server/restart', { method: 'POST' });
+                if (restartResp.ok) {
+                    // Poll until server is back, then reload
+                    let attempts = 0;
+                    const checker = setInterval(async () => {
+                        attempts++;
+                        if (attempts > 30) { clearInterval(checker); window.location.reload(); return; }
+                        try {
+                            const r = await fetch('/api/server/status');
+                            if (r.ok) {
+                                clearInterval(checker);
+                                window.location.reload();
+                            }
+                        } catch (_) {}
+                    }, 1000);
+                } else {
+                    // Restart endpoint failed, just reload after delay
+                    setTimeout(() => { window.location.reload(); }, 3000);
+                }
+            } catch (_) {
+                setTimeout(() => { window.location.reload(); }, 3000);
+            }
 
         } catch (err) {
             statusEl.textContent = '❌ ' + err.message;
