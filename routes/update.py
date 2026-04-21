@@ -184,15 +184,29 @@ def update_apply():
                         git_cmd(f'remote set-url origin https://github.com/{IDE_REPO}.git', cwd=SERVER_DIR)
                         log_write(f'[UPDATE] Updated git remote to {IDE_REPO}')
 
-                git_cmd('fetch origin main', cwd=SERVER_DIR, timeout=120)
-                reset_result = git_cmd('reset --hard origin/main', cwd=SERVER_DIR)
-                if reset_result['ok']:
-                    log_write('[UPDATE] Git pull succeeded')
-                    return jsonify({
-                        'ok': True,
-                        'method': 'git',
-                        'message': '代码已通过 Git 更新，服务器将重启。',
-                    })
+                fetch_result = git_cmd('fetch origin main', cwd=SERVER_DIR, timeout=120)
+                if not fetch_result['ok']:
+                    log_write(f'[UPDATE] Git fetch failed: {fetch_result.get("stderr", "unknown error")}')
+                else:
+                    # After fetch, compare local HEAD with origin/main to confirm
+                    # there's actually a newer commit to pull
+                    rev_parse = git_cmd('rev-parse origin/main', cwd=SERVER_DIR)
+                    local_rev = git_cmd('rev-parse HEAD', cwd=SERVER_DIR)
+                    if (rev_parse['ok'] and local_rev['ok']
+                            and rev_parse['stdout'].strip() != local_rev['stdout'].strip()):
+                        # origin/main is newer — reset to it
+                        reset_result = git_cmd('reset --hard origin/main', cwd=SERVER_DIR)
+                        if reset_result['ok']:
+                            log_write(f'[UPDATE] Git pull succeeded: {local_rev["stdout"].strip()[:8]} → {rev_parse["stdout"].strip()[:8]}')
+                            return jsonify({
+                                'ok': True,
+                                'method': 'git',
+                                'message': '代码已通过 Git 更新，服务器将重启。',
+                            })
+                    elif rev_parse['ok'] and local_rev['ok'] and rev_parse['stdout'].strip() == local_rev['stdout'].strip():
+                        log_write('[UPDATE] Git fetch succeeded but already up-to-date, falling back to download')
+                    else:
+                        log_write(f'[UPDATE] Git rev-parse failed after fetch: {rev_parse.get("stderr", "")} / {local_rev.get("stderr", "")}')
             except Exception as e:
                 log_write(f'[UPDATE] Git pull failed, falling back to download: {e}')
 
