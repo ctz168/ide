@@ -427,7 +427,7 @@ const GitManager = (() => {
             };
             if (window.bindTouchButton) window.bindTouchButton(cloneBtn, function() { cloneBtn.onclick(); });
 
-            // OAuth button — starts Device Flow
+            // OAuth button — starts Device Flow or opens GitHub login page
             oauthBtn.onclick = async function() {
                 try {
                     overlay.classList.add('hidden');
@@ -441,19 +441,23 @@ const GitManager = (() => {
                     var data = await startResp.json();
 
                     if (data.oauth_unavailable || !data.ok) {
-                        if (window.showToast) window.showToast(data.error || 'OAuth 未配置', 'error');
+                        // OAuth App not configured — open GitHub login page directly
+                        window.open('https://github.com/login', '_blank');
+                        if (window.showToast) window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token 粘贴到下方', 'info');
                         // Re-open clone dialog
                         showCloneDialog(savedToken, tokenHint).then(resolve);
                         return;
                     }
 
-                    // Show Device Flow
+                    // Show Device Flow dialog (auto-opens GitHub authorization page)
                     await showDeviceCodeDialog(data);
 
                     // After OAuth, re-open clone dialog (token saved to config)
                     showCloneDialog(true, '已配置').then(resolve);
                 } catch (err) {
-                    if (window.showToast) window.showToast('OAuth 启动失败: ' + err.message, 'error');
+                    // Network error — open GitHub login page as fallback
+                    window.open('https://github.com/login', '_blank');
+                    if (window.showToast) window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
                     showCloneDialog(savedToken, tokenHint).then(resolve);
                 }
             };
@@ -1775,8 +1779,9 @@ const GitManager = (() => {
             const data = await startResp.json();
 
             if (data.oauth_unavailable || !data.ok) {
-                // OAuth App not configured — fall back to token input
-                window.showToast(data.error || 'OAuth 未配置', 'error');
+                // OAuth App not configured — open GitHub login page directly
+                window.open('https://github.com/login', '_blank');
+                window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
                 showTokenConfig();
                 return;
             }
@@ -1791,7 +1796,8 @@ const GitManager = (() => {
             await showDeviceCodeDialog(data);
 
         } catch (err) {
-            window.showToast('GitHub 授权失败: ' + err.message, 'error');
+            window.open('https://github.com/login', '_blank');
+            window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
             showTokenConfig();
         }
     }
@@ -1802,15 +1808,17 @@ const GitManager = (() => {
     async function showDeviceCodeDialog(data) {
         const { user_code, verification_uri, device_code, expires_in = 900 } = data;
 
+        // Auto-open GitHub authorization page in new tab
+        try {
+            window.open(verification_uri, '_blank');
+        } catch (_e) {}
+
         const bodyHTML = `
             <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
                 <div style="font-size:13px;color:var(--text-secondary);line-height:1.5;text-align:center;">
-                    请在浏览器中打开以下链接，输入验证码完成授权：
+                    已打开授权页面，请输入以下验证码完成授权：<br>
+                    <span style="font-size:11px;color:var(--text-muted);">（如未自动打开，<a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener" style="color:var(--accent);">点击此处手动打开</a>）</span>
                 </div>
-                <a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener"
-                   style="color:var(--accent);font-size:14px;font-weight:600;text-decoration:none;word-break:break-all;text-align:center;">
-                    ${escapeHTML(verification_uri)}
-                </a>
                 <div style="background:var(--bg-tertiary);border:2px dashed var(--accent);border-radius:10px;padding:12px 20px;text-align:center;min-width:180px;">
                     <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">验证码</div>
                     <div style="font-size:24px;font-weight:700;letter-spacing:3px;color:var(--accent);font-family:monospace;">${escapeHTML(user_code)}</div>
