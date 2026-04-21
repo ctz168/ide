@@ -481,8 +481,8 @@ const ProjectManager = (() => {
                         });
                         const data = await startResp.json();
                         if (data.oauth_unavailable || !data.ok) {
-                            window.open('https://github.com/login', '_blank');
-                            safeToast('已打开 GitHub 登录页，请登录后获取 Token 粘贴到下方', 'info');
+                            window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+                            safeToast('请在新页面生成 Token，粘贴到下方输入框', 'info');
                             showProjectCloneDialog().then(resolve);
                             return;
                         }
@@ -492,8 +492,8 @@ const ProjectManager = (() => {
                         }
                         showProjectCloneDialog().then(resolve);
                     } catch (_e) {
-                        window.open('https://github.com/login', '_blank');
-                        safeToast('已打开 GitHub 登录页，请登录后获取 Token 粘贴到下方', 'info');
+                        window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+                        safeToast('请在新页面生成 Token，粘贴到下方输入框', 'info');
                         showProjectCloneDialog().then(resolve);
                     }
                 };

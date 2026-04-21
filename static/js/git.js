@@ -441,9 +441,9 @@ const GitManager = (() => {
                     var data = await startResp.json();
 
                     if (data.oauth_unavailable || !data.ok) {
-                        // OAuth App not configured — open GitHub login page directly
-                        window.open('https://github.com/login', '_blank');
-                        if (window.showToast) window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token 粘贴到下方', 'info');
+                        // OAuth App not configured — open GitHub token creation page directly
+                        window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+                        if (window.showToast) window.showToast('请在新页面生成 Token，粘贴到下方输入框', 'info');
                         // Re-open clone dialog
                         showCloneDialog(savedToken, tokenHint).then(resolve);
                         return;
@@ -455,9 +455,9 @@ const GitManager = (() => {
                     // After OAuth, re-open clone dialog (token saved to config)
                     showCloneDialog(true, '已配置').then(resolve);
                 } catch (err) {
-                    // Network error — open GitHub login page as fallback
-                    window.open('https://github.com/login', '_blank');
-                    if (window.showToast) window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
+                    // Network error — open GitHub token creation page as fallback
+                    window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+                    if (window.showToast) window.showToast('请在新页面生成 Token，粘贴到下方输入框', 'info');
                     showCloneDialog(savedToken, tokenHint).then(resolve);
                 }
             };
@@ -1779,9 +1779,9 @@ const GitManager = (() => {
             const data = await startResp.json();
 
             if (data.oauth_unavailable || !data.ok) {
-                // OAuth App not configured — open GitHub login page directly
-                window.open('https://github.com/login', '_blank');
-                window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
+                // OAuth App not configured — open GitHub token creation page directly
+                window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+                window.showToast('请在新页面生成 Token，粘贴到弹出的输入框', 'info');
                 showTokenConfig();
                 return;
             }
@@ -1796,8 +1796,8 @@ const GitManager = (() => {
             await showDeviceCodeDialog(data);
 
         } catch (err) {
-            window.open('https://github.com/login', '_blank');
-            window.showToast('已打开 GitHub 登录页，请登录后手动获取 Token', 'info');
+            window.open('https://github.com/settings/tokens/new?scopes=repo,read:org,gist&description=PhoneIDE', '_blank');
+            window.showToast('请在新页面生成 Token，粘贴到弹出的输入框', 'info');
             showTokenConfig();
         }
     }
