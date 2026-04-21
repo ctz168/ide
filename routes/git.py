@@ -5,9 +5,11 @@ PhoneIDE - Git API routes.
 import os
 import shlex
 import subprocess
+import time
+import threading
 from datetime import datetime
 from flask import Blueprint, jsonify, request
-from utils import handle_error, load_config, WORKSPACE, shlex_quote, IS_WINDOWS
+from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote, IS_WINDOWS
 
 bp = Blueprint('git', __name__)
 
@@ -341,11 +343,50 @@ def git_push():
     remote = data.get('remote', 'origin')
     branch = data.get('branch', '')
     set_upstream = data.get('set_upstream', False)
+
+    cwd = resolve_cwd()
+
+    # Inject GitHub token into remote URL if configured
+    try:
+        config = load_config()
+        token = config.get('github_token', '')
+        if token:
+            # Get the remote URL
+            r_remote = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
+            if r_remote['ok'] and r_remote['stdout'].strip():
+                remote_url = r_remote['stdout'].strip()
+                # Only inject token for HTTPS URLs (not SSH)
+                if remote_url.startswith('https://') and '@' not in remote_url.split('://')[1]:
+                    # Remove token if already present (e.g., from clone)
+                    clean_url = remote_url.replace('https://', 'https://TOKEN@').split('@')[1]
+                    clean_url = 'https://' + clean_url
+                    auth_url = clean_url.replace('https://', f'https://{token}@')
+                    # Temporarily set the remote URL with token
+                    git_cmd(f'remote set-url {remote} {shlex_quote(auth_url)}', cwd=cwd, timeout=10)
+    except Exception as e:
+        print(f'[git/push] Warning: failed to inject token: {e}')
+
     cmd = f'push {remote} {branch}'
     if set_upstream:
         cmd = f'push -u {remote} {branch}'
-    cwd = resolve_cwd()
     r = git_cmd(cmd, cwd=cwd, timeout=120)
+
+    # Restore original remote URL (remove token from stored URL)
+    try:
+        config = load_config()
+        token = config.get('github_token', '')
+        if token:
+            r_check = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
+            if r_check['ok'] and r_check['stdout'].strip():
+                current_url = r_check['stdout'].strip()
+                if '@' in current_url.split('://')[1]:
+                    # Strip token from URL
+                    clean_url = current_url.replace('https://', 'https://TOKEN@').split('@')[1]
+                    clean_url = 'https://' + clean_url
+                    git_cmd(f'remote set-url {remote} {shlex_quote(clean_url)}', cwd=cwd, timeout=10)
+    except Exception:
+        pass
+
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -356,7 +397,40 @@ def git_pull():
     remote = data.get('remote', 'origin')
     branch = data.get('branch', '')
     cwd = resolve_cwd()
+
+    # Inject GitHub token into remote URL if configured
+    try:
+        config = load_config()
+        token = config.get('github_token', '')
+        if token:
+            r_remote = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
+            if r_remote['ok'] and r_remote['stdout'].strip():
+                remote_url = r_remote['stdout'].strip()
+                if remote_url.startswith('https://') and '@' not in remote_url.split('://')[1]:
+                    clean_url = remote_url.replace('https://', 'https://TOKEN@').split('@')[1]
+                    clean_url = 'https://' + clean_url
+                    auth_url = clean_url.replace('https://', f'https://{token}@')
+                    git_cmd(f'remote set-url {remote} {shlex_quote(auth_url)}', cwd=cwd, timeout=10)
+    except Exception as e:
+        print(f'[git/pull] Warning: failed to inject token: {e}')
+
     r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
+
+    # Restore original remote URL
+    try:
+        config = load_config()
+        token = config.get('github_token', '')
+        if token:
+            r_check = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
+            if r_check['ok'] and r_check['stdout'].strip():
+                current_url = r_check['stdout'].strip()
+                if '@' in current_url.split('://')[1]:
+                    clean_url = current_url.replace('https://', 'https://TOKEN@').split('@')[1]
+                    clean_url = 'https://' + clean_url
+                    git_cmd(f'remote set-url {remote} {shlex_quote(clean_url)}', cwd=cwd, timeout=10)
+    except Exception:
+        pass
+
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
@@ -566,3 +640,202 @@ def git_checkout_commit():
     if not r['ok']:
         return jsonify({'error': r['stderr'] or 'Operation failed'}), 500
     return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr'], 'mode': mode})
+
+
+# ==================== GitHub OAuth Device Flow ====================
+
+# In-memory store for pending device code polls
+_github_oauth_pending = {}  # device_code -> { thread, stop_event, result }
+
+GITHUB_CLIENT_ID = 'Ov23liFzK7dGqVBqqyEB'  # PhoneIDE GitHub App
+GITHUB_SCOPES = 'repo,read:org,gist'
+
+
+def _make_github_request(url, data):
+    """Make a GitHub API request and return the JSON response."""
+    try:
+        import urllib.request
+        import json as _json
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(data).encode('utf-8'),
+            headers={
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return _json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        return {'error': str(e)}
+
+
+@bp.route('/api/git/github/auth/start', methods=['POST'])
+@handle_error
+def github_auth_start():
+    """Step 1: Request a device code from GitHub.
+
+    Returns the user_code and verification_uri for the user to authorize.
+    """
+    data = request.json or {}
+    client_id = data.get('client_id', '') or GITHUB_CLIENT_ID
+    scopes = data.get('scopes', '') or GITHUB_SCOPES
+
+    resp = _make_github_request('https://github.com/login/device/code', {
+        'client_id': client_id,
+        'scope': scopes,
+    })
+
+    if 'error' in resp:
+        return jsonify({'error': resp.get('error_description', resp.get('error', 'Failed to start GitHub auth'))}), 400
+
+    device_code = resp.get('device_code', '')
+    user_code = resp.get('user_code', '')
+    verification_uri = resp.get('verification_uri', '')
+    expires_in = resp.get('expires_in', 900)
+    interval = resp.get('interval', 5)
+
+    # Start background polling for the token
+    stop_event = threading.Event()
+    result_holder = {'token': None, 'done': False, 'error': None}
+
+    def _poll():
+        poll_interval = max(interval, 5)
+        deadline = time.time() + expires_in
+        while not stop_event.is_set() and time.time() < deadline:
+            stop_event.wait(poll_interval)
+            if stop_event.is_set():
+                break
+            token_resp = _make_github_request('https://github.com/login/oauth/access_token', {
+                'client_id': client_id,
+                'device_code': device_code,
+                'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
+            })
+            if 'access_token' in token_resp:
+                result_holder['token'] = token_resp['access_token']
+                result_holder['done'] = True
+                # Auto-save the token to config
+                try:
+                    config = load_config()
+                    config['github_token'] = token_resp['access_token']
+                    config['github_auth_method'] = 'oauth'
+                    save_config(config)
+                    print(f'[GitHub OAuth] Token saved successfully (len={len(token_resp["access_token"])})')
+                except Exception as e:
+                    print(f'[GitHub OAuth] Failed to save token: {e}')
+                break
+            error = token_resp.get('error', '')
+            if error == 'authorization_pending':
+                continue
+            elif error == 'slow_down':
+                poll_interval += 5
+                continue
+            elif error == 'expired_token':
+                result_holder['error'] = '授权已过期，请重新尝试'
+                result_holder['done'] = True
+                break
+            elif error == 'access_denied':
+                result_holder['error'] = '用户拒绝了授权'
+                result_holder['done'] = True
+                break
+            else:
+                result_holder['error'] = token_resp.get('error_description', error or 'Unknown error')
+                result_holder['done'] = True
+                break
+        if not result_holder['done']:
+            result_holder['error'] = '授权超时'
+            result_holder['done'] = True
+        # Cleanup
+        _github_oauth_pending.pop(device_code, None)
+
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    _github_oauth_pending[device_code] = {
+        'thread': t,
+        'stop_event': stop_event,
+        'result': result_holder,
+    }
+
+    return jsonify({
+        'ok': True,
+        'device_code': device_code,
+        'user_code': user_code,
+        'verification_uri': verification_uri,
+        'expires_in': expires_in,
+        'interval': interval,
+    })
+
+
+@bp.route('/api/git/github/auth/poll', methods=['POST'])
+@handle_error
+def github_auth_poll():
+    """Step 2: Poll for the OAuth token result.
+
+    Returns { done: false } while waiting, or { done: true, token: '...' } when complete.
+    """
+    data = request.json or {}
+    device_code = data.get('device_code', '')
+
+    entry = _github_oauth_pending.get(device_code)
+    if not entry:
+        return jsonify({'error': '无效的设备代码，请重新开始授权'}), 400
+
+    result = entry['result']
+    resp = {'done': result['done']}
+    if result['done']:
+        if result['token']:
+            resp['token'] = result['token']
+            resp['success'] = True
+        else:
+            resp['error'] = result['error']
+            resp['success'] = False
+
+    return jsonify(resp)
+
+
+@bp.route('/api/git/github/auth/status', methods=['GET'])
+@handle_error
+def github_auth_status():
+    """Check current GitHub authentication status."""
+    config = load_config()
+    token = config.get('github_token', '')
+    auth_method = config.get('github_auth_method', '')
+
+    if not token:
+        return jsonify({
+            'authenticated': False,
+            'method': '',
+        })
+
+    # Try to verify the token by fetching user info
+    try:
+        import urllib.request
+        import json as _json
+        req = urllib.request.Request(
+            'https://api.github.com/user',
+            headers={
+                'Authorization': f'token {token}',
+                'Accept': 'application/json',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            user_data = _json.loads(resp.read().decode('utf-8'))
+        return jsonify({
+            'authenticated': True,
+            'method': auth_method or 'token',
+            'username': user_data.get('login', ''),
+            'avatar_url': user_data.get('avatar_url', ''),
+        })
+    except Exception as e:
+        error_msg = str(e)
+        if '401' in error_msg:
+            return jsonify({
+                'authenticated': False,
+                'method': auth_method,
+                'error': 'Token 已失效',
+            })
+        return jsonify({
+            'authenticated': bool(token),
+            'method': auth_method or 'token',
+            'error': f'验证失败: {error_msg}',
+        })

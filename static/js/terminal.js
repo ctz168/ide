@@ -1842,11 +1842,24 @@ const TerminalManager = (() => {
             const confirmed = await new Promise(resolve => {
                 window.showConfirmDialog(
                     '导入依赖包',
-                    '将按照 requirements.txt 安装所有依赖包，安装过程将在控制台显示。\n\n是否继续？',
+                    '将按照当前项目根目录的 requirements.txt 安装所有依赖包，安装过程将在控制台显示。\n\n是否继续？',
                     resolve
                 );
             });
             if (!confirmed) return;
+        }
+
+        // Get the current project root directory for requirements.txt
+        let projectRoot = '';
+        if (window.ProjectManager) {
+            const proj = window.ProjectManager.getCurrentProject();
+            if (proj && proj.project) {
+                projectRoot = proj.project.replace(/^\//, '');
+            }
+        }
+        if (!projectRoot) {
+            showToast('请先打开一个项目', 'error');
+            return;
         }
 
         // Close left sidebar to reveal console
@@ -1863,6 +1876,7 @@ const TerminalManager = (() => {
         // Start command block for AI forward button
         startCmdBlock('pip install -r requirements.txt');
 
+        appendOutput(`[info] 项目目录: ${projectRoot}`, 'info');
         appendOutput('正在按照 requirements.txt 安装依赖包...', 'info');
         appendOutput('─────────────────────────────────────────', 'status');
         appendOutput('$ pip install -r requirements.txt', 'system');
@@ -1877,11 +1891,14 @@ const TerminalManager = (() => {
         const _origAppend = appendOutput;
 
         try {
+            // The server /api/run/execute sets CWD to the project directory,
+            // so requirements.txt is simply './requirements.txt' in the current directory.
+            // We use os.path.abspath to show the full path in the output for clarity.
             const resp = await fetch('/api/run/execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    code: `import subprocess, sys\nproc = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\nfor line in proc.stdout:\n    print(line, end='')\n    sys.stdout.flush()\nproc.wait()\nif proc.returncode != 0:\n    print(f'\\nExit code: {proc.returncode}')`,
+                    code: `import subprocess, sys, os\n\nreq_file = 'requirements.txt'\nif not os.path.exists(req_file):\n    print(f'Error: {os.path.abspath(req_file)} not found')\n    print('Please ensure requirements.txt exists in the project root directory.')\n    sys.exit(1)\n\nabs_path = os.path.abspath(req_file)\nprint(f'Installing from: {abs_path}')\nprint(f'Project root: {os.getcwd()}')\nproc = subprocess.Popen([sys.executable, '-m', 'pip', 'install', '-r', req_file], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\nfor line in proc.stdout:\n    print(line, end='')\n    sys.stdout.flush()\nproc.wait()\nif proc.returncode != 0:\n    print(f'\\nExit code: {proc.returncode}')`,
                     compiler: 'python3'
                 })
             });

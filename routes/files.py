@@ -394,6 +394,9 @@ def project_close():
     """Close the current project, returning to workspace view."""
     config = load_config()
     config['project'] = None
+    # Clear venv_path when closing project to prevent cross-project contamination.
+    # When a new project is opened, autoActivateVenv() will re-detect the correct venv.
+    config['venv_path'] = ''
     save_config(config)
     return jsonify({'ok': True})
 

@@ -53,7 +53,7 @@
                 </div>
                 <!-- Workspace info bar -->
                 <div id="workspace-info-bar" class="hidden">
-                    <div id="workspace-info-content" style="padding:6px 10px;font-size:11px;color:var(--text-secondary);background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:6px;">
+                    <div id="workspace-info-content" style="padding:6px 10px;font-size:11px;color:var(--text-secondary);background:var(--bg-tertiary);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;">
                         <span style="color:var(--text-muted);">工作目录:</span>
                         <span id="workspace-current-path" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);color:var(--text-primary);"></span>
                         <button id="btn-change-workspace" title="更改工作目录" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 4px;">✏</button>
@@ -78,16 +78,16 @@
                 </div>
                 <!-- Workspace picker (for selecting root working directory) -->
                 <div id="workspace-picker" class="hidden">
-                    <div style="padding:8px 10px;background:var(--bg-tertiary);border-bottom:1px solid var(--border-color);">
+                    <div style="padding:8px 10px;background:var(--bg-tertiary);border-bottom:1px solid var(--border);">
                         <div style="display:flex;align-items:center;gap:6px;">
                             <button id="ws-picker-back" title="返回上级" style="display:none;background:none;border:none;color:var(--text-primary);cursor:pointer;font-size:14px;padding:2px 6px;">⬆</button>
                             <span id="ws-picker-path" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-family:var(--font-mono);color:var(--text-secondary);">/</span>
                         </div>
                     </div>
                     <div id="ws-picker-list" style="max-height:300px;overflow-y:auto;"></div>
-                    <div style="padding:8px 10px;border-top:1px solid var(--border-color);display:flex;gap:8px;">
-                        <button id="ws-picker-cancel" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:12px;">取消</button>
-                        <button id="ws-picker-confirm" style="flex:1;padding:6px;border-radius:6px;border:none;background:var(--accent-color);color:#fff;cursor:pointer;font-size:12px;">选定此目录</button>
+                    <div style="padding:8px 10px;border-top:1px solid var(--border);display:flex;gap:8px;">
+                        <button id="ws-picker-cancel" style="flex:1;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:12px;">取消</button>
+                        <button id="ws-picker-confirm" style="flex:1;padding:6px;border-radius:6px;cursor:pointer;font-size:12px;">选定此目录</button>
                     </div>
                 </div>
             </div>
@@ -109,6 +109,7 @@
                     <button id="git-sync" title="同步（拉取+推送）">🔄 同步</button>
                     <button id="git-diff-all-btn" title="查看所有差异">🔎 差异</button>
                     <button id="git-token-btn" title="配置 Token">🔑</button>
+                    <button id="git-login-btn" title="GitHub 登录授权">🔐</button>
                     <button id="git-refresh" title="刷新 Git 状态">🔃 刷新</button>
                 </div>
                 <div id="git-branch-info">

@@ -386,12 +386,25 @@ html, body {
     background: var(--bg-hover);
 }
 #btn-set-workspace {
-    background: var(--accent-color, #007AFF);
+    background: var(--accent);
     color: #fff;
-    border-color: var(--accent-color, #007AFF);
+    border-color: var(--accent);
 }
 #btn-set-workspace:active {
     opacity: 0.8;
+}
+
+/* Workspace picker confirm button — same accent style as #btn-set-workspace */
+#ws-picker-confirm {
+    background: var(--accent) !important;
+    color: #fff !important;
+    border: none !important;
+    border-color: var(--accent) !important;
+    font-weight: 600;
+}
+#ws-picker-confirm:active {
+    opacity: 0.8;
+    background: var(--accent-hover) !important;
 }
 
 .panel-toolbar input {

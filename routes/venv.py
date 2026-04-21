@@ -213,12 +213,9 @@ def list_venvs():
             stale = True
         elif project:
             project_dir = os.path.realpath(os.path.join(base, project))
-            if not _paths_same(current_venv, project_dir) and \
-               not _paths_same(current_venv, os.path.join(project_dir, '.venv')) and \
-               not _paths_same(current_venv, os.path.join(project_dir, 'venv')):
-                # If a project is open and the venv is clearly outside the project, it's stale
-                if not current_venv.lower().startswith(project_dir.lower()):
-                    stale = True
+            # Strict: venv MUST be inside the current project directory
+            if not current_venv.startswith(project_dir + os.sep) and not _paths_same(current_venv, project_dir):
+                stale = True
 
         if stale:
             config['venv_path'] = ''
@@ -254,6 +251,14 @@ def activate_venv():
         target = os.path.realpath(os.path.join(base, path))
     else:
         target = os.path.realpath(path)
+
+    # Security: Only allow activating venvs within the current project directory
+    # When a project is open, the venv MUST be inside the project directory
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.realpath(os.path.join(base, project))
+        if not _paths_same(target, project_dir) and not target.startswith(project_dir + os.sep):
+            return jsonify({'error': '只能激活当前项目目录内的虚拟环境'}), 400
 
     if _is_venv_dir(target):
         config['venv_path'] = target

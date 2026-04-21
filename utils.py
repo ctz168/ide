@@ -60,6 +60,8 @@ def load_config():
         'font_size': 14,
         'tab_size': 4,
         'show_line_numbers': True,
+        'github_token': '',
+        'github_auth_method': '',
     }
 
 

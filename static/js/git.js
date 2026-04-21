@@ -1568,6 +1568,149 @@ const GitManager = (() => {
 
     // ── Wire Up Buttons ────────────────────────────────────────────
 
+    // ── GitHub OAuth Login ─────────────────────────────────────
+
+    /**
+     * Show GitHub OAuth Device Flow login dialog.
+     * Guides user through the device code authorization process.
+     */
+    function showGithubLogin() {
+        (async () => {
+            // Check current auth status first
+            try {
+                const statusResp = await fetch('/api/git/github/auth/status');
+                if (statusResp.ok) {
+                    const statusData = await statusResp.json();
+                    if (statusData.authenticated) {
+                        const method = statusData.method === 'oauth' ? 'OAuth 登录' : 'Token';
+                        const username = statusData.username ? ` (${statusData.username})` : '';
+                        // Show logout option
+                        const bodyHTML = `
+                            <div style="display:flex;flex-direction:column;gap:10px;align-items:center;">
+                                ${statusData.avatar_url ? `<img src="${escapeHTML(statusData.avatar_url)}" style="width:48px;height:48px;border-radius:50%;">` : '<div style="width:48px;height:48px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:24px;">👤</div>'}
+                                <div style="font-size:14px;font-weight:600;color:var(--text-primary);">已登录${username}</div>
+                                <div style="font-size:11px;color:var(--text-muted);">认证方式: ${escapeHTML(method)}</div>
+                            </div>`;
+                        if (window.showDialog) {
+                            const result = await window.showDialog('🔐 GitHub 账号', bodyHTML, [
+                                { text: '退出登录', value: 'logout', class: 'btn-cancel' },
+                                { text: '关闭', value: 'close', class: 'btn-confirm' },
+                            ]);
+                            if (result.confirmed && result.value === 'logout') {
+                                await fetch('/api/config', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ github_token: '', github_auth_method: '' })
+                                });
+                                window.showToast('已退出 GitHub 登录', 'success');
+                            }
+                        }
+                        return;
+                    }
+                }
+            } catch (_e) {}
+
+            // Start device flow
+            showToast('正在获取 GitHub 授权码...', 'info');
+            try {
+                const startResp = await fetch('/api/git/github/auth/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                if (!startResp.ok) {
+                    const errData = await startResp.json().catch(() => ({}));
+                    throw new Error(errData.error || '获取授权码失败');
+                }
+                const authData = await startResp.json();
+                const { user_code, verification_uri, device_code, interval, expires_in } = authData;
+
+                // Show dialog with user code and link
+                const bodyHTML = `
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        <div style="text-align:center;">
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">请复制以下代码，在 GitHub 网站上输入授权：</div>
+                            <div id="github-user-code" style="font-size:24px;font-weight:700;font-family:var(--font-mono);letter-spacing:4px;color:var(--accent);background:var(--bg-tertiary);padding:10px 16px;border-radius:6px;cursor:pointer;user-select:all;" title="点击复制">${escapeHTML(user_code)}</div>
+                            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">点击代码可复制</div>
+                        </div>
+                        <a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:10px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">打开 github.com 授权</a>
+                        <div id="github-auth-status" style="text-align:center;font-size:12px;color:var(--text-muted);padding:4px 0;">
+                            等待授权中...
+                        </div>
+                    </div>`;
+
+                if (window.showDialog) {
+                    const dialogPromise = window.showDialog('🔐 GitHub 登录授权', bodyHTML, [
+                        { text: '取消', value: 'cancel', class: 'btn-cancel' },
+                    ]);
+
+                    // Make user code clickable to copy
+                    setTimeout(() => {
+                        const codeEl = document.getElementById('github-user-code');
+                        if (codeEl) {
+                            const handler = () => {
+                                navigator.clipboard.writeText(user_code).then(() => {
+                                    showToast('授权码已复制到剪贴板', 'success', 1500);
+                                }).catch(() => {
+                                    // Fallback: select text
+                                    const range = document.createRange();
+                                    range.selectNodeContents(codeEl);
+                                    const sel = window.getSelection();
+                                    sel.removeAllRanges();
+                                    sel.addRange(range);
+                                });
+                            };
+                            codeEl.addEventListener('click', handler);
+                        }
+                    }, 200);
+
+                    // Start polling
+                    let pollTimer = null;
+                    const pollIntervalMs = Math.max((interval || 5), 5) * 1000;
+                    let cancelled = false;
+
+                    pollTimer = setInterval(async () => {
+                        if (cancelled) return;
+                        try {
+                            const pollResp = await fetch('/api/git/github/auth/poll', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ device_code })
+                            });
+                            if (!pollResp.ok) return;
+                            const pollData = await pollResp.json();
+
+                            if (pollData.done) {
+                                clearInterval(pollTimer);
+                                if (pollData.success) {
+                                    const statusEl = document.getElementById('github-auth-status');
+                                    if (statusEl) {
+                                        statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">✅ 授权成功！</span>';
+                                    }
+                                    showToast('GitHub 登录成功！Token 已保存', 'success');
+                                } else {
+                                    const statusEl = document.getElementById('github-auth-status');
+                                    if (statusEl) {
+                                        statusEl.innerHTML = `<span style="color:var(--red);">❌ ${escapeHTML(pollData.error || '授权失败')}</span>`;
+                                    }
+                                    showToast('GitHub 授权失败: ' + (pollData.error || ''), 'error');
+                                }
+                            }
+                        } catch (_e) {}
+                    }, pollIntervalMs);
+
+                    // Clean up polling when dialog closes
+                    dialogPromise.then(() => {
+                        cancelled = true;
+                        if (pollTimer) clearInterval(pollTimer);
+                    });
+                }
+            } catch (err) {
+                showToast('GitHub 登录失败: ' + err.message, 'error');
+            }
+        })();
+    }
+
     function wireButtons() {
         const buttonMap = {
             'git-init-btn': () => gitInit(),
@@ -1578,6 +1721,7 @@ const GitManager = (() => {
             'git-diff-all-btn': () => diff(),
             'git-refresh': () => refresh(),
             'git-token-btn': () => showTokenConfig(),
+            'git-login-btn': () => showGithubLogin(),
             'git-commit-btn': () => commit(),
             'git-add-all-btn': () => addAll(),
             'git-stash-btn': () => stash(),
