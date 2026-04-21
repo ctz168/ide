@@ -404,31 +404,27 @@ const ProjectManager = (() => {
 
     /**
      * Build and show the clone dialog:
-     *   Row 1: GitHub username input + "Search repos" button
-     *   Row 2: Repo dropdown (populated after username search)
-     *   Row 3: Manual URL + optional Token (for private repos or non-GitHub)
+     *   Row 1: OAuth button (or green status if already authorized)
+     *   Row 2: Repo dropdown (appears after OAuth authorization)
+     *   Row 3: Manual URL + optional Token
      */
     function showProjectCloneDialog() {
         return new Promise(async (resolve) => {
-            // Check if already has token → pre-fill username & auto-load repos
+            // Check auth status
             let savedToken = '';
-            let savedUsername = '';
+            let username = '';
             try {
                 const cfgResp = await fetch('/api/config');
                 if (cfgResp.ok) {
                     const cfg = await cfgResp.json();
                     savedToken = cfg.github_token || '';
-                    savedUsername = cfg.github_username || '';
                 }
                 if (savedToken) {
                     const authResp = await fetch('/api/git/github/auth/status');
                     if (authResp.ok) {
                         const authData = await authResp.json();
-                        if (authData.authenticated) {
-                            savedUsername = savedUsername || authData.username || '';
-                        } else {
-                            savedToken = '';
-                        }
+                        if (authData.authenticated) username = authData.username || '';
+                        else savedToken = '';
                     }
                 }
             } catch (_e) {}
@@ -454,81 +450,108 @@ const ProjectManager = (() => {
             const container = document.createElement('div');
             container.style.cssText = 'display:flex;flex-direction:column;gap:14px;';
 
-            // ═══ Row 1: GitHub Username + Search Button ═══
+            // ═══ Row 1: OAuth Login ═══
             const row1 = document.createElement('div');
+            row1.style.cssText = 'text-align:center;';
+
             if (isLoggedIn) {
-                // Already logged in — show green status bar
-                row1.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:8px;padding:10px;border-radius:8px;background:rgba(76,175,80,0.1);border:1px solid rgba(76,175,80,0.3);';
+                const statusDiv = document.createElement('div');
+                statusDiv.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:8px;background:rgba(76,175,80,0.1);border:1px solid rgba(76,175,80,0.3);';
                 const avatar = document.createElement('span');
                 avatar.style.cssText = 'width:24px;height:24px;border-radius:50%;background:var(--accent);display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:700;';
-                avatar.textContent = (savedUsername || 'G')[0].toUpperCase();
+                avatar.textContent = (username || 'G')[0].toUpperCase();
                 const info = document.createElement('span');
                 info.style.cssText = 'font-size:13px;color:var(--text-primary);font-weight:500;';
-                info.textContent = `✓ ${escapeHTML(savedUsername || '已授权')}`;
-                row1.appendChild(avatar);
-                row1.appendChild(info);
+                info.textContent = `✓ ${escapeHTML(username || '已授权')}`;
+                statusDiv.appendChild(avatar);
+                statusDiv.appendChild(info);
+                row1.appendChild(statusDiv);
             } else {
-                row1.style.cssText = 'display:flex;gap:8px;align-items:stretch;';
-                const usernameInput = document.createElement('input');
-                usernameInput.type = 'text';
-                usernameInput.id = 'project-clone-username';
-                usernameInput.placeholder = 'GitHub 用户名';
-                usernameInput.value = savedUsername;
-                usernameInput.autocomplete = 'off';
-                usernameInput.style.cssText = 'flex:1;padding:10px 12px;border-radius:8px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;';
-                const searchBtn = document.createElement('button');
-                searchBtn.id = 'project-clone-search-btn';
-                searchBtn.textContent = '🔍';
-                searchBtn.style.cssText = 'padding:10px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:16px;cursor:pointer;min-width:44px;display:flex;align-items:center;justify-content:center;';
-                searchBtn.title = '搜索公开仓库';
-                row1.appendChild(usernameInput);
-                row1.appendChild(searchBtn);
+                const loginBtn = document.createElement('button');
+                loginBtn.id = 'project-clone-login-btn';
+                loginBtn.textContent = '🔑 GitHub OAuth 授权登录';
+                loginBtn.style.cssText = 'width:100%;padding:12px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;';
+                loginBtn.onclick = async () => {
+                    overlay.classList.add('hidden');
+                    try {
+                        // Step 1: Request device code from GitHub
+                        const startResp = await fetch('/api/git/github/auth/start', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+                        });
+                        const data = await startResp.json();
+
+                        if (data.oauth_unavailable || !data.ok) {
+                            // OAuth App not configured — fallback to token input
+                            safeToast('OAuth 未配置，请在下方输入 Token 登录', 'info');
+                            overlay.classList.remove('hidden');
+                            return;
+                        }
+
+                        // Step 2: Show Device Flow dialog (auto-opens GitHub authorization page)
+                        if (window.GitManager && window.GitManager.showDeviceCodeDialog) {
+                            await window.GitManager.showDeviceCodeDialog(data);
+                        }
+
+                        // Step 3: Authorization complete — reopen dialog (now logged in)
+                        showProjectCloneDialog().then(resolve);
+                    } catch (_e) {
+                        safeToast('授权启动失败，请在下方输入 Token', 'info');
+                        overlay.classList.remove('hidden');
+                    }
+                };
+                if (window.bindTouchButton) window.bindTouchButton(loginBtn, () => loginBtn.onclick());
+                row1.appendChild(loginBtn);
             }
             container.appendChild(row1);
 
             // ═══ Row 2: Repo Dropdown ═══
             const row2 = document.createElement('div');
             row2.id = 'project-clone-repo-row';
-            row2.style.cssText = 'display:none;'; // hidden until repos loaded
 
-            const label2 = document.createElement('label');
-            label2.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;';
-            label2.textContent = '选择要克隆的仓库';
-            row2.appendChild(label2);
+            if (isLoggedIn) {
+                const label2 = document.createElement('label');
+                label2.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;';
+                label2.textContent = '选择要克隆的仓库';
+                row2.appendChild(label2);
 
-            const selectWrap = document.createElement('div');
-            selectWrap.style.cssText = 'position:relative;';
+                const selectWrap = document.createElement('div');
+                selectWrap.style.cssText = 'position:relative;';
 
-            const repoSelect = document.createElement('select');
-            repoSelect.id = 'project-clone-repo-select';
-            repoSelect.style.cssText = 'width:100%;padding:10px 12px;border-radius:8px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;appearance:none;-webkit-appearance:none;cursor:pointer;';
-            const placeholderOpt = document.createElement('option');
-            placeholderOpt.value = '';
-            placeholderOpt.textContent = '请先输入用户名搜索';
-            placeholderOpt.disabled = true;
-            placeholderOpt.selected = true;
-            repoSelect.appendChild(placeholderOpt);
-            selectWrap.appendChild(repoSelect);
+                const repoSelect = document.createElement('select');
+                repoSelect.id = 'project-clone-repo-select';
+                repoSelect.style.cssText = 'width:100%;padding:10px 12px;border-radius:8px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;appearance:none;-webkit-appearance:none;cursor:pointer;';
+                const placeholderOpt = document.createElement('option');
+                placeholderOpt.value = '';
+                placeholderOpt.textContent = '⏳ 加载仓库列表中...';
+                placeholderOpt.disabled = true;
+                placeholderOpt.selected = true;
+                repoSelect.appendChild(placeholderOpt);
+                selectWrap.appendChild(repoSelect);
 
-            const chevron = document.createElement('span');
-            chevron.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:12px;color:var(--text-muted);';
-            chevron.textContent = '▾';
-            selectWrap.appendChild(chevron);
-            row2.appendChild(selectWrap);
+                const chevron = document.createElement('span');
+                chevron.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%);pointer-events:none;font-size:12px;color:var(--text-muted);';
+                chevron.textContent = '▾';
+                selectWrap.appendChild(chevron);
+                row2.appendChild(selectWrap);
 
-            const descDiv = document.createElement('div');
-            descDiv.id = 'project-clone-repo-desc';
-            descDiv.style.cssText = 'font-size:11px;color:var(--text-muted);margin-top:4px;min-height:16px;';
-            row2.appendChild(descDiv);
+                const descDiv = document.createElement('div');
+                descDiv.id = 'project-clone-repo-desc';
+                descDiv.style.cssText = 'font-size:11px;color:var(--text-muted);margin-top:4px;min-height:16px;';
+                row2.appendChild(descDiv);
+            } else {
+                row2.style.cssText = 'display:none;';
+            }
             container.appendChild(row2);
 
             // ═══ Divider ═══
-            const divider = document.createElement('div');
-            divider.style.cssText = 'display:flex;align-items:center;gap:10px;';
-            divider.innerHTML = '<span style="flex:1;height:1px;background:var(--border);"></span><span style="font-size:11px;color:var(--text-muted);">或手动输入地址</span><span style="flex:1;height:1px;background:var(--border);"></span>';
-            container.appendChild(divider);
+            if (isLoggedIn) {
+                const divider = document.createElement('div');
+                divider.style.cssText = 'display:flex;align-items:center;gap:10px;margin:2px 0;';
+                divider.innerHTML = '<span style="flex:1;height:1px;background:var(--border);"></span><span style="font-size:11px;color:var(--text-muted);">或手动输入地址</span><span style="flex:1;height:1px;background:var(--border);"></span>';
+                container.appendChild(divider);
+            }
 
-            // ═══ Row 3: Manual URL + optional Token ═══
+            // ═══ Row 3: Manual URL + Token ═══
             const row3 = document.createElement('div');
             const label3 = document.createElement('label');
             label3.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;';
@@ -546,7 +569,7 @@ const ProjectManager = (() => {
             if (!isLoggedIn) {
                 const tokenLabel = document.createElement('label');
                 tokenLabel.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;margin-top:8px;';
-                tokenLabel.textContent = 'GitHub Token（克隆私有仓库时需要）';
+                tokenLabel.textContent = 'GitHub Token（私有仓库需要）';
                 row3.appendChild(tokenLabel);
 
                 const tokenInput = document.createElement('input');
@@ -574,7 +597,6 @@ const ProjectManager = (() => {
             // ── State ──
             let resolved = false;
             let reposCache = [];
-            let currentUsername = savedUsername;
 
             function finish(result) {
                 if (resolved) return;
@@ -583,99 +605,57 @@ const ProjectManager = (() => {
                 resolve(result);
             }
 
-            // ── Populate repo dropdown ──
-            async function loadRepos(username) {
-                const row2El = document.getElementById('project-clone-repo-row');
-                const select = document.getElementById('project-clone-repo-select');
-                if (!row2El || !select) return;
-
-                row2El.style.cssText = '';
-                select.innerHTML = '';
-                const loading = document.createElement('option');
-                loading.value = '';
-                loading.textContent = '⏳ 加载中...';
-                loading.disabled = true;
-                loading.selected = true;
-                select.appendChild(loading);
-
-                reposCache = [];
-                try {
-                    let fetchUrl;
-                    if (isLoggedIn) {
-                        fetchUrl = `/api/git/github/repos?per_page=100&sort=updated`;
-                    } else {
-                        fetchUrl = `/api/git/github/user/repos?username=${encodeURIComponent(username)}&per_page=100&sort=updated`;
-                    }
-                    const resp = await fetch(fetchUrl);
-                    if (resp.ok) {
-                        const data = await resp.json();
-                        reposCache = data.repos || [];
-                    }
-                } catch (_e) {}
-
-                select.innerHTML = '';
-                if (reposCache.length === 0) {
-                    const opt = document.createElement('option');
-                    opt.value = '';
-                    opt.textContent = '未找到仓库';
-                    opt.disabled = true;
-                    select.appendChild(opt);
-                } else {
-                    const ph = document.createElement('option');
-                    ph.value = '';
-                    ph.textContent = `请选择仓库 (${reposCache.length}个)`;
-                    ph.disabled = true;
-                    ph.selected = true;
-                    select.appendChild(ph);
-
-                    reposCache.forEach(repo => {
-                        const opt = document.createElement('option');
-                        opt.value = repo.clone_url;
-                        const icon = repo.private ? '🔒' : '🌐';
-                        opt.textContent = `${icon} ${repo.full_name}`;
-                        opt.dataset.desc = repo.description || '';
-                        select.appendChild(opt);
-                    });
-                }
-
-                select.onchange = function () {
-                    const chosen = reposCache.find(r => r.clone_url === select.value);
-                    const descEl = document.getElementById('project-clone-repo-desc');
-                    const urlEl = document.getElementById('project-clone-url');
-                    if (chosen) {
-                        if (descEl) descEl.textContent = chosen.description || '';
-                        if (urlEl) urlEl.value = chosen.clone_url;
-                    } else {
-                        if (descEl) descEl.textContent = '';
-                    }
-                };
-            }
-
-            // ── Search button (non-logged-in mode) ──
-            if (!isLoggedIn) {
-                const searchBtn = document.getElementById('project-clone-search-btn');
-                const usernameInput = document.getElementById('project-clone-username');
-                if (searchBtn) {
-                    searchBtn.onclick = () => {
-                        const uname = usernameInput ? usernameInput.value.trim() : '';
-                        if (!uname) { safeToast('请输入 GitHub 用户名', 'error'); return; }
-                        currentUsername = uname;
-                        loadRepos(uname);
-                    };
-                    if (window.bindTouchButton) window.bindTouchButton(searchBtn, () => searchBtn.onclick());
-                }
-                // Also support Enter key on username input
-                if (usernameInput) {
-                    usernameInput.addEventListener('keydown', (e) => {
-                        if (e.key === 'Enter') {
-                            const uname = usernameInput.value.trim();
-                            if (uname) { currentUsername = uname; loadRepos(uname); }
+            // ── Load repos if logged in ──
+            if (isLoggedIn) {
+                (async () => {
+                    try {
+                        const resp = await fetch('/api/git/github/repos?per_page=100&sort=updated');
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            reposCache = data.repos || [];
                         }
-                    });
-                }
-            } else {
-                // Already logged in — auto-load repos
-                loadRepos(savedUsername);
+                    } catch (_e) {}
+
+                    const select = document.getElementById('project-clone-repo-select');
+                    if (!select) return;
+
+                    select.innerHTML = '';
+                    if (reposCache.length === 0) {
+                        const opt = document.createElement('option');
+                        opt.value = '';
+                        opt.textContent = '未找到仓库';
+                        opt.disabled = true;
+                        select.appendChild(opt);
+                    } else {
+                        const ph = document.createElement('option');
+                        ph.value = '';
+                        ph.textContent = `请选择仓库 (${reposCache.length}个)`;
+                        ph.disabled = true;
+                        ph.selected = true;
+                        select.appendChild(ph);
+
+                        reposCache.forEach(repo => {
+                            const opt = document.createElement('option');
+                            opt.value = repo.clone_url;
+                            const icon = repo.private ? '🔒' : '🌐';
+                            opt.textContent = `${icon} ${repo.full_name}`;
+                            opt.dataset.desc = repo.description || '';
+                            select.appendChild(opt);
+                        });
+                    }
+
+                    select.onchange = function () {
+                        const chosen = reposCache.find(r => r.clone_url === select.value);
+                        const descEl = document.getElementById('project-clone-repo-desc');
+                        const urlEl = document.getElementById('project-clone-url');
+                        if (chosen) {
+                            if (descEl) descEl.textContent = chosen.description || '';
+                            if (urlEl) urlEl.value = chosen.clone_url;
+                        } else {
+                            if (descEl) descEl.textContent = '';
+                        }
+                    };
+                })();
             }
 
             // ── Button handlers ──
@@ -696,10 +676,12 @@ const ProjectManager = (() => {
                     const tokenEl = document.getElementById('project-clone-token');
                     if (tokenEl) token = tokenEl.value.trim();
                     if (token) {
+                        // Save token to config
                         fetch('/api/config', {
                             method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ github_token: token, github_username: currentUsername })
+                            body: JSON.stringify({ github_token: token })
                         }).catch(() => {});
+                        // Inject token into URL for private repos
                         if (url.includes('github.com') && !url.includes('@')) {
                             url = url.replace('https://', `https://${token}@`);
                         }
