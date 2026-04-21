@@ -492,7 +492,8 @@ const ProjectManager = (() => {
                             await window.GitManager.showDeviceCodeDialog(data);
                         }
 
-                        // Step 3: Authorization complete — reopen dialog (now logged in)
+                        // Step 3: Authorization complete — toast + reopen dialog
+                        safeToast('✅ 授权成功！正在加载仓库列表...', 'success');
                         showProjectCloneDialog().then(resolve);
                     } catch (_e) {
                         safeToast('授权启动失败，请在下方输入 Token', 'info');
@@ -671,20 +672,22 @@ const ProjectManager = (() => {
                 if (!url && urlEl) url = urlEl.value.trim();
                 if (!url) { safeToast('请选择仓库或输入地址', 'error'); return; }
 
-                let token = '';
-                if (!isLoggedIn) {
-                    const tokenEl = document.getElementById('project-clone-token');
-                    if (tokenEl) token = tokenEl.value.trim();
-                    if (token) {
-                        // Save token to config
-                        fetch('/api/config', {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ github_token: token })
-                        }).catch(() => {});
-                        // Inject token into URL for private repos
-                        if (url.includes('github.com') && !url.includes('@')) {
-                            url = url.replace('https://', `https://${token}@`);
+                // Inject saved token into GitHub clone URLs (needed for private repos)
+                if (url.includes('github.com') && !url.includes('@')) {
+                    const tokenToUse = savedToken || '';
+                    if (!tokenToUse && !isLoggedIn) {
+                        // Not logged in — check manual token input
+                        const tokenEl = document.getElementById('project-clone-token');
+                        const manualToken = tokenEl ? tokenEl.value.trim() : '';
+                        if (manualToken) {
+                            fetch('/api/config', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ github_token: manualToken })
+                            }).catch(() => {});
+                            url = url.replace('https://', `https://${manualToken}@`);
                         }
+                    } else if (tokenToUse) {
+                        url = url.replace('https://', `https://${tokenToUse}@`);
                     }
                 }
                 finish({ url });

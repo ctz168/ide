@@ -1809,9 +1809,17 @@ const GitManager = (() => {
         const { user_code, verification_uri, device_code, expires_in = 900 } = data;
 
         // Auto-open GitHub authorization page in new tab
+        let popupBlocked = false;
         try {
-            window.open(verification_uri, '_blank');
-        } catch (_e) {}
+            const w = window.open(verification_uri, '_blank');
+            popupBlocked = !w;
+        } catch (_e) { popupBlocked = true; }
+
+        const blockedWarning = popupBlocked
+            ? `<div style="margin-top:8px;padding:10px;border-radius:8px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);font-size:12px;color:var(--text-secondary);line-height:1.5;text-align:center;">
+                ⚠️ 弹窗被拦截，请<a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener" style="color:var(--accent);font-weight:600;text-decoration:underline;">点击此处手动打开授权页面</a>，输入验证码后回来即可
+               </div>`
+            : '';
 
         const bodyHTML = `
             <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
@@ -1827,6 +1835,7 @@ const GitManager = (() => {
                     复制验证码
                 </button>
                 <div id="device-status" style="font-size:12px;color:var(--text-muted);">等待授权中...</div>
+                ${blockedWarning}
             </div>`;
 
         if (!window.showDialog) {
@@ -1924,8 +1933,8 @@ const GitManager = (() => {
                         if (statusEl) statusEl.textContent = '❌ ' + (pollData.error || '授权失败');
                         if (window.showToast) window.showToast('GitHub 授权失败: ' + (pollData.error || ''), 'error');
                     }
-                    // Auto-close dialog after 2 seconds
-                    setTimeout(() => { overlay.classList.add('hidden'); }, 2000);
+                    // Auto-close dialog immediately
+                    overlay.classList.add('hidden');
                     break;
                 }
             } catch (_e) {
