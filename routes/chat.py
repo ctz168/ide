@@ -2625,7 +2625,7 @@ def _build_cached_api_messages(static_prompt, dynamic_prompt, llm_config):
     the appropriate provider-specific caching strategy:
 
     - Anthropic: content blocks with cache_control ephemeral on static part
-    - OpenAI: developer role (auto prefix caching on stable prefix)
+    - OpenAI: system role (compatible with all OpenAI-compatible APIs)
     - Others: single system message, no provider-level caching
     """
     provider = llm_config.get('provider', '')
@@ -2642,7 +2642,7 @@ def _build_cached_api_messages(static_prompt, dynamic_prompt, llm_config):
         ]
         return [{'role': 'system', 'content': sys_content}]
     elif _is_openai:
-        return [{'role': 'developer', 'content': full_prompt}]
+        return [{'role': 'system', 'content': full_prompt}]
     else:
         return [{'role': 'system', 'content': full_prompt}]
 
@@ -2917,7 +2917,7 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     if provider == 'anthropic' or api_type == 'anthropic':
         log_write(f'[phoneide] Anthropic cache_control enabled (static: ~{_estimate_tokens(_static_sys_prompt)} tokens)')
     elif provider == 'openai' or api_type == 'openai':
-        log_write(f'[phoneide] OpenAI developer message mode (static: ~{_estimate_tokens(_static_sys_prompt)} tokens)')
+        log_write(f'[phoneide] OpenAI system message mode (static: ~{_estimate_tokens(_static_sys_prompt)} tokens)')
 
     for msg in messages:
         role = msg.get('role', '')
