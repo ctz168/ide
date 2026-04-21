@@ -655,7 +655,7 @@ def git_checkout_commit():
 # In-memory store for pending device code polls
 _github_oauth_pending = {}  # device_code -> { thread, stop_event, result }
 
-GITHUB_CLIENT_ID = 'Ov23liFzK7dGqVBqqyEB'  # PhoneIDE GitHub App (may need recreation)
+GITHUB_CLIENT_ID = 'Ov23lire87hKJVZJFw0d'  # PhoneIDE GitHub OAuth App
 GITHUB_SCOPES = 'repo,read:org,gist'
 
 
