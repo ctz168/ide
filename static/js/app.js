@@ -18,9 +18,12 @@ const AppManager = (() => {
         toast.className = 'show';
         if (type) toast.classList.add(type);
         clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => {
-            toast.className = 'hidden';
-        }, duration);
+        // duration=0 means persistent — stays visible until next showToast call
+        if (duration > 0) {
+            toast._timer = setTimeout(() => {
+                toast.className = 'hidden';
+            }, duration);
+        }
 
         // Forward to Android notification bar (only inside PhoneIDE APK)
         if (window.AndroidBridge && window.AndroidBridge.showNotification) {

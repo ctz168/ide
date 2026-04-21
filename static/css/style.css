@@ -1456,9 +1456,9 @@ html, body {
 #bottom-panel-header {
     display: flex;
     align-items: center;
-    padding: 4px 8px;
+    padding: 4px 4px;
     border-bottom: 1px solid var(--border);
-    gap: 8px;
+    gap: 0;
     flex-shrink: 0;
 }
 
@@ -1480,6 +1480,14 @@ html, body {
 }
 #bottom-panel-header button:active {
     background: var(--bg-hover);
+}
+/* Clear (🗑) and Close (✕) buttons must always be visible */
+#bottom-panel-clear,
+#bottom-panel-close {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    font-size: 14px;
+    line-height: 1;
 }
 
 #output-content {
@@ -2631,14 +2639,17 @@ button, .file-item, .search-result-item, .git-change-item {
 #bottom-tabs {
     display: flex;
     border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-}
-#bottom-tabs .btab {
     flex: 1;
     min-width: 0;
-    padding: 6px 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+#bottom-tabs::-webkit-scrollbar { display: none; }
+#bottom-tabs .btab {
+    flex: 1 0 auto;
+    min-width: 0;
+    padding: 6px 4px;
     border: none;
     background: none;
     color: var(--text-muted);

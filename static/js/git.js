@@ -279,7 +279,7 @@ const GitManager = (() => {
             }
         }
 
-        showToast('正在克隆仓库...', 'info');
+        showToast('正在克隆仓库...', 'info', 0); // duration=0 → persist until clone finishes
 
         try {
             const resp = await fetch('/api/git/clone', {
@@ -293,7 +293,7 @@ const GitManager = (() => {
             }
             const data = await resp.json();
 
-            showToast('克隆成功', 'success');
+            showToast('克隆成功', 'success', 2000);
             gitLog(`clone ${url}`, data);
 
             // Navigate into cloned folder
@@ -314,7 +314,7 @@ const GitManager = (() => {
 
             return data;
         } catch (err) {
-            showToast('克隆失败: ' + err.message, 'error');
+            showToast('克隆失败: ' + err.message, 'error', 4000);
             gitLogSimple(`clone ${url}`, err.message);
         }
     }
