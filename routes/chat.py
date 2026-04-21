@@ -2616,6 +2616,37 @@ def _get_system_prompt_cache_key(llm_config):
 
 
 # ==================== LLM Integration ====================
+
+def _build_cached_api_messages(static_prompt, dynamic_prompt, llm_config):
+    """Build system message(s) with provider-level prompt caching support.
+
+    Splits the system prompt into static (tool docs, rarely changes) and dynamic
+    (workspace info, AST symbols, env — changes per request) parts, and applies
+    the appropriate provider-specific caching strategy:
+
+    - Anthropic: content blocks with cache_control ephemeral on static part
+    - OpenAI: developer role (auto prefix caching on stable prefix)
+    - Others: single system message, no provider-level caching
+    """
+    provider = llm_config.get('provider', '')
+    api_type = llm_config.get('api_type', '')
+    _is_anthropic = (provider == 'anthropic' or api_type == 'anthropic')
+    _is_openai = (provider == 'openai' or api_type == 'openai') and not _is_anthropic
+
+    full_prompt = static_prompt + dynamic_prompt
+
+    if _is_anthropic:
+        sys_content = [
+            {'type': 'text', 'text': static_prompt, 'cache_control': {'type': 'ephemeral'}},
+            {'type': 'text', 'text': dynamic_prompt},
+        ]
+        return [{'role': 'system', 'content': sys_content}]
+    elif _is_openai:
+        return [{'role': 'developer', 'content': full_prompt}]
+    else:
+        return [{'role': 'system', 'content': full_prompt}]
+
+
 def _build_api_messages(messages, llm_config, skip_system_inject=False):
     """Convert chat history to API format with system prompt.
 
@@ -2657,9 +2688,16 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     _sp_now = time.time()
     _sp_cached = _SYSTEM_PROMPT_CACHE.get(_sp_cache_key)
     if _sp_cached and (_sp_now - _sp_cached['time'] < _SYSTEM_PROMPT_CACHE_TTL):
-        sys_prompt = _sp_cached['prompt']
+        _static_sys_prompt = _sp_cached.get('static', _sp_cached['prompt'])
+        _dynamic_sys_prompt = _sp_cached.get('dynamic', '')
+        if not _dynamic_sys_prompt:
+            # Legacy cache entry: whole prompt as static
+            sys_prompt = _sp_cached['prompt']
+            _static_sys_prompt = sys_prompt
+            _dynamic_sys_prompt = ''
         log_write(f'[phoneide] Using cached system prompt (~{_sp_cached["tokens"]} tokens, age {_sp_now - _sp_cached["time"]:.0f}s)')
-        api_messages = [{'role': 'system', 'content': sys_prompt}]
+        # Use same provider-aware message building as cache miss path
+        api_messages = _build_cached_api_messages(_static_sys_prompt, _dynamic_sys_prompt, llm_config)
         for msg in messages:
             role = msg.get('role', '')
             if role == 'system':
@@ -2681,12 +2719,14 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         return api_messages
 
     # Cache miss — build system prompt from scratch
+    # Split into static (tool docs) and dynamic (workspace/env) parts
+    # for provider-level prompt caching (Anthropic cache_control, OpenAI cache breakpoints)
+    _static_sys_prompt = DEFAULT_SYSTEM_PROMPT
+    _dynamic_sys_prompt = ''  # workspace, env, AST — changes per request
+
     custom_prompt = llm_config.get('system_prompt', '').strip()
     if custom_prompt and custom_prompt != DEFAULT_SYSTEM_PROMPT.strip():
-        # User has a custom system prompt — prepend the default tool documentation
-        sys_prompt = DEFAULT_SYSTEM_PROMPT + '\n\n## Additional Instructions from User\n' + custom_prompt
-    else:
-        sys_prompt = DEFAULT_SYSTEM_PROMPT
+        _static_sys_prompt += '\n\n## Additional Instructions from User\n' + custom_prompt
 
     # Inject project-aware workspace info and system environment
     # Pre-initialize fallback values in case config loading fails
@@ -2742,11 +2782,11 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
             f'- Server directory: {SERVER_DIR}'
         )
 
-    # Replace or append system environment and workspace info
-    sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
+    # Accumulate dynamic parts (workspace, env — changes per request)
+    _dynamic_sys_prompt += f'\n\n{sys_env_info}\n\n{workspace_info}\n'
 
     # Inject project knowledge from .phoneide/ directory (like CLAUDE.md)
-    # Uses a 30-second TTL cache to avoid re-reading files on every LLM call
+    # Semi-static: cached 30s, treated as dynamic for provider cache
     _knowledge_loaded = []  # track which files were loaded (for logging/SSE)
     _phoneide_dirs_to_check = []
     # 1. Project directory
@@ -2766,7 +2806,7 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     _phoneide_cache = _get_phoneide_cache()
     if (_cache_key in _phoneide_cache and
             _now - _phoneide_cache[_cache_key]['time'] < 30):
-        sys_prompt += _phoneide_cache[_cache_key]['content']
+        _dynamic_sys_prompt += _phoneide_cache[_cache_key]['content']
         _knowledge_loaded = _phoneide_cache[_cache_key]['files']
         log_write(f'[phoneide] Using cached .phoneide/ content ({len(_knowledge_loaded)} files)')
     else:
@@ -2801,7 +2841,7 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                     if len(_injected) > 4000:
                         _injected = _injected[:4000] + '\n\n[... .phoneide/ content truncated — use read_file for full details ...]\n'
                         log_write(f'[phoneide] .phoneide/ content truncated to 4000 chars')
-                    sys_prompt += _injected
+                    _dynamic_sys_prompt += _injected
                     # Store in cache
                     _phoneide_cache[_cache_key] = {
                         'content': _injected,
@@ -2837,23 +2877,30 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
                 else:
                     symbol_lines.append(f'  {name} ({len(locs)} definitions)')
             if symbol_lines:
-                sys_prompt += f'\n\n## Project Symbols ({project_index.file_count} files, {project_index.symbol_count} symbols)\n'
-                sys_prompt += 'Use find_definition/find_references for detailed lookup.\n'
-                sys_prompt += '\n'.join(symbol_lines) + '\n'
+                _dynamic_sys_prompt += f'\n\n## Project Symbols ({project_index.file_count} files, {project_index.symbol_count} symbols)\n'
+                _dynamic_sys_prompt += 'Use find_definition/find_references for detailed lookup.\n'
+                _dynamic_sys_prompt += '\n'.join(symbol_lines) + '\n'
                 if project_index.symbol_count > 30:
-                    sys_prompt += f'  ... and {project_index.symbol_count - 30} more symbols (use find_definition to look up)\n'
+                    _dynamic_sys_prompt += f'  ... and {project_index.symbol_count - 30} more symbols (use find_definition to look up)\n'
                 log_write(f'[phoneide] AST index injected: {project_index.file_count} files, {project_index.symbol_count} symbols')
                 _get_phoneide_cache()[_ast_cache_key] = project_index.last_index_time
     except Exception as e:
         log_write(f'[phoneide] AST index injection error: {e}')
 
-    # P2-1: Trim system prompt to token budget
+    # Merge for local cache and token estimation
+    sys_prompt = _static_sys_prompt + _dynamic_sys_prompt
+
+    # P2-1: Trim system prompt to token budget (trim dynamic part preferentially)
     sys_prompt = _trim_system_prompt_to_budget(sys_prompt)
+    # Re-split after trimming in case dynamic was cut
+    _dynamic_sys_prompt = sys_prompt[len(_static_sys_prompt):]
 
     # P2-6: Store in cache for subsequent calls (60s TTL)
     _sp_tokens = _estimate_tokens(sys_prompt)
     _SYSTEM_PROMPT_CACHE[_sp_cache_key] = {
         'prompt': sys_prompt,
+        'static': _static_sys_prompt,
+        'dynamic': _dynamic_sys_prompt,
         'tokens': _sp_tokens,
         'time': time.time(),
     }
@@ -2863,7 +2910,15 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         del _SYSTEM_PROMPT_CACHE[oldest_key]
     log_write(f'[phoneide] System prompt built and cached (~{_sp_tokens} tokens)')
 
-    api_messages = [{'role': 'system', 'content': sys_prompt}]
+    # Build api_messages with provider-level prompt caching support
+    api_messages = _build_cached_api_messages(_static_sys_prompt, _dynamic_sys_prompt, llm_config)
+    provider = llm_config.get('provider', '')
+    api_type = llm_config.get('api_type', '')
+    if provider == 'anthropic' or api_type == 'anthropic':
+        log_write(f'[phoneide] Anthropic cache_control enabled (static: ~{_estimate_tokens(_static_sys_prompt)} tokens)')
+    elif provider == 'openai' or api_type == 'openai':
+        log_write(f'[phoneide] OpenAI developer message mode (static: ~{_estimate_tokens(_static_sys_prompt)} tokens)')
+
     for msg in messages:
         role = msg.get('role', '')
         if role == 'system':
