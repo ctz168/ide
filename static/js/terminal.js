@@ -2078,6 +2078,8 @@ const TerminalManager = (() => {
         importRequirements,
         reconnectToProcess,
         recoverRunningProcess,
+        startCmdBlock,
+        finishCmdBlock,
 
         // Getters
         get currentProcId() { return currentProcId; },
