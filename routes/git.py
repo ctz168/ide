@@ -855,6 +855,57 @@ def github_auth_status():
         })
 
 
+@bp.route('/api/git/github/user/repos', methods=['GET'])
+@handle_error
+def github_user_public_repos():
+    """List a user's public GitHub repositories (no auth needed).
+
+    Query params:
+      - username: (required) GitHub username
+      - per_page: 1-100, default 100
+      - sort: 'updated' (default), 'created', 'pushed', 'full_name'
+    """
+    username = request.args.get('username', '').strip()
+    if not username:
+        return jsonify({'repos': [], 'error': '请输入 GitHub 用户名'}), 400
+
+    per_page = min(int(request.args.get('per_page', 100)), 100)
+    sort = request.args.get('sort', 'updated')
+
+    try:
+        import urllib.request
+        import json as _json
+        req = urllib.request.Request(
+            f'https://api.github.com/users/{username}/repos?per_page={per_page}&sort={sort}&type=owner',
+            headers={
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'PhoneIDE',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            repos = _json.loads(resp.read().decode('utf-8'))
+        result = []
+        for r in repos:
+            result.append({
+                'full_name': r.get('full_name', ''),
+                'name': r.get('name', ''),
+                'owner': (r.get('owner') or {}).get('login', ''),
+                'html_url': r.get('html_url', ''),
+                'clone_url': r.get('clone_url', ''),
+                'ssh_url': r.get('ssh_url', ''),
+                'private': r.get('private', False),
+                'description': (r.get('description') or '')[:120],
+                'updated_at': r.get('updated_at', ''),
+            })
+        result.sort(key=lambda x: x['updated_at'], reverse=True)
+        return jsonify({'repos': result})
+    except Exception as e:
+        error_msg = str(e)
+        if '404' in error_msg:
+            return jsonify({'repos': [], 'error': f'用户 {username} 不存在或无公开仓库'}), 404
+        return jsonify({'repos': [], 'error': f'获取仓库列表失败: {error_msg}'}), 500
+
+
 @bp.route('/api/git/github/repos', methods=['GET'])
 @handle_error
 def github_list_repos():
