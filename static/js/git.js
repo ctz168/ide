@@ -321,108 +321,157 @@ const GitManager = (() => {
 
     /**
      * Show clone dialog with URL, OAuth login, and manual token fields.
+     * Built with manual DOM manipulation (same pattern as showDeviceCodeDialog)
+     * to ensure reliability across all browsers/WebView.
      */
     function showCloneDialog(savedToken, tokenHint) {
-        return new Promise(async (resolve) => {
-            if (window.showDialog) {
-                const tokenStatusHTML = savedToken
-                    ? '<div style="font-size:11px;color:var(--accent);">✓ Token 已配置，可直接克隆私有仓库</div>'
-                    : '';
-
-                const bodyHTML = `
-                    <div style="display:flex;flex-direction:column;gap:12px;">
-                        <div>
-                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">仓库地址</label>
-                            <input type="text" id="clone-url-input" placeholder="https://github.com/user/repo.git" autocomplete="off"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
-                        </div>
-                        <div style="text-align:center;">
-                            <button id="clone-oauth-btn" style="width:100%;padding:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
-                                🔐 OAuth 授权登录
-                            </button>
-                            ${tokenStatusHTML}
-                        </div>
-                        <div>
-                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">或输入 GitHub Token (${tokenHint})</label>
-                            <input type="password" id="clone-token-input" placeholder="${savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写'}"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
-                        </div>
-                    </div>`;
-
-                // Bind OAuth button before showing dialog
-                // We need to bind it after the dialog HTML is rendered, so use a microtask
-                const result = await new Promise(async (dialogDone) => {
-                    const showDialogResult = window.showDialog('📥 克隆仓库', bodyHTML, [
-                        { text: '取消', value: 'cancel', class: 'btn-cancel' },
-                        { text: '克隆', value: 'ok', class: 'btn-confirm' },
-                    ]);
-
-                    // After showDialog resolves, check if OAuth was clicked
-                    // But first, bind the OAuth button immediately after dialog opens
-                    setTimeout(async () => {
-                        const oauthBtn = document.getElementById('clone-oauth-btn');
-                        if (oauthBtn) {
-                            const handler = async (e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                try {
-                                    const startResp = await fetch('/api/git/github/auth/start', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({})
-                                    });
-                                    const data = await startResp.json();
-
-                                    if (data.oauth_unavailable || !data.ok) {
-                                        if (window.showToast) window.showToast(data.error || 'OAuth 未配置', 'error');
-                                        return;
-                                    }
-
-                                    // Close dialog via overlay
-                                    const overlay = document.getElementById('dialog-overlay');
-                                    if (overlay) overlay.classList.add('hidden');
-
-                                    // Show Device Flow
-                                    await showDeviceCodeDialog(data);
-
-                                    // After OAuth, re-open clone dialog with saved token
-                                    const retry = await showCloneDialog(true, '已配置');
-                                    dialogDone(retry);
-                                    return;
-                                } catch (err) {
-                                    if (window.showToast) window.showToast('OAuth 启动失败: ' + err.message, 'error');
-                                }
-                            };
-                            oauthBtn.addEventListener('click', handler, true); // capture phase
-                        }
-                    }, 50);
-
-                    const r = await showDialogResult;
-
-                    // If OAuth handled it, showDialogResult was already resolved by overlay close
-                    // Check if URL input exists (dialog was normal)
-                    const urlInput = document.getElementById('clone-url-input');
-                    if (urlInput) {
-                        const url = urlInput.value.trim();
-                        const tokenInput = document.getElementById('clone-token-input');
-                        const token = tokenInput ? tokenInput.value.trim() : '';
-                        if (r.confirmed && url) {
-                            dialogDone({ url, token });
-                        } else {
-                            dialogDone(null);
-                        }
-                    } else {
-                        dialogDone(null);
-                    }
-                });
-
-                resolve(result);
+        return new Promise(function(resolve) {
+            var overlay = document.getElementById('dialog-overlay');
+            var dialogTitle = document.getElementById('dialog-title');
+            var dialogBody = document.getElementById('dialog-body');
+            var dialogButtons = document.getElementById('dialog-buttons');
+            if (!overlay || !dialogBody) {
+                var url2 = window.prompt('Clone Repository URL:', 'https://github.com/user/repo.git');
+                if (url2) resolve({ url: url2, token: '' });
+                else resolve(null);
                 return;
             }
-            // Fallback
-            const url = window.prompt('Clone Repository URL:', 'https://github.com/user/repo.git');
-            if (url) resolve({ url, token: '' });
-            else resolve(null);
+
+            // Build dialog title
+            dialogTitle.textContent = '📥 克隆仓库';
+
+            // Build dialog body — 3 rows: URL, OAuth button, Token
+            dialogBody.innerHTML = '';
+            var container = document.createElement('div');
+            container.style.cssText = 'display:flex;flex-direction:column;gap:12px;';
+
+            // Row 1: URL input
+            var row1 = document.createElement('div');
+            var label1 = document.createElement('label');
+            label1.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;';
+            label1.textContent = '仓库地址';
+            var urlInput = document.createElement('input');
+            urlInput.type = 'text';
+            urlInput.id = 'clone-url-input';
+            urlInput.placeholder = 'https://github.com/user/repo.git';
+            urlInput.autocomplete = 'off';
+            urlInput.style.cssText = 'width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;';
+            row1.appendChild(label1);
+            row1.appendChild(urlInput);
+            container.appendChild(row1);
+
+            // Row 2: OAuth login button
+            var row2 = document.createElement('div');
+            row2.style.cssText = 'text-align:center;';
+            var oauthBtn = document.createElement('button');
+            oauthBtn.id = 'clone-oauth-btn';
+            oauthBtn.textContent = '🔐 OAuth 授权登录';
+            oauthBtn.style.cssText = 'width:100%;padding:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;';
+            row2.appendChild(oauthBtn);
+            if (savedToken) {
+                var statusDiv = document.createElement('div');
+                statusDiv.style.cssText = 'font-size:11px;color:var(--accent);margin-top:4px;';
+                statusDiv.textContent = '✓ Token 已配置，可直接克隆私有仓库';
+                row2.appendChild(statusDiv);
+            }
+            container.appendChild(row2);
+
+            // Row 3: Token input
+            var row3 = document.createElement('div');
+            var label3 = document.createElement('label');
+            label3.style.cssText = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;';
+            label3.textContent = '或输入 GitHub Token (' + tokenHint + ')';
+            var tokenInput = document.createElement('input');
+            tokenInput.type = 'password';
+            tokenInput.id = 'clone-token-input';
+            tokenInput.placeholder = savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写';
+            tokenInput.style.cssText = 'width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;';
+            row3.appendChild(label3);
+            row3.appendChild(tokenInput);
+            container.appendChild(row3);
+
+            dialogBody.appendChild(container);
+
+            // Build dialog buttons
+            dialogButtons.innerHTML = '';
+            var cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '取消';
+            cancelBtn.className = 'btn-cancel';
+            var cloneBtn = document.createElement('button');
+            cloneBtn.textContent = '克隆';
+            cloneBtn.className = 'btn-confirm';
+            dialogButtons.appendChild(cancelBtn);
+            dialogButtons.appendChild(cloneBtn);
+
+            // State
+            var resolved = false;
+            function finish(result) {
+                if (resolved) return;
+                resolved = true;
+                overlay.classList.add('hidden');
+                resolve(result);
+            }
+
+            // Cancel button
+            cancelBtn.onclick = function() { finish(null); };
+            if (window.bindTouchButton) window.bindTouchButton(cancelBtn, function() { cancelBtn.onclick(); });
+
+            // Clone button
+            cloneBtn.onclick = function() {
+                var url = urlInput.value.trim();
+                if (!url) {
+                    if (window.showToast) window.showToast('请输入仓库地址', 'error');
+                    return;
+                }
+                finish({ url: url, token: tokenInput.value.trim() });
+            };
+            if (window.bindTouchButton) window.bindTouchButton(cloneBtn, function() { cloneBtn.onclick(); });
+
+            // OAuth button — starts Device Flow
+            oauthBtn.onclick = async function() {
+                try {
+                    overlay.classList.add('hidden');
+                    resolved = true; // prevent cancel from resolving
+
+                    var startResp = await fetch('/api/git/github/auth/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({})
+                    });
+                    var data = await startResp.json();
+
+                    if (data.oauth_unavailable || !data.ok) {
+                        if (window.showToast) window.showToast(data.error || 'OAuth 未配置', 'error');
+                        // Re-open clone dialog
+                        showCloneDialog(savedToken, tokenHint).then(resolve);
+                        return;
+                    }
+
+                    // Show Device Flow
+                    await showDeviceCodeDialog(data);
+
+                    // After OAuth, re-open clone dialog (token saved to config)
+                    showCloneDialog(true, '已配置').then(resolve);
+                } catch (err) {
+                    if (window.showToast) window.showToast('OAuth 启动失败: ' + err.message, 'error');
+                    showCloneDialog(savedToken, tokenHint).then(resolve);
+                }
+            };
+            if (window.bindTouchButton) window.bindTouchButton(oauthBtn, function() { oauthBtn.onclick(); });
+
+            // Show dialog
+            overlay.classList.remove('hidden');
+
+            // Close on overlay click
+            overlay.onclick = function(e) {
+                if (e.target === overlay) finish(null);
+            };
+            overlay.addEventListener('touchend', function(e) {
+                if (e.target === overlay) {
+                    e.preventDefault();
+                    finish(null);
+                }
+            }, { once: true });
         });
     }
 
