@@ -2068,6 +2068,7 @@ const GitManager = (() => {
         addToGitignore,
         deleteGitFile,
         showCloneDialog,
+        showDeviceCodeDialog,
 
         // Getters
         get currentBranch() { return currentBranch; },

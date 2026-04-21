@@ -853,3 +853,63 @@ def github_auth_status():
             'method': auth_method or 'token',
             'error': f'验证失败: {error_msg}',
         })
+
+
+@bp.route('/api/git/github/repos', methods=['GET'])
+@handle_error
+def github_list_repos():
+    """List user's GitHub repositories (requires saved token).
+
+    Query params:
+      - type: 'all' (default), 'owner', 'member', 'public', 'private'
+      - sort: 'updated' (default), 'created', 'pushed', 'full_name'
+      - per_page: 1-100, default 30
+      - page: default 1
+    """
+    config = load_config()
+    token = config.get('github_token', '')
+    if not token:
+        return jsonify({'repos': [], 'error': '未登录，请先授权'}), 401
+
+    params = {
+        'type': request.args.get('type', 'owner'),
+        'sort': request.args.get('sort', 'updated'),
+        'per_page': min(int(request.args.get('per_page', 100)), 100),
+        'page': int(request.args.get('page', 1)),
+    }
+    qs = '&'.join(f'{k}={v}' for k, v in params.items())
+
+    try:
+        import urllib.request
+        import json as _json
+        req = urllib.request.Request(
+            f'https://api.github.com/user/repos?{qs}',
+            headers={
+                'Authorization': f'token {token}',
+                'Accept': 'application/vnd.github+json',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            repos = _json.loads(resp.read().decode('utf-8'))
+        # Return simplified list
+        result = []
+        for r in repos:
+            result.append({
+                'full_name': r.get('full_name', ''),
+                'name': r.get('name', ''),
+                'owner': (r.get('owner') or {}).get('login', ''),
+                'html_url': r.get('html_url', ''),
+                'clone_url': r.get('clone_url', ''),
+                'ssh_url': r.get('ssh_url', ''),
+                'private': r.get('private', False),
+                'description': (r.get('description') or '')[:120],
+                'updated_at': r.get('updated_at', ''),
+            })
+        # Sort by updated_at desc
+        result.sort(key=lambda x: x['updated_at'], reverse=True)
+        return jsonify({'repos': result})
+    except Exception as e:
+        error_msg = str(e)
+        if '401' in error_msg:
+            return jsonify({'repos': [], 'error': 'Token 已失效，请重新授权'}), 401
+        return jsonify({'repos': [], 'error': f'获取仓库列表失败: {error_msg}'}), 500
