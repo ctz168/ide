@@ -360,7 +360,7 @@ const GitManager = (() => {
     }
 
     /**
-     * Show token config dialog
+     * Show token config dialog with verification
      */
     function showTokenConfig() {
         (async () => {
@@ -373,33 +373,61 @@ const GitManager = (() => {
                 }
             } catch (_e) {}
 
+            const hint = savedToken
+                ? '已保存 Token，可直接验证或替换'
+                : '公开仓库无需 Token，私有仓库请填写';
+
             const bodyHTML = `
                 <div style="display:flex;flex-direction:column;gap:8px;">
-                    <p style="font-size:12px;color:var(--text-muted);line-height:1.4;">
-                        Token 用于克隆/拉取私有仓库，公开仓库无需配置。
+                    <p style="font-size:12px;color:var(--text-secondary);line-height:1.5;">
+                        Token 用于克隆/推送/拉取私有仓库。<br>
+                        在 GitHub Settings / Developer settings / PAT 生成。
                     </p>
+                    <div style="font-size:11px;color:var(--text-muted);">${hint}</div>
                     <input type="password" id="token-config-input" placeholder="ghp_xxxxxxxxxxxx"
-                        style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;"
+                        style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;"
                         value="${window.escapeHTML ? window.escapeHTML(savedToken) : savedToken}">
                 </div>`;
 
             if (window.showDialog) {
-                const result = await window.showDialog('🔑 配置 GitHub Token', bodyHTML, [
+                const result = await window.showDialog('🔑 GitHub Token', bodyHTML, [
                     { text: '取消', value: 'cancel', class: 'btn-cancel' },
-                    { text: '保存', value: 'ok', class: 'btn-confirm' },
+                    { text: '验证并保存', value: 'ok', class: 'btn-confirm' },
                 ]);
                 if (!result.confirmed) return;
                 const input = document.getElementById('token-config-input');
                 const token = input ? input.value.trim() : '';
-                try {
+                if (!token) {
                     await fetch('/api/config', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ github_token: token })
+                        body: JSON.stringify({ github_token: '', github_auth_method: '' })
                     });
-                    window.showToast('Token 已保存', 'success', 2000);
+                    window.showToast('Token 已清除', 'info', 2000);
+                    return;
+                }
+                // Save token
+                await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ github_token: token })
+                });
+                // Verify token
+                window.showToast('正在验证 Token...', 'info', 2000);
+                try {
+                    const statusResp = await fetch('/api/git/github/auth/status');
+                    if (statusResp.ok) {
+                        const statusData = await statusResp.json();
+                        if (statusData.authenticated) {
+                            window.showToast('登录成功: ' + (statusData.username || 'GitHub'), 'success', 3000);
+                        } else {
+                            window.showToast('Token 无效或已过期', 'error', 3000);
+                        }
+                    } else {
+                        window.showToast('Token 已保存', 'success', 2000);
+                    }
                 } catch (_e) {
-                    window.showToast('保存失败', 'error', 2000);
+                    window.showToast('Token 已保存', 'success', 2000);
                 }
             }
         })();
@@ -1568,11 +1596,11 @@ const GitManager = (() => {
 
     // ── Wire Up Buttons ────────────────────────────────────────────
 
-    // ── GitHub OAuth Login ─────────────────────────────────────
+    // ── GitHub Login (Token-based) ─────────────────────────────
 
     /**
-     * Show GitHub OAuth Device Flow login dialog.
-     * Guides user through the device code authorization process.
+     * Show GitHub login — check status first, then show token config.
+     * OAuth is disabled (App expired), so we use PAT token directly.
      */
     function showGithubLogin() {
         (async () => {
@@ -1582,9 +1610,8 @@ const GitManager = (() => {
                 if (statusResp.ok) {
                     const statusData = await statusResp.json();
                     if (statusData.authenticated) {
-                        const method = statusData.method === 'oauth' ? 'OAuth 登录' : 'Token';
+                        const method = statusData.method === 'oauth' ? 'OAuth' : 'Token';
                         const username = statusData.username ? ` (${statusData.username})` : '';
-                        // Show logout option
                         const bodyHTML = `
                             <div style="display:flex;flex-direction:column;gap:10px;align-items:center;">
                                 ${statusData.avatar_url ? `<img src="${escapeHTML(statusData.avatar_url)}" style="width:48px;height:48px;border-radius:50%;">` : '<div style="width:48px;height:48px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:24px;">👤</div>'}
@@ -1610,110 +1637,8 @@ const GitManager = (() => {
                 }
             } catch (_e) {}
 
-            // Start device flow
-            showToast('正在获取 GitHub 授权码...', 'info');
-            try {
-                const startResp = await fetch('/api/git/github/auth/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
-                });
-                if (!startResp.ok) {
-                    const errData = await startResp.json().catch(() => ({}));
-                    // If OAuth is unavailable (404), fall back to token input
-                    if (errData.oauth_unavailable || startResp.status === 404) {
-                        showToast('OAuth 暂不可用，请使用 Token 登录', 'info');
-                        showTokenConfig();
-                        return;
-                    }
-                    throw new Error(errData.error || '获取授权码失败');
-                }
-                const authData = await startResp.json();
-                const { user_code, verification_uri, device_code, interval, expires_in } = authData;
-
-                // Show dialog with user code and link
-                const bodyHTML = `
-                    <div style="display:flex;flex-direction:column;gap:12px;">
-                        <div style="text-align:center;">
-                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">请复制以下代码，在 GitHub 网站上输入授权：</div>
-                            <div id="github-user-code" style="font-size:24px;font-weight:700;font-family:var(--font-mono);letter-spacing:4px;color:var(--accent);background:var(--bg-tertiary);padding:10px 16px;border-radius:6px;cursor:pointer;user-select:all;" title="点击复制">${escapeHTML(user_code)}</div>
-                            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">点击代码可复制</div>
-                        </div>
-                        <a href="${escapeHTML(verification_uri)}" target="_blank" rel="noopener" style="display:block;text-align:center;padding:10px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">打开 github.com 授权</a>
-                        <div id="github-auth-status" style="text-align:center;font-size:12px;color:var(--text-muted);padding:4px 0;">
-                            等待授权中...
-                        </div>
-                    </div>`;
-
-                if (window.showDialog) {
-                    const dialogPromise = window.showDialog('🔐 GitHub 登录授权', bodyHTML, [
-                        { text: '取消', value: 'cancel', class: 'btn-cancel' },
-                    ]);
-
-                    // Make user code clickable to copy
-                    setTimeout(() => {
-                        const codeEl = document.getElementById('github-user-code');
-                        if (codeEl) {
-                            const handler = () => {
-                                navigator.clipboard.writeText(user_code).then(() => {
-                                    showToast('授权码已复制到剪贴板', 'success', 1500);
-                                }).catch(() => {
-                                    // Fallback: select text
-                                    const range = document.createRange();
-                                    range.selectNodeContents(codeEl);
-                                    const sel = window.getSelection();
-                                    sel.removeAllRanges();
-                                    sel.addRange(range);
-                                });
-                            };
-                            codeEl.addEventListener('click', handler);
-                        }
-                    }, 200);
-
-                    // Start polling
-                    let pollTimer = null;
-                    const pollIntervalMs = Math.max((interval || 5), 5) * 1000;
-                    let cancelled = false;
-
-                    pollTimer = setInterval(async () => {
-                        if (cancelled) return;
-                        try {
-                            const pollResp = await fetch('/api/git/github/auth/poll', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ device_code })
-                            });
-                            if (!pollResp.ok) return;
-                            const pollData = await pollResp.json();
-
-                            if (pollData.done) {
-                                clearInterval(pollTimer);
-                                if (pollData.success) {
-                                    const statusEl = document.getElementById('github-auth-status');
-                                    if (statusEl) {
-                                        statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">✅ 授权成功！</span>';
-                                    }
-                                    showToast('GitHub 登录成功！Token 已保存', 'success');
-                                } else {
-                                    const statusEl = document.getElementById('github-auth-status');
-                                    if (statusEl) {
-                                        statusEl.innerHTML = `<span style="color:var(--red);">❌ ${escapeHTML(pollData.error || '授权失败')}</span>`;
-                                    }
-                                    showToast('GitHub 授权失败: ' + (pollData.error || ''), 'error');
-                                }
-                            }
-                        } catch (_e) {}
-                    }, pollIntervalMs);
-
-                    // Clean up polling when dialog closes
-                    dialogPromise.then(() => {
-                        cancelled = true;
-                        if (pollTimer) clearInterval(pollTimer);
-                    });
-                }
-            } catch (err) {
-                showToast('GitHub 登录失败: ' + err.message, 'error');
-            }
+            // Not logged in — show token config dialog
+            showTokenConfig();
         })();
     }
 
