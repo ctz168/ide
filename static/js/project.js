@@ -371,18 +371,25 @@ const ProjectManager = (() => {
      * Clone a project (clone in workspace, then open it as project with git init)
      */
     async function cloneProject() {
-        // Use GitManager's clone dialog for URL input, then open as project
-        let savedToken = '';
-        try {
-            const cfgResp = await fetch('/api/config');
-            if (cfgResp.ok) {
-                const cfg = await cfgResp.json();
-                savedToken = cfg.github_token || '';
-            }
-        } catch (_e) {}
-
-        const tokenHint = savedToken ? '已配置' : '公开仓库无需填写';
-        const result = await showCloneDialog(savedToken, tokenHint);
+        // Use GitManager's clone dialog (has URL + OAuth + Token rows)
+        let result;
+        if (window.GitManager && window.GitManager.showCloneDialog) {
+            let savedToken = '';
+            try {
+                const cfgResp = await fetch('/api/config');
+                if (cfgResp.ok) {
+                    const cfg = await cfgResp.json();
+                    savedToken = cfg.github_token || '';
+                }
+            } catch (_e) {}
+            const tokenHint = savedToken ? '已配置' : '公开仓库无需填写';
+            result = await window.GitManager.showCloneDialog(savedToken, tokenHint);
+        } else {
+            // Fallback: simple prompt
+            const url = window.prompt('Clone Repository URL:', 'https://github.com/user/repo.git');
+            if (!url) return;
+            result = { url, token: '' };
+        }
         if (!result) return;
 
         let url = result.url;
@@ -535,43 +542,7 @@ const ProjectManager = (() => {
         await loadPickerFolders(parentPath);
     }
 
-    // ── Clone Dialog ──────────────────────────────────────────────
 
-    function showCloneDialog(savedToken, tokenHint) {
-        return new Promise((resolve) => {
-            if (window.showDialog) {
-                const bodyHTML = `
-                    <div style="display:flex;flex-direction:column;gap:12px;">
-                        <div>
-                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">仓库地址</label>
-                            <input type="text" id="project-clone-url" placeholder="https://github.com/user/repo.git" autocomplete="off"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
-                        </div>
-                        <div>
-                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">GitHub Token (${tokenHint})</label>
-                            <input type="password" id="project-clone-token" placeholder="${savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写'}"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
-                        </div>
-                    </div>`;
-                window.showDialog('📥 克隆项目', bodyHTML, [
-                    { text: '取消', value: 'cancel', class: 'btn-cancel' },
-                    { text: '克隆并打开', value: 'ok', class: 'btn-confirm' },
-                ]).then(result => {
-                    if (!result.confirmed) { resolve(null); return; }
-                    const urlInput = document.getElementById('project-clone-url');
-                    const tokenInput = document.getElementById('project-clone-token');
-                    const url = urlInput ? urlInput.value.trim() : '';
-                    const token = tokenInput ? tokenInput.value.trim() : '';
-                    if (!url) { resolve(null); return; }
-                    resolve({ url, token });
-                });
-                return;
-            }
-            const url = window.prompt('Clone Repository URL:', 'https://github.com/user/repo.git');
-            if (url) resolve({ url, token: '' });
-            else resolve(null);
-        });
-    }
 
     /**
      * Auto-detect and activate virtual environment for the current project.

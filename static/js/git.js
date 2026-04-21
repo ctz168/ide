@@ -2059,6 +2059,7 @@ const GitManager = (() => {
         openGitFile,
         addToGitignore,
         deleteGitFile,
+        showCloneDialog,
 
         // Getters
         get currentBranch() { return currentBranch; },
