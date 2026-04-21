@@ -336,6 +336,45 @@ def git_delete_file():
     return jsonify({'ok': True})
 
 
+import re
+
+
+def _strip_token_from_url(url):
+    """Remove token from a git URL like https://ghp_xxx@github.com/user/repo.git
+    Returns the clean URL: https://github.com/user/repo.git
+    """
+    if '@' not in url:
+        return url
+    # Handle https://token@host/path
+    m = re.match(r'^(https?://)[^/@]+@(.+)$', url)
+    if m:
+        return m.group(1) + m.group(2)
+    return url
+
+
+def _inject_token_to_url(url, token):
+    """Inject a GitHub token into a clean HTTPS git URL.
+    https://github.com/user/repo.git -> https://token@github.com/user/repo.git
+    """
+    clean = _strip_token_from_url(url)
+    return clean.replace('https://', f'https://{token}@')
+
+
+def _setup_git_auth(cwd, token):
+    """Configure git url.insteadOf so all https://github.com operations
+    automatically use the token, without modifying the stored remote URL.
+    This avoids URL parsing issues in Termux/mobile git versions."""
+    if not token or not cwd:
+        return
+    try:
+        # Set insteadOf so git replaces https://github.com/ with token-auth URL
+        auth_url = f'https://{token}@github.com/'
+        git_cmd(f'config url.{shlex_quote(auth_url)}.insteadOf https://github.com/', cwd=cwd, timeout=10)
+        print(f'[git] configured url.insteadOf for auth in {cwd}')
+    except Exception as e:
+        print(f'[git] Warning: failed to configure insteadOf: {e}')
+
+
 @bp.route('/api/git/push', methods=['POST'])
 @handle_error
 def git_push():
@@ -346,46 +385,19 @@ def git_push():
 
     cwd = resolve_cwd()
 
-    # Inject GitHub token into remote URL if configured
+    # Ensure git auth is configured (uses url.insteadOf, no URL mangling)
     try:
         config = load_config()
         token = config.get('github_token', '')
         if token:
-            # Get the remote URL
-            r_remote = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
-            if r_remote['ok'] and r_remote['stdout'].strip():
-                remote_url = r_remote['stdout'].strip()
-                # Only inject token for HTTPS URLs (not SSH)
-                if remote_url.startswith('https://') and '@' not in remote_url.split('://')[1]:
-                    # Remove token if already present (e.g., from clone)
-                    clean_url = remote_url.replace('https://', 'https://TOKEN@').split('@')[1]
-                    clean_url = 'https://' + clean_url
-                    auth_url = clean_url.replace('https://', f'https://{token}@')
-                    # Temporarily set the remote URL with token
-                    git_cmd(f'remote set-url {remote} {shlex_quote(auth_url)}', cwd=cwd, timeout=10)
+            _setup_git_auth(cwd, token)
     except Exception as e:
-        print(f'[git/push] Warning: failed to inject token: {e}')
+        print(f'[git/push] Warning: auth setup failed: {e}')
 
     cmd = f'push {remote} {branch}'
     if set_upstream:
         cmd = f'push -u {remote} {branch}'
     r = git_cmd(cmd, cwd=cwd, timeout=120)
-
-    # Restore original remote URL (remove token from stored URL)
-    try:
-        config = load_config()
-        token = config.get('github_token', '')
-        if token:
-            r_check = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
-            if r_check['ok'] and r_check['stdout'].strip():
-                current_url = r_check['stdout'].strip()
-                if '@' in current_url.split('://')[1]:
-                    # Strip token from URL
-                    clean_url = current_url.replace('https://', 'https://TOKEN@').split('@')[1]
-                    clean_url = 'https://' + clean_url
-                    git_cmd(f'remote set-url {remote} {shlex_quote(clean_url)}', cwd=cwd, timeout=10)
-    except Exception:
-        pass
 
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
@@ -398,38 +410,16 @@ def git_pull():
     branch = data.get('branch', '')
     cwd = resolve_cwd()
 
-    # Inject GitHub token into remote URL if configured
+    # Ensure git auth is configured (uses url.insteadOf, no URL mangling)
     try:
         config = load_config()
         token = config.get('github_token', '')
         if token:
-            r_remote = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
-            if r_remote['ok'] and r_remote['stdout'].strip():
-                remote_url = r_remote['stdout'].strip()
-                if remote_url.startswith('https://') and '@' not in remote_url.split('://')[1]:
-                    clean_url = remote_url.replace('https://', 'https://TOKEN@').split('@')[1]
-                    clean_url = 'https://' + clean_url
-                    auth_url = clean_url.replace('https://', f'https://{token}@')
-                    git_cmd(f'remote set-url {remote} {shlex_quote(auth_url)}', cwd=cwd, timeout=10)
+            _setup_git_auth(cwd, token)
     except Exception as e:
-        print(f'[git/pull] Warning: failed to inject token: {e}')
+        print(f'[git/pull] Warning: auth setup failed: {e}')
 
     r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
-
-    # Restore original remote URL
-    try:
-        config = load_config()
-        token = config.get('github_token', '')
-        if token:
-            r_check = git_cmd(f'remote get-url {remote}', cwd=cwd, timeout=10)
-            if r_check['ok'] and r_check['stdout'].strip():
-                current_url = r_check['stdout'].strip()
-                if '@' in current_url.split('://')[1]:
-                    clean_url = current_url.replace('https://', 'https://TOKEN@').split('@')[1]
-                    clean_url = 'https://' + clean_url
-                    git_cmd(f'remote set-url {remote} {shlex_quote(clean_url)}', cwd=cwd, timeout=10)
-    except Exception:
-        pass
 
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
@@ -446,6 +436,9 @@ def git_clone():
     if not url:
         return jsonify({'error': 'URL required'}), 400
 
+    # Remember if the URL has a token embedded
+    clean_url = _strip_token_from_url(url)
+
     if path:
         target = os.path.join(base, path)
     else:
@@ -457,6 +450,21 @@ def git_clone():
 
     r = git_cmd(f'clone {shlex_quote(url)} {shlex_quote(target)}', cwd=base, timeout=300)
     if r['ok']:
+        # If clone URL had a token, strip it from the stored remote URL
+        # and set up url.insteadOf for future git operations
+        if '@' in url.split('://')[-1].split('/')[0]:
+            git_cmd(f'remote set-url origin {shlex_quote(clean_url)}', cwd=target, timeout=10)
+            print(f'[git/clone] stripped token from remote URL in {target}')
+            # Configure insteadOf for future push/pull
+            token = config.get('github_token', '')
+            if not token:
+                # Try to extract token from the original clone URL
+                m = re.match(r'^https://([^/@]+)@', url)
+                if m:
+                    token = m.group(1)
+            if token:
+                _setup_git_auth(target, token)
+
         return jsonify({'ok': True, 'path': os.path.relpath(target, base)})
     return jsonify({'error': r['stderr']}), 500
 
