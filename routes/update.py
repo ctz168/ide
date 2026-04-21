@@ -172,7 +172,6 @@ def _do_update_and_restart():
     and this function runs in the background.
     """
     import subprocess as _sp
-    import signal
 
     log_write('[UPDATE] Background update started — giving current process time to finish HTTP response...')
 
@@ -180,6 +179,8 @@ def _do_update_and_restart():
     time.sleep(3)
 
     # ── Step 2: Update code in a subprocess ──
+    update_ok = False
+
     if os.path.exists(os.path.join(SERVER_DIR, '.git')):
         # Git path — run fetch + reset in a subprocess script
         update_script = f'''
@@ -197,11 +198,15 @@ if r.returncode == 0:
 # Fetch latest
 r = subprocess.run(['git', 'fetch', 'origin', 'main'], capture_output=True, text=True, timeout=120)
 if r.returncode != 0:
+    print('FAIL: git fetch failed')
+    print(r.stderr)
     sys.exit(1)
 
 # Reset to remote
 r = subprocess.run(['git', 'reset', '--hard', 'origin/main'], capture_output=True, text=True)
 if r.returncode != 0:
+    print('FAIL: git reset failed')
+    print(r.stderr)
     sys.exit(2)
 
 # Clean __pycache__
@@ -217,6 +222,7 @@ print('OK')
         )
         if result.returncode == 0 and 'OK' in result.stdout:
             log_write('[UPDATE] Git pull succeeded in subprocess')
+            update_ok = True
         else:
             log_write(f'[UPDATE] Git pull subprocess failed (rc={result.returncode}): {result.stderr}')
     else:
@@ -245,6 +251,7 @@ try:
             extracted_dir = full
             break
     if not extracted_dir:
+        print('FAIL: no extracted dir found')
         sys.exit(1)
 
     for fname in ['server.py', 'utils.py', 'requirements.txt']:
@@ -275,12 +282,20 @@ finally:
         )
         if result.returncode == 0 and 'OK' in result.stdout:
             log_write('[UPDATE] Tarball download succeeded in subprocess')
+            update_ok = True
         else:
             log_write(f'[UPDATE] Tarball download subprocess failed (rc={result.returncode}): {result.stderr}')
 
-    # ── Step 3: Re-exec server.py with the new code ──
+    # ── Step 3: Re-exec server.py ONLY if update succeeded ──
+    if not update_ok:
+        log_write('[UPDATE] Update failed, NOT restarting server.')
+        return
+
     log_write('[UPDATE] Files updated, re-executing server.py...')
     server_script = os.path.join(SERVER_DIR, 'server.py')
+
+    # Ensure working directory is correct before exec
+    os.chdir(SERVER_DIR)
 
     # Flush logs before exec
     sys.stdout.flush()

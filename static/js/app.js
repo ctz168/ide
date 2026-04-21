@@ -1606,6 +1606,13 @@ const AppManager = (() => {
         if (infoEl) { infoEl.classList.add('hidden'); infoEl.textContent = ''; }
         if (applyBtn) applyBtn.classList.add('hidden');
         if (checkBtn) checkBtn.disabled = true;
+        // Reset any previous styling
+        if (statusEl) {
+            statusEl.style.whiteSpace = '';
+            statusEl.style.fontSize = '';
+            statusEl.style.maxHeight = '';
+            statusEl.style.overflowY = '';
+        }
 
         // Load saved GitHub token (masked)
         try {
@@ -1663,8 +1670,14 @@ const AppManager = (() => {
                 }
             }
         } catch (err) {
-            if (statusEl) statusEl.textContent = 'Error: ' + err.message;
-            if (versionEl) versionEl.textContent = 'Version check failed';
+            const msg = err.message || '';
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('TypeError')) {
+                if (statusEl) statusEl.textContent = '无法连接服务器，请检查网络或稍后重试';
+                if (versionEl) versionEl.textContent = '连接失败';
+            } else {
+                if (statusEl) statusEl.textContent = 'Error: ' + msg;
+                if (versionEl) versionEl.textContent = 'Version check failed';
+            }
         } finally {
             if (checkBtn) checkBtn.disabled = false;
         }
@@ -1760,14 +1773,26 @@ const AppManager = (() => {
             // The server handles update + restart internally via os.execv.
             // Just poll until the server comes back online, then reload.
             let attempts = 0;
+            const maxAttempts = 90; // 90 * 2s = 3 minutes
             const checker = setInterval(async () => {
                 attempts++;
-                if (attempts > 60) { clearInterval(checker); window.location.reload(); return; }
+                if (attempts > maxAttempts) {
+                    clearInterval(checker);
+                    statusEl.innerHTML = '⚠ 服务器重启超时，请手动刷新页面。';
+                    showToast('服务器重启超时，请手动刷新', 'error', 5000);
+                    return;
+                }
+                // Show countdown in status
+                const dots = '.'.repeat((attempts % 4));
+                statusEl.innerHTML = `⏳ 等待服务器重启 (${attempts * 2}s / ${maxAttempts * 2}s)${dots}
+<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress" style="width:${Math.min(attempts / maxAttempts * 100, 95)}%"></div></div>`;
                 try {
-                    const r = await fetch('/api/server/status');
+                    const r = await fetch('/api/server/status', { signal: AbortSignal.timeout(5000) });
                     if (r.ok) {
                         clearInterval(checker);
-                        window.location.reload();
+                        statusEl.innerHTML = '✅ 服务器已重启，正在刷新页面...';
+                        showToast('更新完成，正在刷新...', 'success', 2000);
+                        setTimeout(() => window.location.reload(), 500);
                     }
                 } catch (_) {
                     // Server not back yet — expected during update
