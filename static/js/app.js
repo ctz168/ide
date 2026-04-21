@@ -1750,35 +1750,26 @@ const AppManager = (() => {
             const method = data.method || 'zip';
 
             if (progressEl) progressEl.style.width = '100%';
-            statusEl.innerHTML = `✅ 更新完成 (${method})! 正在重启服务器...`;
+            statusEl.innerHTML = `✅ 更新指令已发送 (${method})! 服务器将在后台更新代码并自动重启...`;
 
-            showToast(`更新完成, 正在重启...`, 'success', 3000);
+            showToast(`更新完成, 服务器即将自动重启...`, 'success', 3000);
 
-            // Restart the Python server process so it loads the new code,
-            // then reload the page once the server is back online.
-            try {
-                const restartResp = await fetch('/api/server/restart', { method: 'POST' });
-                if (restartResp.ok) {
-                    // Poll until server is back, then reload
-                    let attempts = 0;
-                    const checker = setInterval(async () => {
-                        attempts++;
-                        if (attempts > 30) { clearInterval(checker); window.location.reload(); return; }
-                        try {
-                            const r = await fetch('/api/server/status');
-                            if (r.ok) {
-                                clearInterval(checker);
-                                window.location.reload();
-                            }
-                        } catch (_) {}
-                    }, 1000);
-                } else {
-                    // Restart endpoint failed, just reload after delay
-                    setTimeout(() => { window.location.reload(); }, 3000);
+            // The server handles update + restart internally via os.execv.
+            // Just poll until the server comes back online, then reload.
+            let attempts = 0;
+            const checker = setInterval(async () => {
+                attempts++;
+                if (attempts > 60) { clearInterval(checker); window.location.reload(); return; }
+                try {
+                    const r = await fetch('/api/server/status');
+                    if (r.ok) {
+                        clearInterval(checker);
+                        window.location.reload();
+                    }
+                } catch (_) {
+                    // Server not back yet — expected during update
                 }
-            } catch (_) {
-                setTimeout(() => { window.location.reload(); }, 3000);
-            }
+            }, 2000);
 
         } catch (err) {
             statusEl.textContent = '❌ ' + err.message;

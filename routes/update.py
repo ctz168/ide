@@ -160,126 +160,152 @@ def update_check():
         return jsonify({'error': str(e), 'update_available': False, 'current_version': _get_current_version()})
 
 
+def _do_update_and_restart():
+    """Run git pull / tarball download in a subprocess, then os.execv to reload.
+
+    This function is called in a daemon thread.  It runs the actual update in a
+    separate subprocess so the running server can exit cleanly before the new
+    code replaces files on disk.  After the files are updated it re-executes
+    server.py which picks up the new code.
+
+    Returns nothing — the caller should respond to the HTTP request immediately
+    and this function runs in the background.
+    """
+    import subprocess as _sp
+    import signal
+
+    log_write('[UPDATE] Background update started — giving current process time to finish HTTP response...')
+
+    # ── Step 1: Give the Flask response a few seconds to reach the client ──
+    time.sleep(3)
+
+    # ── Step 2: Update code in a subprocess ──
+    if os.path.exists(os.path.join(SERVER_DIR, '.git')):
+        # Git path — run fetch + reset in a subprocess script
+        update_script = f'''
+import os, sys, subprocess, shutil
+SERVER_DIR = {repr(SERVER_DIR)}
+os.chdir(SERVER_DIR)
+
+# Ensure remote points to ctz168/ide
+r = subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, text=True)
+if r.returncode == 0:
+    url = r.stdout.strip()
+    if 'ctz168/ide' not in url:
+        subprocess.run(['git', 'remote', 'set-url', 'origin', 'https://github.com/ctz168/ide.git'])
+
+# Fetch latest
+r = subprocess.run(['git', 'fetch', 'origin', 'main'], capture_output=True, text=True, timeout=120)
+if r.returncode != 0:
+    sys.exit(1)
+
+# Reset to remote
+r = subprocess.run(['git', 'reset', '--hard', 'origin/main'], capture_output=True, text=True)
+if r.returncode != 0:
+    sys.exit(2)
+
+# Clean __pycache__
+for root, dirs, _ in os.walk(SERVER_DIR):
+    if '__pycache__' in dirs:
+        shutil.rmtree(os.path.join(root, '__pycache__'))
+
+print('OK')
+'''
+        result = _sp.run(
+            [sys.executable, '-c', update_script],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode == 0 and 'OK' in result.stdout:
+            log_write('[UPDATE] Git pull succeeded in subprocess')
+        else:
+            log_write(f'[UPDATE] Git pull subprocess failed (rc={result.returncode}): {result.stderr}')
+    else:
+        # No .git — download tarball in a subprocess script
+        update_script = f'''
+import os, sys, tempfile, shutil, tarfile, urllib.request
+SERVER_DIR = {repr(SERVER_DIR)}
+tarball_url = 'https://github.com/ctz168/ide/archive/refs/heads/main.tar.gz'
+
+req = urllib.request.Request(tarball_url, headers={{'User-Agent': 'PhoneIDE-Server'}})
+with urllib.request.urlopen(req, timeout=120) as resp:
+    tarball_data = resp.read()
+
+tmpdir = tempfile.mkdtemp(prefix='phoneide_update_')
+try:
+    tarball_path = os.path.join(tmpdir, 'main.tar.gz')
+    with open(tarball_path, 'wb') as f:
+        f.write(tarball_data)
+    with tarfile.open(tarball_path, 'r:gz') as tar:
+        tar.extractall(tmpdir)
+
+    extracted_dir = None
+    for entry in os.listdir(tmpdir):
+        full = os.path.join(tmpdir, entry)
+        if os.path.isdir(full) and entry.endswith('-main'):
+            extracted_dir = full
+            break
+    if not extracted_dir:
+        sys.exit(1)
+
+    for fname in ['server.py', 'utils.py', 'requirements.txt']:
+        src = os.path.join(extracted_dir, fname)
+        dst = os.path.join(SERVER_DIR, fname)
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+
+    for dirname in ['routes', 'static']:
+        src = os.path.join(extracted_dir, dirname)
+        dst = os.path.join(SERVER_DIR, dirname)
+        if os.path.exists(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+
+    # Clean __pycache__
+    for root, dirs, _ in os.walk(SERVER_DIR):
+        if '__pycache__' in dirs:
+            shutil.rmtree(os.path.join(root, '__pycache__'))
+    print('OK')
+finally:
+    shutil.rmtree(tmpdir, ignore_errors=True)
+'''
+        result = _sp.run(
+            [sys.executable, '-c', update_script],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode == 0 and 'OK' in result.stdout:
+            log_write('[UPDATE] Tarball download succeeded in subprocess')
+        else:
+            log_write(f'[UPDATE] Tarball download subprocess failed (rc={result.returncode}): {result.stderr}')
+
+    # ── Step 3: Re-exec server.py with the new code ──
+    log_write('[UPDATE] Files updated, re-executing server.py...')
+    server_script = os.path.join(SERVER_DIR, 'server.py')
+
+    # Flush logs before exec
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    os.execv(sys.executable, [sys.executable, server_script])
+
+
 @bp.route('/api/update/apply', methods=['POST'])
 @handle_error
 def update_apply():
-    """Download latest code from ctz168/ide and update server files.
+    """Download latest code from GitHub, then restart the server with new code.
 
-    Does NOT require a git repository. Downloads the repo tarball from GitHub,
-    extracts server files (server.py, utils.py, routes/, static/) into SERVER_DIR.
-    Caller (Android) handles server restart after this returns.
+    Since the server cannot replace its own running modules, this works in two phases:
+      1. Return success to the client immediately (so the UI can show "updating").
+      2. Spawn a background thread that waits a few seconds, then runs git pull /
+         tarball download in a *subprocess*, and finally uses os.execv to replace
+         the current process with a fresh one running the updated code.
     """
-    try:
-        log_write('[UPDATE] Starting code update from GitHub...')
+    # Launch update + restart in a daemon thread
+    t = threading.Thread(target=_do_update_and_restart, daemon=True)
+    t.start()
 
-        # 1. Try git pull if .git exists and remote points to ctz168/ide (fast, incremental)
-        if os.path.exists(os.path.join(SERVER_DIR, '.git')):
-            try:
-                # Check if remote already points to ctz168/ide
-                remote_check = git_cmd('remote get-url origin', cwd=SERVER_DIR)
-                if remote_check['ok']:
-                    remote_url = remote_check['stdout'].strip()
-                    if IDE_REPO not in remote_url:
-                        # Update remote to point to ctz168/ide
-                        git_cmd(f'remote set-url origin https://github.com/{IDE_REPO}.git', cwd=SERVER_DIR)
-                        log_write(f'[UPDATE] Updated git remote to {IDE_REPO}')
-
-                fetch_result = git_cmd('fetch origin main', cwd=SERVER_DIR, timeout=120)
-                if not fetch_result['ok']:
-                    log_write(f'[UPDATE] Git fetch failed: {fetch_result.get("stderr", "unknown error")}')
-                else:
-                    # After fetch, compare local HEAD with origin/main to confirm
-                    # there's actually a newer commit to pull
-                    rev_parse = git_cmd('rev-parse origin/main', cwd=SERVER_DIR)
-                    local_rev = git_cmd('rev-parse HEAD', cwd=SERVER_DIR)
-                    if (rev_parse['ok'] and local_rev['ok']
-                            and rev_parse['stdout'].strip() != local_rev['stdout'].strip()):
-                        # origin/main is newer — reset to it
-                        reset_result = git_cmd('reset --hard origin/main', cwd=SERVER_DIR)
-                        if reset_result['ok']:
-                            log_write(f'[UPDATE] Git pull succeeded: {local_rev["stdout"].strip()[:8]} → {rev_parse["stdout"].strip()[:8]}')
-                            return jsonify({
-                                'ok': True,
-                                'method': 'git',
-                                'message': '代码已通过 Git 更新，服务器将重启。',
-                            })
-                    elif rev_parse['ok'] and local_rev['ok'] and rev_parse['stdout'].strip() == local_rev['stdout'].strip():
-                        log_write('[UPDATE] Git fetch succeeded but already up-to-date, falling back to download')
-                    else:
-                        log_write(f'[UPDATE] Git rev-parse failed after fetch: {rev_parse.get("stderr", "")} / {local_rev.get("stderr", "")}')
-            except Exception as e:
-                log_write(f'[UPDATE] Git pull failed, falling back to download: {e}')
-
-        # 2. Download tarball from ctz168/ide
-        tarball_url = f'https://github.com/{IDE_REPO}/archive/refs/heads/main.tar.gz'
-        log_write(f'[UPDATE] Downloading from {tarball_url}')
-
-        req = urllib.request.Request(tarball_url, headers={
-            'User-Agent': 'PhoneIDE-Server',
-        })
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            tarball_data = resp.read()
-
-        log_write(f'[UPDATE] Downloaded {len(tarball_data) // 1024}KB, extracting...')
-
-        # 3. Extract to temp directory
-        tmpdir = tempfile.mkdtemp(prefix='phoneide_update_')
-        try:
-            tarball_path = os.path.join(tmpdir, 'main.tar.gz')
-            with open(tarball_path, 'wb') as f:
-                f.write(tarball_data)
-
-            with tarfile.open(tarball_path, 'r:gz') as tar:
-                tar.extractall(tmpdir)
-
-            # Find the extracted repo directory (GitHub archives as <repo>-main/)
-            extracted_dir = None
-            for entry in os.listdir(tmpdir):
-                full = os.path.join(tmpdir, entry)
-                if os.path.isdir(full) and entry.endswith('-main'):
-                    extracted_dir = full
-                    break
-
-            if not extracted_dir:
-                return jsonify({'error': '无法解析下载的压缩包'}), 500
-
-            # 4. Copy server files to SERVER_DIR
-            files_to_copy = ['server.py', 'utils.py', 'requirements.txt']
-            dirs_to_copy = ['routes', 'static']
-
-            for fname in files_to_copy:
-                src = os.path.join(extracted_dir, fname)
-                dst = os.path.join(SERVER_DIR, fname)
-                if os.path.exists(src):
-                    shutil.copy2(src, dst)
-                    log_write(f'[UPDATE] Copied {fname}')
-
-            for dirname in dirs_to_copy:
-                src = os.path.join(extracted_dir, dirname)
-                dst = os.path.join(SERVER_DIR, dirname)
-                if os.path.exists(src):
-                    if os.path.exists(dst):
-                        shutil.rmtree(dst)
-                    shutil.copytree(src, dst)
-                    log_write(f'[UPDATE] Copied {dirname}/')
-
-            # 5. Clean up __pycache__ to prevent stale bytecode
-            for root, dirs, files in os.walk(SERVER_DIR):
-                if '__pycache__' in dirs:
-                    shutil.rmtree(os.path.join(root, '__pycache__'))
-                    log_write(f'[UPDATE] Cleaned __pycache__ in {root}')
-
-            log_write('[UPDATE] Code update completed successfully')
-
-            return jsonify({
-                'ok': True,
-                'method': 'download',
-                'message': '代码已更新，服务器将重启。',
-            })
-
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-    except Exception as e:
-        log_write(f'[UPDATE] Failed: {e}')
-        return jsonify({'error': str(e)}), 500
+    return jsonify({
+        'ok': True,
+        'method': 'bg_update',
+        'message': '代码正在后台更新，服务器将自动重启。',
+    })
