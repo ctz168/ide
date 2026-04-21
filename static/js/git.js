@@ -43,6 +43,7 @@ const GitManager = (() => {
     function gitLog(cmd, result) {
         if (!window.TerminalManager) return;
         const T = window.TerminalManager;
+        T.startCmdBlock(`git ${cmd}`);
         T.appendOutput(`$ git ${cmd}`, 'system');
         if (result && result.stdout) {
             result.stdout.trim().split('\n').forEach(line => {
@@ -57,14 +58,18 @@ const GitManager = (() => {
         if (result && result.ok === false && (!result.stdout || !result.stderr)) {
             T.appendOutput('(no output)', 'stderr');
         }
+        T.finishCmdBlock();
     }
 
     function gitLogSimple(cmd, error) {
         if (!window.TerminalManager) return;
-        window.TerminalManager.appendOutput(`$ git ${cmd}`, 'system');
+        const T = window.TerminalManager;
+        T.startCmdBlock(`git ${cmd}`);
+        T.appendOutput(`$ git ${cmd}`, 'system');
         if (error) {
-            window.TerminalManager.appendOutput(error, 'stderr');
+            T.appendOutput(error, 'stderr');
         }
+        T.finishCmdBlock();
     }
 
     /**
@@ -421,12 +426,19 @@ const GitManager = (() => {
             }
             const data = await resp.json();
             gitLog(`pull`, data);
-            showToast('Pull successful', 'success');
-            await refresh();
+            if (data.ok) {
+                showToast('Pull successful', 'success');
+                await refresh();
 
-            // Refresh file list
-            if (window.FileManager) {
-                await window.FileManager.refresh();
+                // Refresh file list
+                if (window.FileManager) {
+                    await window.FileManager.refresh();
+                }
+            } else {
+                const errMsg = data.stderr
+                    ? data.stderr.trim().split('\n').filter(l => l).pop()
+                    : 'Unknown error';
+                showToast(`Pull failed: ${errMsg}`, 'error');
             }
 
             return data;
@@ -462,8 +474,20 @@ const GitManager = (() => {
             }
             const data = await resp.json();
             gitLog(`push${setUpstream ? ' -u' : ''}`, data);
-            showToast('Push successful', 'success');
-            await refresh();
+            if (data.ok) {
+                showToast('Push successful', 'success');
+                await refresh();
+            } else {
+                const stderr = data.stderr || '';
+                const errMsg = stderr.trim().split('\n').filter(l => l).pop() || 'Unknown error';
+                if (stderr.includes('non-fast-forward') || stderr.includes('[rejected]')) {
+                    showToast('Push rejected (non-fast-forward). Please pull first.', 'error');
+                } else if (stderr.includes('no upstream')) {
+                    showToast('No upstream branch set.', 'error');
+                } else {
+                    showToast(`Push failed: ${errMsg}`, 'error');
+                }
+            }
 
             return data;
         } catch (err) {
@@ -490,8 +514,10 @@ const GitManager = (() => {
      */
     async function sync() {
         showToast('Syncing...', 'info');
-        await pull();
-        await push();
+        const pullResult = await pull();
+        if (!pullResult || !pullResult.ok) return;
+        const pushResult = await push();
+        if (!pushResult || !pushResult.ok) return;
         showToast('Sync complete', 'success');
     }
 
@@ -730,8 +756,14 @@ const GitManager = (() => {
                 throw new Error(errorMsg);
             }
             const data = await resp.json();
-            gitLog(`restore -- ${filepath}`, data);
-            showToast('文件已恢复到 HEAD 版本', 'success');
+            if (data.ok) {
+                gitLog(`restore -- ${filepath}`, data);
+                showToast('文件已恢复到 HEAD 版本', 'success');
+            } else {
+                // Some restore endpoints might return ok in body
+                gitLog(`restore -- ${filepath}`, data);
+                showToast('文件已恢复', 'success');
+            }
             await refresh();
 
             // Close the diff overlay if open
@@ -743,6 +775,35 @@ const GitManager = (() => {
             return data;
         } catch (err) {
             showToast('恢复失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
+     * Smart revert/rollback for a changed file.
+     * - Untracked (new) files → delete them (git clean equivalent)
+     * - Modified files → git checkout to restore HEAD version
+     * - Deleted files → git checkout to bring back
+     */
+    async function revertChange(filepath, status) {
+        const statusLower = (status || '').toLowerCase();
+        const isUntracked = statusLower.includes('untracked') || status === '?';
+        const isDeleted = statusLower.includes('deleted');
+        const fileName = filepath.split('/').pop();
+
+        if (isUntracked) {
+            // New file — just delete it from disk
+            const confirmed = await confirmDialog(
+                '回滚新建文件',
+                `确定要删除新建的文件 "${fileName}" 吗？\n路径: ${filepath}`
+            );
+            if (!confirmed) return;
+            await deleteGitFile(filepath);
+        } else if (isDeleted) {
+            // Deleted file — restore it from HEAD
+            await restoreFile(filepath);
+        } else {
+            // Modified file — restore to HEAD version
+            await restoreFile(filepath);
         }
     }
 
@@ -920,9 +981,8 @@ const GitManager = (() => {
                     <div class="git-change-actions">
                         ${!isBinary ? `<button class="git-action-btn" data-action="diff" data-path="${escapeAttr(path)}" title="差异">📋</button>` : ''}
                         ${!isDeleted ? `<button class="git-action-btn" data-action="open" data-path="${escapeAttr(path)}" title="打开文件">📄</button>` : ''}
-                        ${!isUntracked && !isDeleted ? `<button class="git-action-btn" data-action="restore" data-path="${escapeAttr(path)}" title="回退修改">↩</button>` : ''}
                         <button class="git-action-btn" data-action="ignore" data-path="${escapeAttr(path)}" title="添加到 .gitignore">🚫</button>
-                        ${!isDeleted ? `<button class="git-action-btn git-action-danger" data-action="delete" data-path="${escapeAttr(path)}" title="删除文件">🗑</button>` : ''}
+                        <button class="git-action-btn" data-action="revert" data-path="${escapeAttr(path)}" data-status="${escapeAttr(status)}" title="${isUntracked ? '删除新建文件' : isDeleted ? '恢复文件' : '回滚修改'}">↩</button>
                     </div>
                 </div>`;
         }
@@ -940,6 +1000,7 @@ const GitManager = (() => {
                 else if (action === 'restore') restoreFile(path);
                 else if (action === 'ignore') addToGitignore(path);
                 else if (action === 'delete') deleteGitFile(path);
+                else if (action === 'revert') revertChange(path, btn.dataset.status);
             };
             btn.addEventListener('click', handler);
             btn.addEventListener('touchend', (e) => {
@@ -1266,19 +1327,12 @@ const GitManager = (() => {
         items.push({ label: '暂存文件', action: () => addFiles(path) });
         items.push({ label: '打开文件', action: () => openGitFile(path) });
 
-        // Restore/Revert — only for modified/staged files (not untracked or deleted)
-        if (!isUntracked && !isDeleted) {
-            items.push({ label: '回退修改', action: () => restoreFile(path) });
-        }
+        // Smart revert: handles all file statuses
+        const revertLabel = isUntracked ? '↩ 删除新建文件' : isDeleted ? '↩ 恢复已删除文件' : '↩ 回滚修改';
+        items.push({ label: revertLabel, action: () => revertChange(path, status) });
 
         // Add to .gitignore — mainly for untracked files, but allow for any
         items.push({ label: '添加到 .gitignore', action: () => addToGitignore(path) });
-
-        // Delete file — only for untracked files or tracked modified files
-        // (not for files already marked as deleted by git)
-        if (!isDeleted) {
-            items.push({ label: '🗑 删除文件', danger: true, action: () => deleteGitFile(path) });
-        }
 
         menu.innerHTML = items.map(item => {
             const cls = item.danger ? 'context-menu-item danger' : 'context-menu-item';
@@ -1633,6 +1687,7 @@ const GitManager = (() => {
         diff,
         gitInit,
         restoreFile,
+        revertChange,
         checkoutCommit,
         showCommitFileDiff,
         openGitFile,
