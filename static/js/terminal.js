@@ -423,6 +423,9 @@ const TerminalManager = (() => {
                 appendOutput(`[info] PID: ${currentProcId} | Streaming output...`, 'info');
                 setRunningState(true);
                 streamOutput(currentProcId);
+                // Re-focus input after streaming starts (mobile WebView may lose focus)
+                const si = document.getElementById('shell-input');
+                if (si) setTimeout(() => { si.focus(); }, 100);
             } else {
                 if (data.output) appendOutput(data.output, 'stdout');
                 if (data.stderr) appendOutput(data.stderr, 'stderr');
@@ -1353,6 +1356,10 @@ const TerminalManager = (() => {
             // Execute via shell API (runs commands directly, not as code files)
             executeShellCommand(cmd);
             shellInput.value = '';
+            // Keep focus on input after sending command.
+            // On mobile WebView the soft keyboard may dismiss on Enter,
+            // so use a short delay to re-focus after the key event settles.
+            setTimeout(() => { shellInput.focus(); }, 50);
         }
 
         shellInput.addEventListener('keydown', (e) => {
