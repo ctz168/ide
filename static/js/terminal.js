@@ -1102,11 +1102,16 @@ const TerminalManager = (() => {
         const lines = block.querySelectorAll('.output-line');
         let outputText = '';
         lines.forEach(line => {
-            // Get the text content of the last child (the text node)
-            const spans = line.querySelectorAll('span');
-            const textNode = spans.length > 0 ? spans[spans.length - 1] : line;
-            const txt = textNode.textContent || '';
-            if (txt) outputText += txt + '\n';
+            // Collect text from child nodes, skipping .log-time spans
+            let txt = '';
+            for (const node of line.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    txt += node.textContent;
+                } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('log-time')) {
+                    txt += node.textContent;
+                }
+            }
+            if (txt.trim()) outputText += txt.trim() + '\n';
         });
         outputText = outputText.trim();
 
