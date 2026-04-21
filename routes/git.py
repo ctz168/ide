@@ -346,9 +346,7 @@ def git_push():
         cmd = f'push -u {remote} {branch}'
     cwd = resolve_cwd()
     r = git_cmd(cmd, cwd=cwd, timeout=120)
-    if not r['ok']:
-        return jsonify({'ok': False, 'stdout': r['stdout'], 'stderr': r['stderr']}), 400
-    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})
+    return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
 @bp.route('/api/git/pull', methods=['POST'])
@@ -359,9 +357,7 @@ def git_pull():
     branch = data.get('branch', '')
     cwd = resolve_cwd()
     r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
-    if not r['ok']:
-        return jsonify({'ok': False, 'stdout': r['stdout'], 'stderr': r['stderr']}), 400
-    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})
+    return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
 @bp.route('/api/git/clone', methods=['POST'])

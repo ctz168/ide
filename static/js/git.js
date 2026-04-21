@@ -435,9 +435,13 @@ const GitManager = (() => {
                     await window.FileManager.refresh();
                 }
             } else {
-                const errMsg = data.stderr
-                    ? data.stderr.trim().split('\n').filter(l => l).pop()
-                    : 'Unknown error';
+                const errLines = data.stderr
+                    ? data.stderr.trim().split('\n').filter(l => l.trim())
+                    : [];
+                // Toast: show last 2 lines for context (e.g. "hint: ..." + "fatal: ...")
+                const errMsg = errLines.length > 1
+                    ? errLines.slice(-2).join(' | ')
+                    : (errLines[0] || 'Unknown error');
                 showToast(`Pull failed: ${errMsg}`, 'error');
             }
 
@@ -479,7 +483,10 @@ const GitManager = (() => {
                 await refresh();
             } else {
                 const stderr = data.stderr || '';
-                const errMsg = stderr.trim().split('\n').filter(l => l).pop() || 'Unknown error';
+                const errLines = stderr.trim().split('\n').filter(l => l.trim());
+                const errMsg = errLines.length > 1
+                    ? errLines.slice(-2).join(' | ')
+                    : (errLines[0] || 'Unknown error');
                 if (stderr.includes('non-fast-forward') || stderr.includes('[rejected]')) {
                     showToast('Push rejected (non-fast-forward). Please pull first.', 'error');
                 } else if (stderr.includes('no upstream')) {
