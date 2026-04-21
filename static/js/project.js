@@ -109,7 +109,7 @@ const ProjectManager = (() => {
             for (const folder of data.folders) {
                 // Highlight if this is the current workspace
                 const isCurrent = currentWorkspace && folder.path === currentWorkspace;
-                const activeClass = isCurrent ? ' style="background:var(--accent-color, #007AFF);color:#fff;"' : '';
+                const activeClass = isCurrent ? ' style="background:var(--accent-color, #e8853d);color:#fff;"' : '';
                 html += `
                     <div class="project-folder-item"${activeClass} data-path="${escapeAttr(folder.path)}">
                         <div class="project-folder-info" data-path="${escapeAttr(folder.path)}">
@@ -545,12 +545,12 @@ const ProjectManager = (() => {
                         <div>
                             <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">仓库地址</label>
                             <input type="text" id="project-clone-url" placeholder="https://github.com/user/repo.git" autocomplete="off"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;">
+                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
                         <div>
                             <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">GitHub Token (${tokenHint})</label>
                             <input type="password" id="project-clone-token" placeholder="${savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写'}"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;">
+                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
                     </div>`;
                 window.showDialog('📥 克隆项目', bodyHTML, [

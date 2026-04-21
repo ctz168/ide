@@ -32,28 +32,28 @@
     --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* Dark theme override */
+/* Dark theme override — Claude Code Warm Style */
 [data-theme="dark"] {
-    --bg-primary: #1e1e2e;
-    --bg-secondary: #181825;
-    --bg-tertiary: #11111b;
-    --bg-surface: #252536;
-    --bg-hover: #313147;
-    --bg-active: #45475a;
-    --text-primary: #cdd6f4;
-    --text-secondary: #a6adc8;
-    --text-muted: #6c7086;
-    --accent: #89b4fa;
-    --accent-hover: #74c7ec;
-    --green: #a6e3a1;
-    --red: #f38ba8;
-    --yellow: #f9e2af;
-    --orange: #fab387;
-    --blue: #89b4fa;
-    --mauve: #cba6f7;
-    --teal: #94e2d5;
-    --border: #313244;
-    --border-light: #45475a;
+    --bg-primary: #1a1510;
+    --bg-secondary: #231e17;
+    --bg-tertiary: #16120d;
+    --bg-surface: #2d2620;
+    --bg-hover: #3a3228;
+    --bg-active: #4a3f33;
+    --text-primary: #f5f0eb;
+    --text-secondary: #b5a898;
+    --text-muted: #7d7068;
+    --accent: #e8853d;
+    --accent-hover: #d4752f;
+    --green: #6bc96b;
+    --red: #e85d5d;
+    --yellow: #e8c45d;
+    --orange: #e8a35d;
+    --blue: #5d9de8;
+    --mauve: #b87de8;
+    --teal: #5dc4b8;
+    --border: #3a3228;
+    --border-light: #4a3f33;
 }
 
 /* Reset */
@@ -655,7 +655,7 @@ html, body {
     transform: scale(0.92);
 }
 .git-action-btn.git-action-danger:active {
-    background: rgba(243, 139, 168, 0.2);
+    background: rgba(232, 93, 93, 0.2);
     color: var(--red);
 }
 .git-change-item .git-status-badge {
@@ -1237,7 +1237,7 @@ html, body {
 }
 
 .CodeMirror-activeline-background {
-    background: rgba(69, 71, 90, 0.3) !important;
+    background: rgba(58, 50, 40, 0.3) !important;
 }
 
 .CodeMirror-cursor {
@@ -1245,16 +1245,16 @@ html, body {
 }
 
 .CodeMirror-selected {
-    background: rgba(137, 180, 250, 0.2) !important;
+    background: rgba(232, 133, 61, 0.2) !important;
 }
 
 .CodeMirror-focused .CodeMirror-selected {
-    background: rgba(137, 180, 250, 0.3) !important;
+    background: rgba(232, 133, 61, 0.3) !important;
 }
 
 .CodeMirror-matchingbracket {
     color: var(--green) !important;
-    background: rgba(166, 227, 161, 0.2) !important;
+    background: rgba(107, 201, 107, 0.2) !important;
     border-bottom: 1px solid var(--green) !important;
 }
 
@@ -1303,7 +1303,7 @@ html, body {
 
 /* Debug current line highlight */
 .debug-current-line {
-    background: rgba(137, 180, 250, 0.15) !important;
+    background: rgba(232, 133, 61, 0.15) !important;
     border-left: 3px solid var(--accent) !important;
 }
 
@@ -1399,11 +1399,11 @@ html, body {
     flex-shrink: 0;
 }
 .bp-remove:hover {
-    background: rgba(243, 139, 168, 0.2);
+    background: rgba(232, 93, 93, 0.2);
     border-radius: 2px;
 }
 .debug-stack-row.current {
-    background: rgba(137, 180, 250, 0.1);
+    background: rgba(232, 133, 61, 0.1);
     border-left: 2px solid var(--accent);
 }
 .debug-empty {
@@ -1522,7 +1522,7 @@ html, body {
 }
 #shell-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+    box-shadow: 0 0 0 2px rgba(232, 133, 61, 0.2);
 }
 #shell-input::placeholder {
     color: var(--text-muted);
@@ -1747,8 +1747,8 @@ html, body {
 
 .chat-msg.error {
     align-self: flex-start;
-    background: rgba(243, 139, 168, 0.15);
-    border: 1px solid rgba(243, 139, 168, 0.3);
+    background: rgba(232, 93, 93, 0.15);
+    border: 1px solid rgba(232, 93, 93, 0.3);
     color: var(--red);
     font-size: 12px;
 }
@@ -2178,7 +2178,7 @@ button, .file-item, .search-result-item, .git-change-item {
 
 /* Breakpoint line highlight */
 .debug-breakpoint-line {
-    background: rgba(243, 139, 168, 0.1) !important;
+    background: rgba(232, 93, 93, 0.1) !important;
 }
 
 /* Breakpoint gutter */
@@ -2234,7 +2234,7 @@ button, .file-item, .search-result-item, .git-change-item {
     transition: background 0.15s;
 }
 .debug-stack-row:active { background: var(--bg-hover); }
-.debug-stack-row.current { background: rgba(137, 180, 250, 0.1); }
+.debug-stack-row.current { background: rgba(232, 133, 61, 0.1); }
 .stack-func { color: var(--green); font-weight: 600; flex-shrink: 0; }
 .stack-loc { color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 8px; }
 
@@ -2251,7 +2251,7 @@ button, .file-item, .search-result-item, .git-change-item {
 .bp-file { color: var(--accent); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bp-line { color: var(--red); font-weight: 600; flex-shrink: 0; margin-left: 6px; }
 .bp-remove { color: var(--text-muted); flex-shrink: 0; margin-left: 4px; font-size: 10px; padding: 0 4px; cursor: pointer; border-radius: 2px; }
-.bp-remove:hover { color: var(--red); background: rgba(243, 139, 168, 0.2); }
+.bp-remove:hover { color: var(--red); background: rgba(232, 93, 93, 0.2); }
 
 /* Debug empty state */
 .debug-empty { color: var(--text-muted); text-align: center; padding: 12px; font-size: 11px; }
@@ -2260,7 +2260,7 @@ button, .file-item, .search-result-item, .git-change-item {
 .debug-output-line { padding: 1px 0; color: var(--text-primary); }
 
 /* Evaluate input */
-#debug-eval-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2); }
+#debug-eval-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232, 133, 61, 0.2); }
 .debug-eval-line { padding: 2px 0; font-family: var(--font-mono); font-size: 11px; }
 .eval-prompt { color: var(--green); font-weight: bold; margin-right: 6px; }
 .eval-result { color: var(--teal); }
@@ -2709,7 +2709,7 @@ button, .file-item, .search-result-item, .git-change-item {
 }
 #shell-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.15);
+    box-shadow: 0 0 0 2px rgba(232, 133, 61, 0.15);
 }
 #shell-input::placeholder {
     color: var(--text-muted);
@@ -2868,7 +2868,7 @@ button, .file-item, .search-result-item, .git-change-item {
 .diff-line.diff-meta {
     color: var(--accent);
     font-weight: 600;
-    background: rgba(137, 180, 250, 0.1);
+    background: rgba(232, 133, 61, 0.1);
 }
 
 .diff-line.diff-hunk {
@@ -2879,7 +2879,7 @@ button, .file-item, .search-result-item, .git-change-item {
 
 .diff-line.diff-empty {
     min-height: 8px;
-    background: rgba(69, 71, 90, 0.1);
+    background: rgba(58, 50, 40, 0.1);
 }
 
 /* Claude theme diff adjustments */

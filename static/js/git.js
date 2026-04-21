@@ -330,12 +330,12 @@ const GitManager = (() => {
                         <div>
                             <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">仓库地址</label>
                             <input type="text" id="clone-url-input" placeholder="https://github.com/user/repo.git" autocomplete="off"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;">
+                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
                         <div>
                             <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">GitHub Token (${tokenHint})</label>
                             <input type="password" id="clone-token-input" placeholder="${savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写'}"
-                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;">
+                                style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
                     </div>`;
                 window.showDialog('📥 克隆仓库', bodyHTML, [
@@ -379,7 +379,7 @@ const GitManager = (() => {
                         Token 用于克隆/拉取私有仓库，公开仓库无需配置。
                     </p>
                     <input type="password" id="token-config-input" placeholder="ghp_xxxxxxxxxxxx"
-                        style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ddd;font-size:13px;box-sizing:border-box;"
+                        style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;"
                         value="${window.escapeHTML ? window.escapeHTML(savedToken) : savedToken}">
                 </div>`;
 
