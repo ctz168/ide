@@ -320,11 +320,15 @@ const GitManager = (() => {
     }
 
     /**
-     * Show clone dialog with URL + token fields
+     * Show clone dialog with URL, OAuth login, and manual token fields.
      */
     function showCloneDialog(savedToken, tokenHint) {
         return new Promise((resolve) => {
             if (window.showDialog) {
+                const tokenStatusHTML = savedToken
+                    ? '<div style="font-size:11px;color:var(--accent);">✓ Token 已配置，可直接克隆私有仓库</div>'
+                    : '';
+
                 const bodyHTML = `
                     <div style="display:flex;flex-direction:column;gap:12px;">
                         <div>
@@ -332,24 +336,118 @@ const GitManager = (() => {
                             <input type="text" id="clone-url-input" placeholder="https://github.com/user/repo.git" autocomplete="off"
                                 style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
+                        <div style="text-align:center;">
+                            <button id="clone-oauth-btn" style="width:100%;padding:10px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">
+                                🔐 OAuth 授权登录
+                            </button>
+                            ${tokenStatusHTML}
+                        </div>
                         <div>
-                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">GitHub Token (${tokenHint})</label>
+                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:4px;">或输入 GitHub Token (${tokenHint})</label>
                             <input type="password" id="clone-token-input" placeholder="${savedToken ? '已配置，留空使用已保存' : '公开仓库无需填写'}"
                                 style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid #4a3f33;background:#2d2620;color:#f5f0eb;font-size:13px;box-sizing:border-box;">
                         </div>
                     </div>`;
-                window.showDialog('📥 克隆仓库', bodyHTML, [
-                    { text: '取消', value: 'cancel', class: 'btn-cancel' },
-                    { text: '克隆', value: 'ok', class: 'btn-confirm' },
-                ]).then(result => {
-                    if (!result.confirmed) { resolve(null); return; }
+
+                // Override dialog behavior: keep dialog open when OAuth is clicked
+                const overlay = document.getElementById('dialog-overlay');
+                const dialogTitle = document.getElementById('dialog-title');
+                const dialogBody = document.getElementById('dialog-body');
+                const dialogButtons = document.getElementById('dialog-buttons');
+
+                dialogTitle.textContent = '📥 克隆仓库';
+                dialogBody.innerHTML = bodyHTML;
+                dialogButtons.innerHTML = '';
+
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = '取消';
+                cancelBtn.className = 'btn-cancel';
+                const cloneBtn = document.createElement('button');
+                cloneBtn.textContent = '克隆';
+                cloneBtn.className = 'btn-confirm';
+
+                let dialogResolve = null;
+
+                const closeDialog = (result) => {
+                    overlay.classList.add('hidden');
+                    if (dialogResolve) dialogResolve(result);
+                };
+
+                cancelBtn.onclick = () => closeDialog({ confirmed: false });
+                cloneBtn.onclick = () => {
                     const urlInput = document.getElementById('clone-url-input');
                     const tokenInput = document.getElementById('clone-token-input');
                     const url = urlInput ? urlInput.value.trim() : '';
                     const token = tokenInput ? tokenInput.value.trim() : '';
-                    if (!url) { resolve(null); return; }
-                    resolve({ url, token });
-                });
+                    if (!url) {
+                        if (window.showToast) window.showToast('请输入仓库地址', 'error');
+                        return;
+                    }
+                    closeDialog({ confirmed: true, value: 'ok', url, token });
+                };
+
+                if (window.bindTouchButton) {
+                    window.bindTouchButton(cancelBtn, () => cancelBtn.onclick());
+                    window.bindTouchButton(cloneBtn, () => cloneBtn.onclick());
+                }
+
+                dialogButtons.appendChild(cancelBtn);
+                dialogButtons.appendChild(cloneBtn);
+                overlay.classList.remove('hidden');
+
+                // OAuth button — opens Device Flow without closing clone dialog
+                const oauthBtn = document.getElementById('clone-oauth-btn');
+                if (oauthBtn) {
+                    const oauthHandler = async () => {
+                        try {
+                            const startResp = await fetch('/api/git/github/auth/start', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({})
+                            });
+                            const data = await startResp.json();
+
+                            if (data.oauth_unavailable || !data.ok) {
+                                if (window.showToast) window.showToast(data.error || 'OAuth 未配置', 'error');
+                                return;
+                            }
+
+                            // Close clone dialog, show Device Flow
+                            overlay.classList.add('hidden');
+                            await showDeviceCodeDialog(data);
+
+                            // After OAuth completes, re-open clone dialog (token should now be saved)
+                            const newResult = await showCloneDialog(true, '已配置');
+                            resolve(newResult);
+                            return;
+                        } catch (err) {
+                            if (window.showToast) window.showToast('OAuth 启动失败: ' + err.message, 'error');
+                        }
+                    };
+
+                    if (window.bindTouchButton) {
+                        window.bindTouchButton(oauthBtn, oauthHandler);
+                    } else {
+                        oauthBtn.addEventListener('click', oauthHandler);
+                    }
+                }
+
+                // Close on overlay click
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) closeDialog({ confirmed: false });
+                }, { once: true });
+                overlay.addEventListener('touchend', (e) => {
+                    if (e.target === overlay) {
+                        e.preventDefault();
+                        closeDialog({ confirmed: false });
+                    }
+                }, { once: true });
+
+                dialogResolve = (result) => {
+                    if (!result || !result.confirmed) { resolve(null); return; }
+                    resolve({ url: result.url, token: result.token });
+                };
+
                 return;
             }
             // Fallback
