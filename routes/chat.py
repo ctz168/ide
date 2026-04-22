@@ -83,14 +83,20 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 
 | You want to... | Best tool | Why it's better than run_command |
 |---|---|---|
+| Plan a multi-step task | `todo_write` | Organized task tracking, visible to user in real-time |
+| Check current task progress | `todo_read` | Returns all todo items with status and priority |
 | Read a file | `read_file` | Line numbers, encoding auto-detection, offset/limit support |
 | Edit 1 place in a file | `edit_file` (old_text/new_text) | Atomic, preserves rest of file, auto-lint after edit |
 | Edit 2+ places in a file | `edit_file` (replacements array) | All edits applied atomically — all succeed or all fail |
 | Rewrite an entire file | `write_file` | Cleaner for full rewrites |
 | Add to end of a file | `append_file` | No need to read+rewrite |
 | List directory contents | `list_directory` | Structured: shows file sizes, types, sorted |
-| Find files by name | `glob_files` | Pattern matching: "**/*.py", "src/**/*.tsx" |
-| Get file/directory size | `file_info` | Direct metadata: size, dates, permissions |
+| Find files by name pattern | `glob_files` | Pattern matching: "**/*.py", "src/**/*.tsx" |
+| Search files by content | `search_files` | Regex support, shows line numbers + context |
+| Get file/directory size or metadata | `file_info` | Direct metadata: size, dates, permissions |
+| Create directories | `create_directory` | Auto-creates parent dirs (mkdir -p) |
+| Delete files/directories | `delete_path` | Safe deletion with recursive option |
+| Move/rename files | `move_file` | Auto-creates destination dir, updates AST index |
 | Search text in code | `grep_code` | Returns matches with context lines + file info |
 | Find a function/class definition | `find_definition` | AST-based: precise, understands scopes/decorators |
 | Find all usages of a symbol | `find_references` | AST-based: excludes comments/strings |
@@ -98,8 +104,23 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 | Check code quality | `run_linter` | Auto-detects project type and linter |
 | Run tests | `run_tests` | Auto-detects test framework |
 | Install a package | `install_package` | Auto-handles venv, version specs |
-| Git operations | `git_status`/`git_diff`/`git_log`/`git_commit`/`git_checkout` | Structured output |
-| Test a web page | `browser_navigate` + `browser_click`/`browser_input`/`browser_inspect` | Full DOM interaction |
+| List installed packages | `list_packages` | Shows versions, uses venv pip if configured |
+| Git status/diff/log/commit/checkout | `git_status`/`git_diff`/`git_log`/`git_commit`/`git_checkout` | Structured output, no need for shell parsing |
+| Search the web | `web_search` | Returns structured results with titles and URLs |
+| Fetch a web page | `web_fetch` | Strips HTML, returns clean text |
+| Open a web page in preview | `browser_navigate` | Loads in IDE's built-in preview iframe |
+| Execute JS in preview page | `browser_evaluate` | Direct access to page DOM and state |
+| Inspect a DOM element | `browser_inspect` | Returns tag, attrs, styles, position, visibility |
+| Find elements on page | `browser_query_all` | Lists matching elements with summary info |
+| Click a button/link | `browser_click` | Simulates real click in preview |
+| Type into an input field | `browser_input` | React/Vue compatible, triggers events |
+| Read page console output | `browser_console` | Captured logs with type and timestamp |
+| Get page title/URL/viewport | `browser_page_info` | Quick page state check |
+| Read page cookies | `browser_cookies` | Parsed name-value pairs |
+| Read IDE server logs | `server_logs` | Backend errors, startup issues |
+| Delegate a subtask | `delegate_task` | Independent sub-agent (read or write mode) |
+| Run 2-4 tasks in parallel | `parallel_tasks` | Multiple sub-agents simultaneously |
+| Kill process on a port | `kill_port` | Find and stop process by port number |
 | Start a dev server, compile, run scripts | `run_command` | Shell commands — the right choice for these tasks |
 
 **Key principle**: `run_command` is NOT wrong — it's just **less efficient** for tasks that have a dedicated tool. You CAN use it, but the specialized tool will give you better results.
