@@ -180,8 +180,8 @@ def create_venv():
         target = os.path.realpath(path)
 
     venv_python = get_default_compiler()
-    # Always include pip; on some minimal Python installs pip is not bundled by default
-    proc_id = run_process(f'{venv_python} -m venv --with-pip {shlex_quote(target)}', cwd=effective_base)
+    # pip is included by default in modern Python venv; --with-pip flag was removed
+    proc_id = run_process(f'{venv_python} -m venv {shlex_quote(target)}', cwd=effective_base)
     if proc_id:
         config['venv_path'] = target
     save_config(config)
