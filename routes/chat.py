@@ -132,8 +132,14 @@ You have access to specialized tools for reading, writing, editing, searching, a
 
 ### Preview & Debugging
 - `browser_navigate` — Open URL in preview iframe
+- `browser_evaluate` — Execute JavaScript in the preview page
+- `browser_inspect` — Inspect a DOM element by CSS selector
+- `browser_query_all` — List all elements matching a CSS selector
+- `browser_click` — Simulate clicking an element
+- `browser_input` — Simulate typing text into an input field
 - `browser_page_info` — Get preview page info
 - `browser_console` — Get console output from preview
+- `browser_cookies` — Read page cookies
 - `server_logs` — Read IDE server logs
 
 ### Sub-Agent
@@ -823,6 +829,130 @@ AGENT_TOOLS = [
             'description': (
                 'Get basic information about the currently loaded page in the preview. '
                 'Returns title, URL, character set, viewport size, scroll position, and body element count.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_evaluate',
+            'description': (
+                'Execute a JavaScript expression in the preview page and return the result. '
+                'Useful for getting page state, checking variables, or running custom queries. '
+                'The expression runs in the page context with full DOM access. '
+                'Requires the page to be same-origin (localhost) and the Bridge to be injected.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'expression': {
+                        'type': 'string',
+                        'description': 'JavaScript expression to evaluate (e.g. "document.title", "window.scrollY", "JSON.stringify(performance.timing)")',
+                    },
+                },
+                'required': ['expression'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_inspect',
+            'description': (
+                'Inspect a DOM element in the preview page. Returns detailed info: tag name, id, class, '
+                'attributes, text content, computed styles, position/size, visibility status, child count. '
+                'Use CSS selector to target elements (e.g. "#login-btn", ".nav-item", "form input[name=email]")'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the element to inspect',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_query_all',
+            'description': (
+                'List all elements matching a CSS selector in the preview page. Returns up to 50 results '
+                'with tag name, id, class, text preview, visibility, and position. '
+                'Useful for discovering what elements exist on a page.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector (e.g. "button", ".card", "a[href]")',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_click',
+            'description': (
+                'Simulate a mouse click on an element in the preview page. '
+                'Useful for testing button clicks, link navigation, form submissions, etc.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the element to click',
+                    },
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_input',
+            'description': (
+                'Simulate typing text into an input, textarea, or contenteditable element. '
+                'Compatible with React/Vue (uses native value setter). '
+                'Triggers input and change events.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {
+                        'type': 'string',
+                        'description': 'CSS selector of the input/textarea element',
+                    },
+                    'text': {
+                        'type': 'string',
+                        'description': 'Text to type into the element',
+                    },
+                },
+                'required': ['selector', 'text'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_cookies',
+            'description': (
+                'Read cookies from the preview page. Returns parsed cookie name-value pairs. '
+                'Only works for same-origin pages. Returns empty if no cookies are set.'
             ),
             'parameters': {
                 'type': 'object',
@@ -1633,13 +1763,46 @@ def _tool_run_command(args):
     timeout = args.get('timeout', 120)
     cwd = args.get('cwd', None) or _get_effective_cwd()
 
+    # ── HARD ENFORCEMENT: Redirect to specialized tools ──
+    # When the LLM tries to use run_command for operations that have dedicated tools,
+    # reject the command and tell it which tool to use instead. This creates a feedback
+    # loop that forces the LLM to use the correct tools.
+    cmd_stripped = command.strip()
+    first_word = cmd_stripped.split()[0].lower() if cmd_stripped.split() else ''
+
+    # Map of shell commands → (specialized tool, brief explanation)
+    _REDIRECT_RULES = [
+        # File reading → read_file
+        (['cat', 'head', 'tail', 'less', 'more', 'bat'], 'read_file', 'Read file content'),
+        # Directory listing → list_directory
+        (['ls', 'dir', 'find', 'tree', 'll'], 'list_directory', 'List directory contents'),
+        # Text search → grep_code / search_files
+        (['grep', 'rg', 'ack', 'ag'], 'grep_code', 'Search text in code'),
+        # File info → file_info
+        (['stat', 'wc', 'file', 'du'], 'file_info', 'Get file metadata'),
+        # Git → git_* tools
+        (['git'], 'git_status/git_diff/etc', 'Use git_* tools for Git operations'),
+        # Package management → install_package/list_packages
+        (['pip', 'npm', 'yarn', 'pnpm'], 'install_package/list_packages', 'Manage packages'),
+        # Linting → run_linter
+        (['ruff', 'flake8', 'pylint', 'eslint', 'mypy'], 'run_linter', 'Run linter'),
+        # Testing → run_tests
+        (['pytest', 'jest', 'mocha', 'unittest', 'nose'], 'run_tests', 'Run tests'),
+    ]
+
+    for cmd_names, tool_name, explanation in _REDIRECT_RULES:
+        if first_word in cmd_names:
+            # Allow if it's a compound command that actually needs shell (e.g. "pip install && python server.py")
+            if '&&' in cmd_stripped or '||' in cmd_stripped or ';' in cmd_stripped:
+                break  # Compound commands might genuinely need run_command
+            return (
+                f'⛔ REJECTED: Use the `{tool_name}` tool instead of `{first_word}`. '
+                f'{explanation} with `{tool_name}` — it is faster, safer, and provides better-structured output. '
+                f'Do NOT use run_command when a dedicated tool exists.'
+            )
+
     # SAFETY: Block commands that would kill the IDE server
     ide_port = os.environ.get('PHONEIDE_PORT', '12345')
-    _dangerous_patterns = [
-        f'kill', f'pkill', f'killall', f'taskkill',
-        f'lsof -ti :{ide_port}', f'fuser -k {ide_port}',
-        f'phoneide_server',
-    ]
     cmd_lower = command.lower()
     # Check for dangerous combinations: a kill command + IDE port or server name
     has_kill = any(p in cmd_lower for p in ['kill', 'pkill', 'killall', 'taskkill', 'fuser -k'])
@@ -2052,6 +2215,59 @@ def _tool_browser_console(args):
 def _tool_browser_page_info(args):
     cmd_id = create_browser_command('page_info', {})
     result = wait_browser_result(cmd_id, timeout=30)
+    return _format_browser_result(result)
+
+def _tool_browser_evaluate(args):
+    expression = args.get('expression', '')
+    if not expression:
+        return 'Error: expression is required'
+    cmd_id = create_browser_command('evaluate', {'expression': expression})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_inspect(args):
+    selector = args.get('selector', 'body')
+    cmd_id = create_browser_command('inspect', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_query_all(args):
+    selector = args.get('selector', '*')
+    cmd_id = create_browser_command('query_all', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_click(args):
+    selector = args.get('selector', '')
+    if not selector:
+        return 'Error: selector is required'
+    cmd_id = create_browser_command('click', {'selector': selector})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_input(args):
+    selector = args.get('selector', '')
+    text = args.get('text', '')
+    if not selector:
+        return 'Error: selector is required'
+    cmd_id = create_browser_command('input', {'selector': selector, 'text': text})
+    result = wait_browser_result(cmd_id, timeout=15)
+    return _format_browser_result(result)
+
+def _tool_browser_cookies(args):
+    cmd_id = create_browser_command('cookies', {})
+    result = wait_browser_result(cmd_id, timeout=10)
+    if not isinstance(result, dict):
+        return str(result)
+    if result.get('ok'):
+        cookies = result.get('cookies', [])
+        raw = result.get('raw', '')
+        if isinstance(cookies, list) and cookies:
+            lines = [f"  {c.get('name','')}: {c.get('value','')}" for c in cookies]
+            return f"Cookies ({len(cookies)} total):\n" + '\n'.join(lines)
+        elif isinstance(cookies, str):
+            return cookies
+        return '(no cookies)'
     return _format_browser_result(result)
 
 def _tool_server_logs(args):
@@ -3469,6 +3685,12 @@ _TOOL_HANDLERS = {
     'browser_navigate': _tool_browser_navigate,
     'browser_console': _tool_browser_console,
     'browser_page_info': _tool_browser_page_info,
+    'browser_evaluate': _tool_browser_evaluate,
+    'browser_inspect': _tool_browser_inspect,
+    'browser_query_all': _tool_browser_query_all,
+    'browser_click': _tool_browser_click,
+    'browser_input': _tool_browser_input,
+    'browser_cookies': _tool_browser_cookies,
     'server_logs': _tool_server_logs,
     # P0+P1 new tools
     'glob_files': _tool_glob_files,
@@ -3521,7 +3743,9 @@ _READONLY_TOOLS = frozenset({
     'file_info', 'file_structure', 'find_definition', 'find_references',
     'list_packages', 'git_status', 'git_diff', 'git_log',
     'web_search', 'web_fetch',
-    'browser_page_info', 'browser_console', 'server_logs',
+    'browser_page_info', 'browser_console', 'browser_evaluate',
+    'browser_inspect', 'browser_query_all', 'browser_cookies',
+    'server_logs',
     'run_linter', 'run_tests',
 })
 
