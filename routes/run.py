@@ -1,0 +1,193 @@
+"""
+PhoneIDE - Execution / Run API routes.
+"""
+
+import os
+import json
+import time
+from flask import Blueprint, jsonify, request, Response
+from utils import (
+    handle_error, load_config, WORKSPACE, shlex_quote,
+    run_process, stop_process, running_processes, process_outputs,
+    _verify_process_state, IS_WINDOWS, get_default_compiler,
+)
+
+bp = Blueprint('run', __name__)
+
+
+@bp.route('/api/run/execute', methods=['POST'])
+@handle_error
+def execute_code():
+    data = request.json
+    code = data.get('code', '')
+    file_path = data.get('file_path', '')
+    compiler = data.get('compiler', '') or get_default_compiler()
+    args = data.get('args', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    # When a project is open, run code in the project directory
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # Warn if no venv is configured (helpful for Python projects)
+    no_venv = False
+    if compiler in ('python3', 'python') and not config.get('venv_path'):
+        no_venv = True
+
+    if file_path:
+        # file_path can be relative to workspace or project
+        target = os.path.realpath(os.path.join(config.get('workspace', WORKSPACE), file_path))
+        ws = os.path.realpath(config.get('workspace', WORKSPACE))
+        if not target.startswith(ws):
+            return jsonify({'error': 'Access denied'}), 403
+        cmd = f'{compiler} {shlex_quote(target)} {args}'
+    else:
+        # Write temp file in the effective base (project dir or workspace)
+        tmp_file = os.path.join(base, '.phoneide_tmp.py')
+        with open(tmp_file, 'w') as f:
+            f.write(code)
+        cmd = f'{compiler} {shlex_quote(tmp_file)} {args}'
+
+    proc_id = run_process(cmd, cwd=base)
+    return jsonify({'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base})
+
+
+@bp.route('/api/run/shell', methods=['POST'])
+@handle_error
+def execute_shell():
+    """Execute a raw shell command directly (not as code file).
+    Used by the terminal/shell input bar for commands like 'dir', 'ls', 'pip install', etc."""
+    data = request.json or {}
+    command = data.get('command', '').strip()
+    if not command:
+        return jsonify({'error': 'No command provided'}), 400
+
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    # When a project is open, run commands in the project directory
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # On Windows, wrap with cmd /c to ensure built-in commands (dir, cd, etc.) work
+    # On Linux/macOS, use bash -c for consistency
+    if IS_WINDOWS:
+        cmd = f'cmd /c {command}'
+    else:
+        cmd = command  # shell=True already uses bash
+
+    proc_id = run_process(cmd, cwd=base)
+    return jsonify({'ok': True, 'proc_id': proc_id, 'cwd': base})
+
+
+@bp.route('/api/run/stop', methods=['POST'])
+@handle_error
+def stop_execution():
+    data = request.json
+    proc_id = data.get('proc_id', '')
+    if proc_id and proc_id in running_processes:
+        stopped = stop_process(proc_id)
+        return jsonify({'ok': stopped})
+    return jsonify({'ok': False})
+
+
+@bp.route('/api/run/processes', methods=['GET'])
+@handle_error
+def list_processes():
+    """List all running and recent processes.
+    Uses proc.poll() to verify actual OS process state,
+    so this is accurate even after page refreshes."""
+    processes = []
+    for pid, info in running_processes.items():
+        start = info.get('start_time')
+        # Verify actual process state at the OS level
+        running = _verify_process_state(pid)
+        uptime = ''
+        if start:
+            elapsed = time.time() - start
+            mins, secs = divmod(int(elapsed), 60)
+            hours, mins = divmod(mins, 60)
+            if hours > 0:
+                uptime = f'{hours}h {mins}m {secs}s'
+            elif mins > 0:
+                uptime = f'{mins}m {secs}s'
+            else:
+                uptime = f'{secs}s'
+        # Truncate command for display
+        cmd = info.get('cmd', '')
+        if len(cmd) > 120:
+            cmd = cmd[:120] + '...'
+        processes.append({
+            'id': pid,
+            'running': running,
+            'cwd': info.get('cwd', ''),
+            'cmd': cmd,
+            'exit_code': info.get('exit_code'),
+            'uptime': uptime,
+            'start_time': start,
+        })
+    return jsonify({'processes': processes})
+
+
+@bp.route('/api/run/output', methods=['GET'])
+@handle_error
+def get_output():
+    proc_id = request.args.get('proc_id', '')
+    since = int(request.args.get('since', 0))
+
+    if proc_id and proc_id in process_outputs:
+        outputs = process_outputs[proc_id][since:]
+        # Verify actual process state (not just the flag)
+        is_running = _verify_process_state(proc_id)
+        return jsonify({
+            'outputs': outputs,
+            'since': len(process_outputs[proc_id]),
+            'running': is_running,
+        })
+    return jsonify({'outputs': [], 'since': 0, 'running': False})
+
+
+@bp.route('/api/run/output/stream', methods=['GET'])
+def stream_output():
+    """SSE endpoint for real-time output"""
+    proc_id = request.args.get('proc_id', '')
+
+    def generate():
+        idx = 0
+        # Wait briefly for processOutputs to be populated
+        time.sleep(0.15)
+        while True:
+            if proc_id and proc_id in process_outputs:
+                outputs = process_outputs[proc_id]
+                if idx < len(outputs):
+                    for item in outputs[idx:]:
+                        evt_type = item.get('type', 'stdout')
+                        # Send as named SSE event so frontend addEventListener works
+                        yield f"event: {evt_type}\ndata: {json.dumps(item)}\n\n"
+                    idx = len(outputs)
+
+                # Verify actual process state (not just the flag)
+                is_running = _verify_process_state(proc_id)
+                if not is_running:
+                    exit_code = running_processes.get(proc_id, {}).get('exit_code', 0)
+                    yield f"event: exit\ndata: {json.dumps({'exit_code': exit_code or 0})}\n\n"
+                    break
+            else:
+                # proc_id not found — process may have finished before we started
+                # Check one more time after a brief delay
+                time.sleep(0.2)
+                if proc_id and proc_id not in process_outputs:
+                    yield f"event: done\ndata: \"Process not found\"\n\n"
+                    break
+
+            time.sleep(0.1)
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
