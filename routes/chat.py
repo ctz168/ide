@@ -3623,6 +3623,10 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         api_messages = []
         for msg in messages:
             role = msg.get('role', '')
+            # Normalize 'developer' role to 'system' (OpenAI o1/o3 models use 'developer',
+            # but many API providers like ModelScope don't support it)
+            if role == 'developer':
+                role = 'system'
             if role == 'system':
                 api_messages.append({'role': 'system', 'content': msg.get('content', '')})
             elif role == 'tool':
@@ -3659,6 +3663,10 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         api_messages = _build_cached_api_messages(_static_sys_prompt, _dynamic_sys_prompt, llm_config)
         for msg in messages:
             role = msg.get('role', '')
+            # Normalize 'developer' role to 'system' (OpenAI o1/o3 models use 'developer',
+            # but many API providers like ModelScope don't support it)
+            if role == 'developer':
+                role = 'system'
             if role == 'system':
                 continue
             elif role == 'tool':
@@ -3880,6 +3888,10 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
 
     for msg in messages:
         role = msg.get('role', '')
+        # Normalize 'developer' role to 'system' (OpenAI o1/o3 models use 'developer',
+        # but many API providers like ModelScope don't support it)
+        if role == 'developer':
+            role = 'system'
         if role == 'system':
             continue
         elif role == 'tool':
