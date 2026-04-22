@@ -3722,31 +3722,25 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
         if IS_WINDOWS:
             sys_env_info += 'Note: This is a Windows system. Use Windows-compatible commands (cmd.exe/PowerShell). Use backslashes for paths in shell commands, forward slashes for file operations in code.\n'
 
-        # Always show project directory and workspace root clearly
+        # Only inject project directory info (not workspace root or server dir)
         if _project and os.path.isdir(os.path.join(_ws, _project)):
             workspace_info = (
-                f'## Current Project & Workspace\n'
+                f'## Current Project\n'
                 f'- Project name: {_project}\n'
                 f'- Project directory (absolute): {_project_dir}\n'
-                f'- Workspace root: {_ws}\n'
-                f'- Server directory: {SERVER_DIR}\n'
                 f'- All file operations should be scoped to the project directory: {_project_dir}'
             )
         else:
             workspace_info = (
-                f'## Current Workspace\n'
-                f'- Project directory (absolute): {_project_dir}\n'
-                f'- Workspace root: {_ws}\n'
-                f'- Server directory: {SERVER_DIR}\n'
-                f'- All file operations should be scoped to the project directory: {_project_dir}'
+                f'## Current Project\n'
+                f'- Project directory (absolute): {_project_dir}'
             )
     except Exception as e:
         log_write(f'[phoneide] Error loading workspace config: {e}')
         sys_env_info = '## System Environment\nOS: Unknown\n'
         workspace_info = (
-            f'## Current Workspace\n'
-            f'- Project directory (absolute): {_project_dir}\n'
-            f'- Server directory: {SERVER_DIR}'
+            f'## Current Project\n'
+            f'- Project directory (absolute): {_project_dir}'
         )
 
     # Accumulate dynamic parts (workspace, env — changes per request)

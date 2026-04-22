@@ -117,8 +117,11 @@ const ChatManager = (() => {
         const completed = currentTodoData.filter(t => t.status === 'completed').length;
         const total = currentTodoData.length;
         const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-        let html = '<div class="todo-panel-header" onclick="document.getElementById(\'ai-todo-panel-body\').classList.toggle(\'collapsed\')">';
+        let html = '<div class="todo-panel-header">';
+        html += '<div class="todo-panel-header-row">';
         html += '<span class="todo-panel-title">📋 Task Plan</span>';
+        html += '<button class="todo-toggle-btn" onclick="event.stopPropagation(); document.getElementById(\'ai-todo-panel-body\').classList.toggle(\'collapsed\'); this.textContent = document.getElementById(\'ai-todo-panel-body\').classList.contains(\'collapsed\') ? \'▸\' : \'▾\'">▾</button>';
+        html += '</div>';
         html += '<span class="todo-panel-progress">' + completed + '/' + total + ' (' + pct + '%)</span>';
         html += '<div class="todo-panel-bar"><div class="todo-panel-bar-fill" style="width:' + pct + '%"></div></div>';
         html += '</div>';
@@ -1919,6 +1922,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             lastUserMessage = null;
             renderMessages([]);
             updateContextRing();
+            // Clear todo panel when clearing history
+            hideTodoPanel();
             showToast('Chat history cleared', 'success');
         } catch (err) {
             showToast('Error clearing chat: ' + err.message, 'error');
@@ -1939,6 +1944,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         renderMessages([]);
         clearBackup();
         updateContextRing();
+        // Clear todo panel for new conversation
+        hideTodoPanel();
 
         // Focus input
         const input = document.getElementById('chat-input');
@@ -3096,14 +3103,30 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 flex-direction: column;
                 gap: 4px;
                 padding: 8px 10px;
-                cursor: pointer;
                 user-select: none;
                 -webkit-user-select: none;
                 background: var(--surface-1);
                 border-bottom: 1px solid var(--border-subtle);
             }
-            .todo-panel-header:active {
+            .todo-panel-header-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .todo-toggle-btn {
+                background: none;
+                border: 1px solid var(--border-subtle);
+                border-radius: 4px;
+                color: var(--text-muted);
+                font-size: 12px;
+                cursor: pointer;
+                padding: 2px 6px;
+                line-height: 1;
+                transition: background 0.15s, color 0.15s;
+            }
+            .todo-toggle-btn:hover {
                 background: var(--surface-2);
+                color: var(--text-primary);
             }
             .todo-panel-title {
                 font-weight: 600;
