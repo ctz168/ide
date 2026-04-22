@@ -71,6 +71,7 @@ _SYSTEM_ENV_INFO = get_system_info()
 _PLATFORM_NAME = 'Windows' if IS_WINDOWS else ('macOS' if platform.system() == 'Darwin' else 'Linux')
 _DEFAULT_COMPILER = 'python' if IS_WINDOWS else 'python3'
 _SERVER_DIR = SERVER_DIR
+_IDE_PORT = os.environ.get('PHONEIDE_PORT', '12345')
 
 RING_BUFFER_SIZE = 100
 
@@ -248,12 +249,12 @@ These tools use tree-sitter AST analysis which:
 21. **NEVER use `run_command` for file reading/writing/editing/listing/searching when dedicated tools exist** — dedicated tools return structured, reliable results
 
 ## 🚫 CRITICAL SAFETY RULES — NEVER VIOLATE
-**The process `phoneide_server.py` and port `12345` are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.**
+**The process `phoneide_server.py` and port `{_IDE_PORT}` are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.**
 - **NEVER stop, kill, or terminate the `phoneide_server.py` process** — do NOT use `kill`, `kill -9`, `pkill`, `taskkill`, or any other command against it
-- **NEVER use `kill_port` on port `12345`** — this is the IDE's own port
-- **NEVER run any command that would stop `phoneide_server.py`** — including `lsof -ti :12345 | xargs kill`, `fuser -k 12345/tcp`, etc.
-- If you need to start a user's project server and port 12345 is mentioned, use a DIFFERENT port for the user's project
-- These rules apply to ALL tools: `run_command`, `kill_port`, `delegate_task`, `parallel_tasks` — NONE of them may touch `phoneide_server.py` or port 12345
+- **NEVER use `kill_port` on port `{_IDE_PORT}`** — this is the IDE's own port
+- **NEVER run any command that would stop `phoneide_server.py`** — including `lsof -ti :{_IDE_PORT} | xargs kill`, `fuser -k {_IDE_PORT}/tcp`, etc.
+- If you need to start a user's project server and port {_IDE_PORT} is mentioned, use a DIFFERENT port for the user's project
+- These rules apply to ALL tools: `run_command`, `kill_port`, `delegate_task`, `parallel_tasks` — NONE of them may touch `phoneide_server.py` or port {_IDE_PORT}
 
 ## Important: Platform Awareness
 - Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
@@ -1737,7 +1738,7 @@ def _tool_run_command(args):
     cmd_lower = command.lower()
     # Check for dangerous combinations: a kill command + IDE port or server name
     has_kill = any(p in cmd_lower for p in ['kill', 'pkill', 'killall', 'taskkill', 'fuser -k'])
-    has_ide_target = (ide_port in command or 'phoneide_server' in cmd_lower or '12345' in command)
+    has_ide_target = (ide_port in command or 'phoneide_server' in cmd_lower)
     if has_kill and has_ide_target:
         return f'⛔ BLOCKED: This command would stop the PhoneIDE server (port {ide_port}, phoneide_server.py). Killing the IDE process is not allowed — it would shut down the IDE and AI assistant.'
 
@@ -3189,7 +3190,6 @@ _SUBAGENT_TOOLS = {
     'web_fetch': _tool_web_fetch,
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
-    'kill_port': _tool_kill_port,
 }
 
 # Write-capable tools for sub-agents (write mode) — includes all read tools + write/edit/run
@@ -3617,7 +3617,7 @@ _READONLY_TOOLS = frozenset({
     'list_packages', 'git_status', 'git_diff', 'git_log',
     'web_search', 'web_fetch',
     'browser_page_info', 'browser_console', 'server_logs',
-    'run_linter', 'run_tests', 'kill_port',
+    'run_linter', 'run_tests',
 })
 
 def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
