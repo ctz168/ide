@@ -28,6 +28,7 @@
     --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
     --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    --footer-height: 24px;
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -1158,7 +1159,7 @@ html, body {
     top: calc(var(--toolbar-height) + 34px);
     left: 0;
     right: 0;
-    bottom: 0;
+    bottom: var(--footer-height);
     display: flex;
     flex-direction: column;
     background: var(--bg-primary);
@@ -2982,4 +2983,23 @@ button, .file-item, .search-result-item, .git-change-item {
 /* Browser tools status indicator in chat */
 .chat-msg .tool-name[data-tool^="browser_"] {
     color: var(--orange) !important;
+}
+
+/* ==================== Copyright Footer ==================== */
+#copyright-footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: var(--footer-height);
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-top: 1px solid var(--border);
+    z-index: 50;
+    user-select: none;
+    -webkit-user-select: none;
 }
