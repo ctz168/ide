@@ -98,6 +98,71 @@ def stop_execution():
     return jsonify({'ok': False})
 
 
+@bp.route('/api/run/kill-port', methods=['POST'])
+@handle_error
+def kill_port():
+    """Kill any process listening on the given port. Useful before starting a server
+    to avoid 'port already in use' errors."""
+    import subprocess as sp
+    data = request.json or {}
+    port = data.get('port')
+    if not port:
+        return jsonify({'error': 'Port number required'}), 400
+    try:
+        port = int(port)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid port number'}), 400
+
+    killed_pids = []
+    if IS_WINDOWS:
+        # Windows: use netstat to find PID, then taskkill
+        try:
+            result = sp.run(
+                f'netstat -ano | findstr :{port} | findstr LISTENING',
+                shell=True, capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.strip().split()
+                if parts:
+                    pid = parts[-1]
+                    try:
+                        sp.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True, timeout=5)
+                        killed_pids.append(pid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    else:
+        # Linux/macOS: use lsof to find PID, then kill
+        try:
+            result = sp.run(
+                f'lsof -ti :{port}',
+                shell=True, capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip().splitlines()
+            for pid in pids:
+                pid = pid.strip()
+                if pid:
+                    try:
+                        os.kill(int(pid), 9)
+                        killed_pids.append(pid)
+                    except (OSError, ValueError):
+                        pass
+        except Exception:
+            pass
+
+    # Also stop any of our managed processes that might be using this port
+    for proc_id, info in list(running_processes.items()):
+        if info.get('running') and str(port) in info.get('cmd', ''):
+            stop_process(proc_id)
+            killed_pids.append(f'managed:{proc_id}')
+
+    if killed_pids:
+        return jsonify({'ok': True, 'killed': killed_pids, 'message': f'Killed processes on port {port}: {killed_pids}'})
+    else:
+        return jsonify({'ok': True, 'killed': [], 'message': f'No process found on port {port}'})
+
+
 @bp.route('/api/run/processes', methods=['GET'])
 @handle_error
 def list_processes():

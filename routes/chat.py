@@ -78,13 +78,13 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, and more.
 
 ## Available Tools
-You have **35 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **36 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
 ### File & Code Tools (27)
 - `read_file` / `write_file` / `edit_file` -- Read, create, or modify files
 - `list_directory` / `search_files` / `grep_code` / `glob_files` -- Browse and search the project
-- `run_command` -- Execute shell commands (Python, bash, etc.)
+- `run_command` -- Execute shell commands (ONLY when no dedicated tool exists for the task!)
 - `file_info` / `create_directory` / `delete_path` / `move_file` -- File system operations
 - `append_file` -- Append content to an existing file
 - `file_structure` -- Get a tree-structured overview of a directory
@@ -102,6 +102,9 @@ For multi-step tasks, think step by step and use tools in sequence.
 ### Sub-Agent Tools (2)
 - `delegate_task` -- Launch a sub-agent for independent subtasks (supports "read" and "write" modes)
 - `parallel_tasks` -- Launch 2-4 sub-agents simultaneously for independent parallel work
+
+### Process & Port Management (1)
+- `kill_port` -- Kill processes listening on a port (use before starting servers to avoid port conflicts)
 
 ### Preview & Debugging Tools (4)
 The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You can:
@@ -200,6 +203,27 @@ These tools use tree-sitter AST analysis which:
 - edit_file/write_file can auto-trigger lint checks (configurable)
 - These give structured, parseable feedback — much better than raw command output
 
+## Tool Selection Priority (CRITICAL — MUST FOLLOW)
+**NEVER use `run_command` when a dedicated tool exists for the task.** Dedicated tools are more reliable, structured, and safer.
+
+| Task | Correct Tool | WRONG (do NOT use run_command) |
+|------|-------------|-------------------------------|
+| Read a file | `read_file` | `cat`, `head`, `tail` |
+| Write/create a file | `write_file` | `echo >`, `tee` |
+| Edit part of a file | `edit_file` | `sed`, `awk` |
+| List directory | `list_directory` | `ls`, `dir` |
+| Search text in files | `grep_code` | `grep`, `rg` |
+| Find files by name | `glob_files`, `search_files` | `find` |
+| Get file metadata | `file_info` | `stat`, `wc` |
+| Git operations | `git_status`, `git_diff`, etc. | `git` commands |
+| Install packages | `install_package` | `pip install`, `npm install` |
+| List packages | `list_packages` | `pip list`, `npm list` |
+| Lint code | `run_linter` | `pylint`, `eslint` |
+| Run tests | `run_tests` | `pytest`, `npm test` |
+| Navigate code | `find_definition`, `find_references` | `grep` |
+
+**When to use `run_command`:** Only for tasks with NO dedicated tool — e.g., starting a dev server, compiling code, running custom scripts, installing system packages, or one-off shell operations.
+
 ## Important Rules
 1. **ALWAYS use `todo_write` BEFORE starting any complex task (3+ steps)** — plan first, then execute
 2. **Update todo status in real-time** — mark items in_progress when starting, completed when done
@@ -221,6 +245,7 @@ These tools use tree-sitter AST analysis which:
 18. **Use `parallel_tasks` when 2+ subtasks are independent** — save time by running them concurrently
 19. **Use `run_linter` after editing files** to catch issues early — it's faster than running commands manually
 20. **Use `run_tests` to verify changes** — auto-detects the framework, no need to remember the exact command
+21. **NEVER use `run_command` for file reading/writing/editing/listing/searching when dedicated tools exist** — dedicated tools return structured, reliable results
 
 ## Important: Platform Awareness
 - Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
@@ -466,9 +491,22 @@ AGENT_TOOLS = [
             'name': 'run_command',
             'description': (
                 'Execute a shell command and return its output (stdout + stderr combined). Has a configurable '
-                'timeout to prevent hanging. WARNING: This can execute arbitrary commands - be careful with '
-                'destructive operations like rm -rf, format, etc. Commands run in the workspace directory by default. '
-                'Output is captured and returned, limited to 30000 characters.'
+                'timeout to prevent hanging. Commands run in the workspace directory by default. '
+                'Output is captured and returned, limited to 30000 characters.\n'
+                'IMPORTANT: Do NOT use this tool when a dedicated tool exists for the task:\n'
+                '- To read a file → use `read_file` (NOT `cat`)\n'
+                '- To write/edit a file → use `write_file` or `edit_file` (NOT `echo`/`sed`)\n'
+                '- To list directory contents → use `list_directory` (NOT `ls`)\n'
+                '- To search for text → use `grep_code` or `search_files` (NOT `grep`)\n'
+                '- To find files by name → use `glob_files` or `search_files` (NOT `find`)\n'
+                '- To get file info → use `file_info` (NOT `stat`/`wc`)\n'
+                '- To manage git → use git_status/git_diff/git_commit/etc. (NOT `git` commands)\n'
+                '- To install packages → use `install_package` (NOT `pip install`)\n'
+                '- To list packages → use `list_packages` (NOT `pip list`)\n'
+                '- To lint code → use `run_linter` (NOT `pylint`/`eslint`)\n'
+                '- To run tests → use `run_tests` (NOT `pytest`/`npm test`)\n'
+                'Only use this tool for tasks that have NO dedicated tool (e.g., running a dev server, '
+                'compiling code, or executing custom scripts).'
             ),
             'parameters': {
                 'type': 'object',
@@ -1181,6 +1219,29 @@ AGENT_TOOLS = [
                     },
                 },
                 'required': ['tasks'],
+            },
+        },
+    },
+    # ── Process & Port Management ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'kill_port',
+            'description': (
+                'Kill any process listening on a specific port. Use this BEFORE starting a server '
+                'to avoid "port already in use" errors. For example, if you need to start a Flask '
+                'app on port 5000 but get an "Address already in use" error, call kill_port first '
+                'to free the port, then start the server. Also useful for restarting a dev server.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'port': {
+                        'type': 'integer',
+                        'description': 'The port number to free (e.g. 5000, 8080, 3000)',
+                    },
+                },
+                'required': ['port'],
             },
         },
     },
@@ -3105,6 +3166,7 @@ _SUBAGENT_TOOLS = {
     'web_fetch': _tool_web_fetch,
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
+    'kill_port': _tool_kill_port,
 }
 
 # Write-capable tools for sub-agents (write mode) — includes all read tools + write/edit/run
@@ -3320,6 +3382,76 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None, context=
     output += '\n'.join(tool_results_summary)
     return _truncate(output, 15000)
 
+def _tool_kill_port(args):
+    """Kill any process listening on a specific port."""
+    from utils import IS_WINDOWS
+    import subprocess as sp
+    port = args.get('port')
+    if not port:
+        return 'Error: port parameter is required'
+    try:
+        port = int(port)
+    except (ValueError, TypeError):
+        return f'Error: invalid port number: {port}'
+
+    if not (1 <= port <= 65535):
+        return f'Error: port must be between 1 and 65535, got {port}'
+
+    killed_pids = []
+    errors = []
+
+    if IS_WINDOWS:
+        try:
+            result = sp.run(
+                f'netstat -ano | findstr :{port} | findstr LISTENING',
+                shell=True, capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.strip().split()
+                if parts:
+                    pid = parts[-1]
+                    try:
+                        sp.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True, timeout=5)
+                        killed_pids.append(pid)
+                    except Exception as e:
+                        errors.append(f'Failed to kill PID {pid}: {e}')
+        except Exception as e:
+            errors.append(f'netstat error: {e}')
+    else:
+        try:
+            result = sp.run(
+                f'lsof -ti :{port}',
+                shell=True, capture_output=True, text=True, timeout=5
+            )
+            pids = result.stdout.strip().splitlines()
+            for pid_str in pids:
+                pid_str = pid_str.strip()
+                if pid_str:
+                    try:
+                        os.kill(int(pid_str), 9)
+                        killed_pids.append(pid_str)
+                    except (OSError, ValueError) as e:
+                        errors.append(f'Failed to kill PID {pid_str}: {e}')
+        except Exception as e:
+            errors.append(f'lsof error: {e}')
+
+    # Also stop any of our managed processes that might be using this port
+    from utils import stop_process, running_processes
+    for proc_id, info in list(running_processes.items()):
+        if info.get('running') and str(port) in info.get('cmd', ''):
+            stop_process(proc_id)
+            killed_pids.append(f'managed:{proc_id}')
+
+    result_parts = [f'Port: {port}']
+    if killed_pids:
+        result_parts.append(f'Killed processes: {killed_pids}')
+    else:
+        result_parts.append('No processes found listening on this port')
+    if errors:
+        result_parts.append(f'Errors: {errors}')
+
+    return '\n'.join(result_parts)
+
 def _tool_delegate_task(args):
     """Launch a sub-agent for a subtask. Supports read and write modes."""
     task = args.get('task', '').strip()
@@ -3417,6 +3549,8 @@ _TOOL_HANDLERS = {
     # Quality Assurance tools
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
+    # Process & Port Management
+    'kill_port': _tool_kill_port,
 }
 
 def execute_agent_tool(name, arguments):
@@ -3455,7 +3589,7 @@ _READONLY_TOOLS = frozenset({
     'list_packages', 'git_status', 'git_diff', 'git_log',
     'web_search', 'web_fetch',
     'browser_page_info', 'browser_console', 'server_logs',
-    'run_linter', 'run_tests',
+    'run_linter', 'run_tests', 'kill_port',
 })
 
 def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
@@ -4520,6 +4654,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'run_command': 3000, 'web_fetch': 2000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
+        'kill_port': 2000,
         'todo_write': 2000, 'todo_read': 2000,
     }
     TOOL_LIMITS_DEFAULT = 4000

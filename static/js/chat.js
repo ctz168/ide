@@ -48,7 +48,7 @@ const ChatManager = (() => {
         'browser_navigate', 'browser_console', 'browser_page_info', 'server_logs',
         'glob_files', 'find_definition', 'find_references', 'file_structure',
         'delegate_task', 'parallel_tasks', 'todo_write', 'todo_read',
-        'move_file', 'append_file', 'run_linter', 'run_tests',
+        'move_file', 'append_file', 'run_linter', 'run_tests', 'kill_port',
     ];
 
     const TOOL_ICONS = {
@@ -88,6 +88,8 @@ const ChatManager = (() => {
         // Quality Assurance tools
         run_linter:          '🔍',
         run_tests:           '🧪',
+        // Process & Port Management
+        kill_port:           '🛑',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"

@@ -229,9 +229,12 @@ const TerminalManager = (() => {
      * @returns {Promise<object>} execution result
      */
     async function execute(file_path, compiler, args) {
+        // Auto-stop existing process before starting a new one
         if (isRunning) {
-            showToast('A process is already running', 'warning');
-            return { error: 'Process already running' };
+            appendOutput('[system] Stopping existing process before re-run...', 'system');
+            await stop();
+            // Brief pause to let the OS free the port
+            await new Promise(r => setTimeout(r, 500));
         }
 
         if (!file_path) {
@@ -315,9 +318,11 @@ const TerminalManager = (() => {
      * @returns {Promise<object>} execution result
      */
     async function executeCode(code, compiler) {
+        // Auto-stop existing process before starting a new one
         if (isRunning) {
-            showToast('A process is already running', 'warning');
-            return { error: 'Process already running' };
+            appendOutput('[system] Stopping existing process before re-run...', 'system');
+            await stop();
+            await new Promise(r => setTimeout(r, 500));
         }
 
         if (!code || !code.trim()) {
@@ -387,9 +392,11 @@ const TerminalManager = (() => {
      * @returns {Promise<object>} execution result
      */
     async function executeShellCommand(command) {
+        // Auto-stop existing process before starting a new one
         if (isRunning) {
-            showToast('A process is already running', 'warning');
-            return { error: 'Process already running' };
+            appendOutput('[system] Stopping existing process before re-run...', 'system');
+            await stop();
+            await new Promise(r => setTimeout(r, 500));
         }
 
         if (!command || !command.trim()) {
