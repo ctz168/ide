@@ -113,6 +113,11 @@ def kill_port():
     except (ValueError, TypeError):
         return jsonify({'error': 'Invalid port number'}), 400
 
+    # SAFETY: Never kill the IDE's own port
+    ide_port = int(os.environ.get('PHONEIDE_PORT', 12345))
+    if port == ide_port:
+        return jsonify({'error': f'BLOCKED: Port {port} is the PhoneIDE server port — killing it would shut down the IDE. Operation refused.'}), 403
+
     killed_pids = []
     if IS_WINDOWS:
         # Windows: use netstat to find PID, then taskkill

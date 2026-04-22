@@ -247,6 +247,14 @@ These tools use tree-sitter AST analysis which:
 20. **Use `run_tests` to verify changes** — auto-detects the framework, no need to remember the exact command
 21. **NEVER use `run_command` for file reading/writing/editing/listing/searching when dedicated tools exist** — dedicated tools return structured, reliable results
 
+## 🚫 CRITICAL SAFETY RULES — NEVER VIOLATE
+**The process `phoneide_server.py` and port `12345` are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.**
+- **NEVER stop, kill, or terminate the `phoneide_server.py` process** — do NOT use `kill`, `kill -9`, `pkill`, `taskkill`, or any other command against it
+- **NEVER use `kill_port` on port `12345`** — this is the IDE's own port
+- **NEVER run any command that would stop `phoneide_server.py`** — including `lsof -ti :12345 | xargs kill`, `fuser -k 12345/tcp`, etc.
+- If you need to start a user's project server and port 12345 is mentioned, use a DIFFERENT port for the user's project
+- These rules apply to ALL tools: `run_command`, `kill_port`, `delegate_task`, `parallel_tasks` — NONE of them may touch `phoneide_server.py` or port 12345
+
 ## Important: Platform Awareness
 - Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
 - On Windows: use `cmd /c` or `powershell -Command` for shell commands. Paths use backslashes. Python is `python` not `python3`. Virtual env binaries are in `Scripts/` not `bin/`.
@@ -1718,6 +1726,21 @@ def _tool_run_command(args):
     command = args['command']
     timeout = args.get('timeout', 120)
     cwd = args.get('cwd', None) or _get_effective_cwd()
+
+    # SAFETY: Block commands that would kill the IDE server
+    ide_port = os.environ.get('PHONEIDE_PORT', '12345')
+    _dangerous_patterns = [
+        f'kill', f'pkill', f'killall', f'taskkill',
+        f'lsof -ti :{ide_port}', f'fuser -k {ide_port}',
+        f'phoneide_server',
+    ]
+    cmd_lower = command.lower()
+    # Check for dangerous combinations: a kill command + IDE port or server name
+    has_kill = any(p in cmd_lower for p in ['kill', 'pkill', 'killall', 'taskkill', 'fuser -k'])
+    has_ide_target = (ide_port in command or 'phoneide_server' in cmd_lower or '12345' in command)
+    if has_kill and has_ide_target:
+        return f'⛔ BLOCKED: This command would stop the PhoneIDE server (port {ide_port}, phoneide_server.py). Killing the IDE process is not allowed — it would shut down the IDE and AI assistant.'
+
     try:
         cwd = _validate_path(cwd)
     except ValueError:
@@ -3396,6 +3419,11 @@ def _tool_kill_port(args):
 
     if not (1 <= port <= 65535):
         return f'Error: port must be between 1 and 65535, got {port}'
+
+    # SAFETY: Never kill the IDE's own port
+    ide_port = int(os.environ.get('PHONEIDE_PORT', 12345))
+    if port == ide_port:
+        return f'⛔ BLOCKED: Port {port} is the PhoneIDE server port — killing it would shut down the IDE and AI assistant. Operation refused.'
 
     killed_pids = []
     errors = []

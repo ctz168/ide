@@ -201,7 +201,7 @@ else
         echo ""
         info "Try manually:"
         echo -e "  ${CYAN}git clone https://github.com/ctz168/ide.git ~/phoneide-ide${NC}"
-        echo -e "  ${CYAN}cd ~/phoneide-ide && python3 server.py${NC}"
+        echo -e "  ${CYAN}cd ~/phoneide-ide && python3 phoneide_server.py${NC}"
         exit 1
     fi
 
@@ -305,7 +305,7 @@ IDE_URL="http://${LOCAL_IP}:${IDE_PORT}"
 IDE_LOCAL="http://localhost:${IDE_PORT}"
 
 # Start server in background (inherits PHONEIDE_PORT env if set)
-nohup python3 server.py > /dev/null 2>&1 &
+nohup python3 phoneide_server.py > /dev/null 2>&1 &
 SERVER_PID=$!
 
 # Wait for server to be ready (max 8 seconds)
@@ -327,7 +327,7 @@ else
         ok "Server is running on port $IDE_PORT (PID: $SERVER_PID)"
     else
         warn "Server may still be starting up on port $IDE_PORT..."
-        warn "If it doesn't load, check: cd $INSTALL_DIR && python3 server.py"
+        warn "If it doesn't load, check: cd $INSTALL_DIR && python3 phoneide_server.py"
     fi
 fi
 
@@ -379,7 +379,7 @@ echo -e "  PID:      ${CYAN}${SERVER_PID}${NC}"
 echo -e "  Dir:      ${CYAN}${INSTALL_DIR}${NC}"
 echo ""
 echo -e "  Stop server:  ${YELLOW}kill ${SERVER_PID}${NC}"
-echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && python3 server.py${NC}"
+echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && python3 phoneide_server.py${NC}"
 echo ""
 
 # Keepalive hint for Termux / headless

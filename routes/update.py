@@ -166,7 +166,7 @@ def _do_update_and_restart():
     This function is called in a daemon thread.  It runs the actual update in a
     separate subprocess so the running server can exit cleanly before the new
     code replaces files on disk.  After the files are updated it re-executes
-    server.py which picks up the new code.
+    phoneide_server.py which picks up the new code.
 
     Returns nothing — the caller should respond to the HTTP request immediately
     and this function runs in the background.
@@ -254,7 +254,7 @@ try:
         print('FAIL: no extracted dir found')
         sys.exit(1)
 
-    for fname in ['server.py', 'utils.py', 'requirements.txt']:
+    for fname in ['phoneide_server.py', 'utils.py', 'requirements.txt']:
         src = os.path.join(extracted_dir, fname)
         dst = os.path.join(SERVER_DIR, fname)
         if os.path.exists(src):
@@ -286,13 +286,13 @@ finally:
         else:
             log_write(f'[UPDATE] Tarball download subprocess failed (rc={result.returncode}): {result.stderr}')
 
-    # ── Step 3: Re-exec server.py ONLY if update succeeded ──
+    # ── Step 3: Re-exec phoneide_server.py ONLY if update succeeded ──
     if not update_ok:
         log_write('[UPDATE] Update failed, NOT restarting server.')
         return
 
-    log_write('[UPDATE] Files updated, re-executing server.py...')
-    server_script = os.path.join(SERVER_DIR, 'server.py')
+    log_write('[UPDATE] Files updated, re-executing phoneide_server.py...')
+    server_script = os.path.join(SERVER_DIR, 'phoneide_server.py')
 
     # Ensure working directory is correct before exec
     os.chdir(SERVER_DIR)

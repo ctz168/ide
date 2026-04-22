@@ -53,7 +53,7 @@ $env:PHONEIDE_PORT="8080"; irm ... | iex
 pip install flask flask-cors
 git clone https://github.com/ctz168/ide.git
 cd ide
-python server.py
+python phoneide_server.py
 # 浏览器打开 http://localhost:12345
 ```
 
@@ -62,7 +62,7 @@ python server.py
 pkg install python python-pip
 pip install flask flask-cors
 git clone https://github.com/ctz168/ide.git && cd ide
-python3 server.py
+python3 phoneide_server.py
 ```
 
 **Ubuntu / Debian / WSL：**
@@ -70,7 +70,7 @@ python3 server.py
 sudo apt install python3 python3-pip python3-venv
 pip3 install --break-system-packages flask flask-cors
 git clone https://github.com/ctz168/ide.git && cd ide
-python3 server.py
+python3 phoneide_server.py
 ```
 
 **macOS：**
@@ -78,7 +78,7 @@ python3 server.py
 brew install python
 pip3 install flask flask-cors
 git clone https://github.com/ctz168/ide.git && cd ide
-python3 server.py
+python3 phoneide_server.py
 ```
 
 **Fedora / CentOS：**
@@ -86,7 +86,7 @@ python3 server.py
 sudo dnf install python3 python3-pip
 pip3 install flask flask-cors
 git clone https://github.com/ctz168/ide.git && cd ide
-python3 server.py
+python3 phoneide_server.py
 ```
 
 **Alpine：**
@@ -94,14 +94,14 @@ python3 server.py
 sudo apk add python3 py3-pip
 pip3 install --break-system-packages flask flask-cors
 git clone https://github.com/ctz168/ide.git && cd ide
-python3 server.py
+python3 phoneide_server.py
 ```
 
 ### Docker
 
 ```bash
 docker run -d -p 1239:1239 -v ~/phoneide_workspace:/workspace python:3.12-slim bash -c \
-  "pip install flask flask-cors && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 server.py"
+  "pip install flask flask-cors && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 phoneide_server.py"
 ```
 
 启动后浏览器打开 `http://localhost:12345` 即可使用。
@@ -144,7 +144,7 @@ docker run -d -p 1239:1239 -v ~/phoneide_workspace:/workspace python:3.12-slim b
 
 ```
 ctz168/ide/
-├── server.py              # Flask 入口，注册 7 个 Blueprint
+├── phoneide_server.py              # Flask 入口，注册 7 个 Blueprint
 ├── utils.py               # 共享工具函数、常量、配置管理
 ├── requirements.txt       # Python 依赖 (flask, flask-cors)
 ├── install.sh             # Linux/macOS 全自动安装（安装+启动+打开浏览器）
@@ -317,7 +317,7 @@ LLM API 配置存储在 `~/.phoneide/llm_config.json`：
 ```bash
 cd ide
 git pull
-# 重启 server.py 即可
+# 重启 phoneide_server.py 即可
 ```
 
 **在 PhoneIDE APK 内运行时：**

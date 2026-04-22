@@ -106,7 +106,7 @@ def server_restart():
     log_write('[SERVER] Restart requested, spawning new process...')
 
     # Spawn new server process
-    server_script = os.path.join(SERVER_DIR, 'server.py')
+    server_script = os.path.join(SERVER_DIR, 'phoneide_server.py')
     env = os.environ.copy()
     env['PHONEIDE_WORKSPACE'] = _load_config().get('workspace', WORKSPACE)
     env['PHONEIDE_PORT'] = str(PORT)

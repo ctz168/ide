@@ -306,7 +306,7 @@ try {
 
 # Start server in background
 Write-Info "Starting server..."
-$ServerProcess = Start-Process -FilePath $Python -ArgumentList "server.py" `
+$ServerProcess = Start-Process -FilePath $Python -ArgumentList "phoneide_server.py" `
     -WorkingDirectory $InstallDir `
     -WindowStyle Hidden `
     -PassThru
@@ -349,7 +349,7 @@ if ($Ready) {
     Write-OK "Server is running on port $IDE_PORT (PID: $ServerPID)"
 } else {
     Write-Warn "Server may still be starting on port $IDE_PORT..."
-    Write-Warn "If it doesn't load, try manually: cd $InstallDir && $Python server.py"
+    Write-Warn "If it doesn't load, try manually: cd $InstallDir && $Python phoneide_server.py"
 }
 
 # Open browser
@@ -380,5 +380,5 @@ Write-Host "  PID:      $ServerPID" -ForegroundColor White
 Write-Host "  Dir:      $InstallDir" -ForegroundColor White
 Write-Host ""
 Write-Host "  Stop server:  taskkill /F /PID $ServerPID" -ForegroundColor Yellow
-Write-Host "  Restart:      cd $InstallDir; $Python server.py" -ForegroundColor Yellow
+Write-Host "  Restart:      cd $InstallDir; $Python phoneide_server.py" -ForegroundColor Yellow
 Write-Host ""
