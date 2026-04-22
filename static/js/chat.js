@@ -95,6 +95,22 @@ const ChatManager = (() => {
     // ==================== Todo Panel ====================
     let todoPanelEl = null;
     let currentTodoData = [];
+    let todoPanelCollapsed = false;
+
+    // Global toggle function for the collapse/expand button
+    window._toggleTodoPanel = function() {
+        const body = document.getElementById('ai-todo-panel-body');
+        const btn = document.getElementById('todo-toggle-btn');
+        if (!body) return;
+        todoPanelCollapsed = !todoPanelCollapsed;
+        if (todoPanelCollapsed) {
+            body.classList.add('collapsed');
+            if (btn) btn.textContent = '▸';
+        } else {
+            body.classList.remove('collapsed');
+            if (btn) btn.textContent = '▾';
+        }
+    };
 
     function createOrUpdateTodoPanel(todos) {
         if (Array.isArray(todos)) {
@@ -120,12 +136,12 @@ const ChatManager = (() => {
         let html = '<div class="todo-panel-header">';
         html += '<div class="todo-panel-header-row">';
         html += '<span class="todo-panel-title">📋 Task Plan</span>';
-        html += '<button class="todo-toggle-btn" onclick="event.stopPropagation(); document.getElementById(\'ai-todo-panel-body\').classList.toggle(\'collapsed\'); this.textContent = document.getElementById(\'ai-todo-panel-body\').classList.contains(\'collapsed\') ? \'▸\' : \'▾\'">▾</button>';
+        html += '<button class="todo-toggle-btn" id="todo-toggle-btn" onclick="window._toggleTodoPanel()">' + (todoPanelCollapsed ? '▸' : '▾') + '</button>';
         html += '</div>';
         html += '<span class="todo-panel-progress">' + completed + '/' + total + ' (' + pct + '%)</span>';
         html += '<div class="todo-panel-bar"><div class="todo-panel-bar-fill" style="width:' + pct + '%"></div></div>';
         html += '</div>';
-        html += '<div id="ai-todo-panel-body" class="todo-panel-body">';
+        html += '<div id="ai-todo-panel-body" class="todo-panel-body' + (todoPanelCollapsed ? ' collapsed' : '') + '">';
         currentTodoData.forEach(function(t) {
             const isCompleted = t.status === 'completed';
             const isInProgress = t.status === 'in_progress';
@@ -142,6 +158,7 @@ const ChatManager = (() => {
 
     function hideTodoPanel() {
         currentTodoData = [];
+        todoPanelCollapsed = false;
         if (todoPanelEl) {
             todoPanelEl.style.display = 'none';
         }

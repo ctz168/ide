@@ -412,8 +412,8 @@ AGENT_TOOLS = [
                 'properties': {
                     'path': {
                         'type': 'string',
-                        'description': 'Absolute path to the directory to list. Default: workspace root',
-                        'default': WORKSPACE,
+                        'description': 'Absolute path to the directory to list. Default: project directory',
+                        'default': '.',
                     },
                     'show_hidden': {
                         'type': 'boolean',
@@ -443,8 +443,8 @@ AGENT_TOOLS = [
                     },
                     'path': {
                         'type': 'string',
-                        'description': 'Root directory to search in. Default: workspace root',
-                        'default': WORKSPACE,
+                        'description': 'Root directory to search in. Default: project directory',
+                        'default': '.',
                     },
                     'include': {
                         'type': 'string',
@@ -484,7 +484,7 @@ AGENT_TOOLS = [
                     },
                     'cwd': {
                         'type': 'string',
-                        'description': 'Working directory for the command. Default: workspace root',
+                        'description': 'Working directory for the command. Default: project directory',
                     },
                 },
                 'required': ['command'],
@@ -504,8 +504,8 @@ AGENT_TOOLS = [
                 'properties': {
                     'repo_path': {
                         'type': 'string',
-                        'description': 'Path to the git repository. Default: workspace root',
-                        'default': WORKSPACE,
+                        'description': 'Path to the git repository. Default: project directory',
+                        'default': '.',
                     },
                 },
                 'required': [],
@@ -525,7 +525,7 @@ AGENT_TOOLS = [
                 'properties': {
                     'repo_path': {
                         'type': 'string',
-                        'description': 'Path to the git repository. Default: workspace root',
+                        'description': 'Path to the git repository. Default: project directory',
                     },
                     'staged': {
                         'type': 'boolean',
@@ -558,7 +558,7 @@ AGENT_TOOLS = [
                     },
                     'repo_path': {
                         'type': 'string',
-                        'description': 'Path to the git repository. Default: workspace root',
+                        'description': 'Path to the git repository. Default: project directory',
                     },
                     'add_all': {
                         'type': 'boolean',
@@ -635,7 +635,7 @@ AGENT_TOOLS = [
                     },
                     'path': {
                         'type': 'string',
-                        'description': 'Root directory to search in. Default: workspace root',
+                        'description': 'Root directory to search in. Default: project directory',
                     },
                     'context_lines': {
                         'type': 'integer',
@@ -752,8 +752,8 @@ AGENT_TOOLS = [
                     },
                     'repo_path': {
                         'type': 'string',
-                        'description': 'Path to the git repository. Default: workspace root',
-                        'default': WORKSPACE,
+                        'description': 'Path to the git repository. Default: project directory',
+                        'default': '.',
                     },
                 },
                 'required': [],
@@ -776,8 +776,8 @@ AGENT_TOOLS = [
                     },
                     'repo_path': {
                         'type': 'string',
-                        'description': 'Path to the git repository. Default: workspace root',
-                        'default': WORKSPACE,
+                        'description': 'Path to the git repository. Default: project directory',
+                        'default': '.',
                     },
                 },
                 'required': ['branch'],
@@ -956,7 +956,7 @@ AGENT_TOOLS = [
                     },
                     'path': {
                         'type': 'string',
-                        'description': 'Base directory to search in. Defaults to workspace root.',
+                        'description': 'Base directory to search in. Defaults to project directory.',
                     },
                 },
                 'required': ['pattern'],
@@ -982,7 +982,7 @@ AGENT_TOOLS = [
                     },
                     'path': {
                         'type': 'string',
-                        'description': 'Directory or file to search in. Defaults to workspace root.',
+                        'description': 'Directory or file to search in. Defaults to project directory.',
                     },
                 },
                 'required': ['symbol'],
@@ -1007,7 +1007,7 @@ AGENT_TOOLS = [
                     },
                     'path': {
                         'type': 'string',
-                        'description': 'Directory or file to search in. Defaults to workspace root.',
+                        'description': 'Directory or file to search in. Defaults to project directory.',
                     },
                     'include_tests': {
                         'type': 'boolean',
@@ -1187,6 +1187,21 @@ AGENT_TOOLS = [
 ]
 
 # ==================== Security Helpers ====================
+def _get_project_dir():
+    """Get the current project directory (or workspace if no project is open)."""
+    try:
+        from utils import load_config
+        config = load_config()
+        ws = config.get('workspace', WORKSPACE)
+        project = config.get('project', None)
+        if project:
+            candidate = os.path.realpath(os.path.join(ws, project))
+            if os.path.isdir(candidate):
+                return candidate
+        return os.path.realpath(ws)
+    except Exception:
+        return os.path.realpath(WORKSPACE)
+
 def _validate_path(path):
     """Ensure path stays within WORKSPACE. Returns resolved absolute path or raises ValueError."""
     real_workspace = os.path.realpath(WORKSPACE)
@@ -1548,7 +1563,7 @@ def _tool_edit_file(args):
         return f'Error editing file {path}: {e}'
 
 def _tool_list_directory(args):
-    path = _validate_path(args.get('path', WORKSPACE))
+    path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     show_hidden = args.get('show_hidden', False)
     verbose = args.get('verbose', False)
     if not os.path.isdir(path):
@@ -1578,7 +1593,7 @@ def _tool_list_directory(args):
 
 def _tool_search_files(args):
     pattern = args['pattern']
-    search_path = _validate_path(args.get('path', WORKSPACE))
+    search_path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     include = args.get('include', None)
     max_results = args.get('max_results', 50)
     try:
@@ -1760,7 +1775,7 @@ def _tool_list_packages(args):
 
 def _tool_grep_code(args):
     pattern = args['pattern']
-    search_path = _validate_path(args.get('path', WORKSPACE))
+    search_path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     context = args.get('context_lines', 2)
     include = args.get('include', None)
     exclude = args.get('exclude', None)
@@ -2090,7 +2105,7 @@ def _tool_server_logs(args):
 def _tool_glob_files(args):
     """Fast file pattern matching using glob."""
     pattern = args['pattern']
-    search_path = _validate_path(args.get('path', WORKSPACE))
+    search_path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     if not os.path.isdir(search_path):
         return f'Error: Directory not found: {search_path}'
 
@@ -2823,7 +2838,7 @@ def _tool_run_tests(args):
 def _tool_find_definition(args):
     """Find definition of a symbol using AST (tree-sitter) semantic analysis."""
     symbol = args['symbol']
-    search_path = _validate_path(args.get('path', WORKSPACE))
+    search_path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     if not os.path.isdir(search_path) and not os.path.isfile(search_path):
         return f'Error: Path not found: {search_path}'
 
@@ -2882,7 +2897,7 @@ def _tool_find_references(args):
     Falls back to regex for unsupported file types.
     """
     symbol = args['symbol']
-    search_path = _validate_path(args.get('path', WORKSPACE))
+    search_path = _validate_path(args.get('path', '.') if args.get('path', '.') != '.' else _get_project_dir())
     if not os.path.isdir(search_path) and not os.path.isfile(search_path):
         return f'Error: Path not found: {search_path}'
 
@@ -3750,16 +3765,9 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     # Semi-static: cached 30s, treated as dynamic for provider cache
     _knowledge_loaded = []  # track which files were loaded (for logging/SSE)
     _phoneide_dirs_to_check = []
-    # 1. Project directory
+    # Only check project directory for .phoneide/ knowledge (not workspace root or server dir)
     if _project_dir:
         _phoneide_dirs_to_check.append(_project_dir)
-    # 2. Workspace root (if different from project_dir)
-    if os.path.realpath(_ws) != _project_dir:
-        _phoneide_dirs_to_check.append(os.path.realpath(_ws))
-    # 3. SERVER_DIR's parent (for PhoneIDE self-development)
-    _server_parent = os.path.dirname(SERVER_DIR)
-    if _server_parent not in [os.path.realpath(d) for d in _phoneide_dirs_to_check]:
-        _phoneide_dirs_to_check.append(_server_parent)
 
     # Check cache first (30s TTL)
     _now = time.time()

@@ -274,24 +274,57 @@ def list_packages():
     config = load_config()
     venv_path = config.get('venv_path', '')
     if venv_path and os.path.exists(venv_path):
+        # Try multiple strategies to find pip in the venv
+        pip_candidates = []
         if IS_WINDOWS:
-            pip = os.path.join(venv_path, 'Scripts', 'pip.exe')
+            pip_candidates = [
+                os.path.join(venv_path, 'Scripts', 'pip.exe'),
+                os.path.join(venv_path, 'Scripts', 'pip3.exe'),
+                os.path.join(venv_path, 'Scripts', 'python.exe') + ' -m pip',
+            ]
         else:
-            pip = os.path.join(venv_path, 'bin', 'pip')
-        if not os.path.exists(pip):
-            pip = get_default_compiler() + ' -m pip'
+            pip_candidates = [
+                os.path.join(venv_path, 'bin', 'pip'),
+                os.path.join(venv_path, 'bin', 'pip3'),
+                os.path.join(venv_path, 'bin', 'python') + ' -m pip',
+                os.path.join(venv_path, 'bin', 'python3') + ' -m pip',
+            ]
+
+        for pip_cmd in pip_candidates:
+            # For "python -m pip" style, the file check doesn't apply
+            is_m_pip = ' -m pip' in pip_cmd
+            if not is_m_pip and not os.path.exists(pip_cmd):
+                continue
+            try:
+                result = subprocess.run(
+                    f'{pip_cmd} list --format=json', shell=True,
+                    capture_output=True, text=True, timeout=30,
+                    encoding='utf-8', errors='replace'
+                )
+                if result.returncode == 0:
+                    try:
+                        packages = json.loads(result.stdout)
+                        return jsonify({'packages': packages})
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+            except Exception:
+                continue
+
+        # Last resort: try system python with venv's site-packages
         try:
-            result = subprocess.run(
-                f'{pip} list --format=json', shell=True,
-                capture_output=True, text=True, timeout=30,
-                encoding='utf-8', errors='replace'
-            )
-            if result.returncode == 0:
-                try:
-                    packages = json.loads(result.stdout)
-                    return jsonify({'packages': packages})
-                except:
-                    pass
+            venv_python = os.path.join(venv_path, 'bin', 'python3') if not IS_WINDOWS else os.path.join(venv_path, 'Scripts', 'python.exe')
+            if os.path.exists(venv_python):
+                result = subprocess.run(
+                    [venv_python, '-m', 'pip', 'list', '--format=json'],
+                    capture_output=True, text=True, timeout=30,
+                    encoding='utf-8', errors='replace'
+                )
+                if result.returncode == 0:
+                    try:
+                        packages = json.loads(result.stdout)
+                        return jsonify({'packages': packages})
+                    except (json.JSONDecodeError, ValueError):
+                        pass
         except Exception:
             pass
     return jsonify({'packages': []})
