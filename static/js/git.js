@@ -934,6 +934,51 @@ const GitManager = (() => {
     }
 
     /**
+     * Restore a file to its state in a specific commit (not HEAD).
+     * Uses git checkout <commit> -- <filepath>.
+     */
+    async function restoreFileFromCommit(filepath, commitHash) {
+        const shortHash = commitHash ? commitHash.substring(0, 7) : 'HEAD';
+        const fileName = filepath.split('/').pop();
+        const confirmed = await confirmDialog(
+            '回滚文件修改',
+            `确定要将 "${fileName}" 回滚到版本 ${shortHash} 的状态吗？\n当前修改将被丢弃。`
+        );
+        if (!confirmed) return;
+
+        try {
+            const gitCwd = getGitCwd();
+            const resp = await fetch('/api/git/checkout-commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ref: commitHash, filepath: filepath, path: gitCwd })
+            });
+            if (!resp.ok) {
+                const errorMsg = await parseError(resp, '回滚失败');
+                throw new Error(errorMsg);
+            }
+            const data = await resp.json();
+            if (data.ok) {
+                gitLog(`checkout ${shortHash} -- ${filepath}`, data);
+                showToast(`已将 "${fileName}" 回滚到 ${shortHash}`, 'success');
+            } else {
+                throw new Error(data.error || '回滚失败');
+            }
+            await refresh();
+
+            // Close the diff overlay if open
+            const diffOverlay = document.getElementById('diff-overlay');
+            if (diffOverlay) diffOverlay.remove();
+
+            // Refresh file list
+            if (window.FileManager) await window.FileManager.refresh();
+            return data;
+        } catch (err) {
+            showToast('回滚失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
      * Smart revert/rollback for a changed file.
      * - Untracked (new) files → delete them (git clean equivalent)
      * - Modified files → git checkout to restore HEAD version
@@ -1423,7 +1468,7 @@ const GitManager = (() => {
 
             if (window.EditorManager && typeof window.EditorManager.showDiff === 'function') {
                 const label = `${hash.substring(0, 7)} ${filepath}`;
-                window.EditorManager.showDiff(diffText, label);
+                window.EditorManager.showDiff(diffText, label, { readOnly: true });
             } else {
                 showToast(diffText.substring(0, 500), 'info');
             }
@@ -2070,6 +2115,7 @@ const GitManager = (() => {
         diff,
         gitInit,
         restoreFile,
+        restoreFileFromCommit,
         revertChange,
         checkoutCommit,
         showCommitFileDiff,

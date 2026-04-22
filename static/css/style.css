@@ -2770,7 +2770,7 @@ button, .file-item, .search-result-item, .git-change-item {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     width: 100%;
-    max-width: 600px;
+    max-width: 95vw;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
@@ -2924,6 +2924,81 @@ button, .file-item, .search-result-item, .git-change-item {
 [data-theme="claude"] .diff-line.diff-meta {
     color: #C4621A;
     background: rgba(196, 98, 26, 0.08);
+}
+
+/* Diff file sections (grouped by file) */
+.diff-file-section {
+    margin-bottom: 2px;
+}
+
+.diff-file-section:last-child {
+    margin-bottom: 0;
+}
+
+.diff-file-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: var(--bg-hover);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.diff-file-section:first-child .diff-file-header {
+    border-top: none;
+}
+
+.diff-file-path {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.diff-hunk-rollback-btn {
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    background: none;
+    color: var(--text-secondary);
+    font-size: 10px;
+    cursor: pointer;
+    border-radius: 4px;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    margin-left: 8px;
+    transition: all 0.15s ease;
+}
+
+.diff-hunk-rollback-btn:hover,
+.diff-hunk-rollback-btn:active {
+    background: rgba(231, 76, 60, 0.15);
+    color: #E74C3C;
+    border-color: #E74C3C;
+}
+
+.diff-file-lines {
+    /* Container for diff lines belonging to one file */
+}
+
+.diff-line.diff-file-header-line {
+    /* "diff --git a/... b/..." lines are less prominent */
+    color: var(--text-muted);
+    font-size: 10px;
+    padding: 2px 8px;
+    min-height: 14px;
 }
 
 /* ==================== Browser Preview Panel ==================== */

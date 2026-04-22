@@ -1485,13 +1485,18 @@ const EditorManager = (() => {
      * @param {string} diffText - unified diff text
      * @param {string} title - diff title (filename or 'All changes')
      */
-    function showDiff(diffText, title) {
+    function showDiff(diffText, title, options) {
         if (!diffText) {
             showToast('No diff to display', 'info');
             return;
         }
 
         title = title || 'Diff';
+        options = options || {};
+        // options.readOnly = true → commit diff (no rollback buttons)
+        // options.commitHash → if set, rollback restores from this commit instead of HEAD
+        const isReadOnly = options.readOnly || false;
+        const commitHash = options.commitHash || null;
 
         // Create diff overlay
         const overlay = document.createElement('div');
@@ -1501,52 +1506,61 @@ const EditorManager = (() => {
         const container = document.createElement('div');
         container.className = 'diff-container';
 
-        // Header
+        // Header — no restore button here anymore (moved to per-file sections)
         const header = document.createElement('div');
         header.className = 'diff-header';
-        const isFileDiff = title && title !== 'All changes' && title !== 'Diff';
-        const restoreBtnHTML = isFileDiff
-            ? `<button class="diff-restore-btn" data-diff-filepath="${escapeHTML(title)}" title="恢复到该版本">⏪ 恢复</button>`
-            : '';
         header.innerHTML = `
             <span class="diff-title">🔀 ${escapeHTML(title)}</span>
             <div class="diff-actions">
-                ${restoreBtnHTML}
                 <button class="diff-close-btn" title="Close">✕</button>
             </div>
         `;
         container.appendChild(header);
 
+        // Parse diff text into file groups
+        const fileGroups = parseDiffIntoFileGroups(diffText);
+
         // Diff content
         const content = document.createElement('div');
         content.className = 'diff-content';
 
-        const lines = diffText.split('\n');
-        let html = '';
+        if (fileGroups.length === 0) {
+            // Fallback: raw diff without file grouping
+            content.innerHTML = renderRawDiff(diffText);
+        } else {
+            for (const group of fileGroups) {
+                const fileSection = document.createElement('div');
+                fileSection.className = 'diff-file-section';
 
-        for (const line of lines) {
-            let escaped = escapeHTML(line);
-            if (escaped === '') {
-                html += '<div class="diff-line diff-empty"></div>';
-            } else if (escaped.startsWith('@@')) {
-                html += `<div class="diff-line diff-hunk">${escaped}</div>`;
-            } else if (escaped.startsWith('---') || escaped.startsWith('+++')) {
-                html += `<div class="diff-line diff-meta">${escaped}</div>`;
-            } else if (escaped.startsWith('+')) {
-                // Remove the leading + and highlight
-                const code = escaped.substring(1);
-                html += `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
-            } else if (escaped.startsWith('-')) {
-                const code = escaped.substring(1);
-                html += `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
-            } else {
-                html += `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+                // File header with path and rollback button
+                const fileHeader = document.createElement('div');
+                fileHeader.className = 'diff-file-header';
+
+                const filePath = group.filePath;
+                const hasChanges = group.lines.some(l => l.type === 'add' || l.type === 'del');
+
+                let fileHeaderHTML = `<span class="diff-file-path">${escapeHTML(filePath)}</span>`;
+                if (hasChanges && !isReadOnly) {
+                    fileHeaderHTML += `<button class="diff-hunk-rollback-btn" data-filepath="${escapeHTML(filePath)}" ${commitHash ? `data-commit="${escapeHTML(commitHash)}"` : ''} title="回滚此文件的修改">⏪ 回滚</button>`;
+                }
+                fileHeader.innerHTML = fileHeaderHTML;
+                fileSection.appendChild(fileHeader);
+
+                // Diff lines for this file
+                const linesContainer = document.createElement('div');
+                linesContainer.className = 'diff-file-lines';
+                let linesHTML = '';
+                for (const line of group.lines) {
+                    linesHTML += renderDiffLine(line);
+                }
+                linesContainer.innerHTML = linesHTML;
+                fileSection.appendChild(linesContainer);
+
+                content.appendChild(fileSection);
             }
         }
 
-        content.innerHTML = html;
         container.appendChild(content);
-
         overlay.appendChild(container);
         document.body.appendChild(overlay);
 
@@ -1559,16 +1573,28 @@ const EditorManager = (() => {
             if (e.target === overlay) overlay.remove();
         });
 
-        // Restore file handler
-        const restoreBtn = header.querySelector('.diff-restore-btn');
-        if (restoreBtn) {
-            restoreBtn.addEventListener('click', () => {
-                const filepath = restoreBtn.dataset.diffFilepath;
-                if (filepath && window.GitManager && window.GitManager.restoreFile) {
-                    window.GitManager.restoreFile(filepath);
+        // Rollback button handlers — one per file section
+        const rollbackBtns = content.querySelectorAll('.diff-hunk-rollback-btn');
+        rollbackBtns.forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const filepath = btn.dataset.filepath;
+                const commit = btn.dataset.commit || null;
+                if (!filepath) return;
+
+                if (window.GitManager) {
+                    if (commit) {
+                        // Restore from specific commit
+                        await window.GitManager.restoreFileFromCommit(filepath, commit);
+                    } else {
+                        // Restore from HEAD
+                        await window.GitManager.restoreFile(filepath);
+                    }
+                    // After restore, refresh and close diff overlay
+                    const diffOverlay = document.getElementById('diff-overlay');
+                    if (diffOverlay) diffOverlay.remove();
                 }
             });
-        }
+        });
 
         // Escape key
         const escHandler = (e) => {
@@ -1578,6 +1604,118 @@ const EditorManager = (() => {
             }
         };
         document.addEventListener('keydown', escHandler);
+    }
+
+    /**
+     * Parse unified diff text into file groups.
+     * Each group has: { filePath, lines: [{text, type}] }
+     * Types: 'meta', 'hunk', 'add', 'del', 'ctx', 'empty', 'file-header'
+     */
+    function parseDiffIntoFileGroups(diffText) {
+        const groups = [];
+        let currentGroup = null;
+        const lines = diffText.split('\n');
+
+        for (const line of lines) {
+            // File boundary: "diff --git a/path b/path"
+            if (line.startsWith('diff --git ')) {
+                // Extract file path from "diff --git a/path b/path"
+                const match = line.match(/^diff --git (?:a\/.+? )?b\/(.+)$/);
+                const filePath = match ? match[1] : line.replace(/^diff --git /, '');
+                currentGroup = { filePath, lines: [] };
+                groups.push(currentGroup);
+                currentGroup.lines.push({ text: line, type: 'file-header' });
+                continue;
+            }
+
+            // If we haven't found a file header yet, create a default group
+            if (!currentGroup) {
+                // Check if this looks like it starts with --- / +++ (single file diff)
+                if (line.startsWith('--- a/') || line.startsWith('--- ')) {
+                    const match = line.match(/^--- (?:a\/)?(.+)$/);
+                    const filePath = match ? match[1] : 'unknown';
+                    currentGroup = { filePath, lines: [] };
+                    groups.push(currentGroup);
+                } else {
+                    // No file grouping possible, return empty to trigger raw fallback
+                    return [];
+                }
+            }
+
+            // Categorize line
+            if (line === '') {
+                currentGroup.lines.push({ text: line, type: 'empty' });
+            } else if (line.startsWith('@@')) {
+                currentGroup.lines.push({ text: line, type: 'hunk' });
+            } else if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+                currentGroup.lines.push({ text: line, type: 'meta' });
+            } else if (line.startsWith('+')) {
+                currentGroup.lines.push({ text: line, type: 'add' });
+            } else if (line.startsWith('-')) {
+                currentGroup.lines.push({ text: line, type: 'del' });
+            } else if (line.startsWith('index ') || line.startsWith('new file ') || line.startsWith('deleted ') || line.startsWith('old mode') || line.startsWith('new mode') || line.startsWith('Binary files') || line.startsWith('similarity ')) {
+                currentGroup.lines.push({ text: line, type: 'meta' });
+            } else {
+                currentGroup.lines.push({ text: line, type: 'ctx' });
+            }
+        }
+
+        return groups;
+    }
+
+    /**
+     * Render a single diff line as HTML
+     */
+    function renderDiffLine(lineObj) {
+        const escaped = escapeHTML(lineObj.text);
+        switch (lineObj.type) {
+            case 'empty':
+                return '<div class="diff-line diff-empty"></div>';
+            case 'hunk':
+                return `<div class="diff-line diff-hunk">${escaped}</div>`;
+            case 'meta':
+                return `<div class="diff-line diff-meta">${escaped}</div>`;
+            case 'file-header':
+                return `<div class="diff-line diff-file-header-line">${escaped}</div>`;
+            case 'add': {
+                const code = escaped.substring(1);
+                return `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
+            }
+            case 'del': {
+                const code = escaped.substring(1);
+                return `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
+            }
+            case 'ctx':
+            default:
+                return `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+        }
+    }
+
+    /**
+     * Fallback: render raw diff without file grouping
+     */
+    function renderRawDiff(diffText) {
+        const lines = diffText.split('\n');
+        let html = '';
+        for (const line of lines) {
+            const escaped = escapeHTML(line);
+            if (escaped === '') {
+                html += '<div class="diff-line diff-empty"></div>';
+            } else if (escaped.startsWith('@@')) {
+                html += `<div class="diff-line diff-hunk">${escaped}</div>`;
+            } else if (escaped.startsWith('---') || escaped.startsWith('+++')) {
+                html += `<div class="diff-line diff-meta">${escaped}</div>`;
+            } else if (escaped.startsWith('+')) {
+                const code = escaped.substring(1);
+                html += `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
+            } else if (escaped.startsWith('-')) {
+                const code = escaped.substring(1);
+                html += `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
+            } else {
+                html += `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+            }
+        }
+        return html;
     }
 
     /**
