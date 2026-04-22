@@ -78,17 +78,19 @@ DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assista
 You have access to tools that let you read/write files, execute code, search projects, manage git, and more.
 
 ## Available Tools
-You have **33 tools** available. When you need to perform an action, call the appropriate tool using function calling.
+You have **35 tools** available. When you need to perform an action, call the appropriate tool using function calling.
 For multi-step tasks, think step by step and use tools in sequence.
 
-### File & Code Tools (25)
+### File & Code Tools (27)
 - `read_file` / `write_file` / `edit_file` -- Read, create, or modify files
 - `list_directory` / `search_files` / `grep_code` / `glob_files` -- Browse and search the project
 - `run_command` -- Execute shell commands (Python, bash, etc.)
 - `file_info` / `create_directory` / `delete_path` / `move_file` -- File system operations
 - `append_file` -- Append content to an existing file
 - `file_structure` -- Get a tree-structured overview of a directory
-- `find_definition` / `find_references` -- Jump to symbol definition or find all usages (AST-based)
+- `find_definition` / `find_references` -- **PREFERRED** Jump to symbol definition or find all usages (AST/tree-sitter semantic analysis). Use these BEFORE grep_code for navigation — they understand scopes, skip strings/comments, and are more precise.
+- `run_linter` -- Auto-detect project type and run the appropriate linter; returns structured issue list
+- `run_tests` -- Auto-detect test framework and run tests; returns pass/fail summary with failure details
 - `git_status` / `git_diff` / `git_commit` / `git_log` / `git_checkout` -- Full Git workflow
 - `install_package` / `list_packages` -- Python/npm package management
 - `web_search` / `web_fetch` -- Search the web and fetch page content
@@ -176,6 +178,28 @@ The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You ca
 - NEVER assume your changes work without verification
 - NEVER skip error checking after running commands
 
+## Code Navigation — PREFERRED Tools (IMPORTANT)
+**When navigating code, ALWAYS prefer `find_definition` and `find_references` over `grep_code`/`search_files`.**
+These tools use tree-sitter AST analysis which:
+- Understands scopes, classes, and function boundaries
+- Skips string literals and comments (no false positives)
+- Returns precise definition locations with context
+- Finds semantic references (not just text matches)
+
+**When to use each navigation tool:**
+- Need to find where a function/class is defined? → `find_definition`
+- Need to find all usages of a symbol? → `find_references`
+- Need to understand a file's structure? → `file_structure`
+- Need to search for text patterns in non-code files? → `grep_code` or `search_files`
+- Only use `grep_code`/`search_files` for code when `find_definition`/`find_references` returns no results
+
+## Lint & Test Workflow (RECOMMENDED)
+**After modifying code, use `run_linter` and `run_tests` to verify your changes automatically.**
+- `run_linter` auto-detects the project type (Python/JS/TS/Go) and runs the appropriate linter
+- `run_tests` auto-detects the test framework (pytest/jest/vitest/go test) and runs relevant tests
+- edit_file/write_file can auto-trigger lint checks (configurable)
+- These give structured, parseable feedback — much better than raw command output
+
 ## Important Rules
 1. **ALWAYS use `todo_write` BEFORE starting any complex task (3+ steps)** — plan first, then execute
 2. **Update todo status in real-time** — mark items in_progress when starting, completed when done
@@ -184,17 +208,19 @@ The IDE has a built-in **preview iframe** (bottom panel > "Preview" tab). You ca
 5. When modifying code, use edit_file for targeted changes instead of rewriting entire files
 6. After executing commands, check the output for errors before proceeding
 7. For large files, use offset_line and limit_lines to read specific sections
-8. When searching, use specific patterns rather than broad terms
+8. **PREFER `find_definition`/`find_references` over `grep_code` for code navigation** — they use AST analysis and are more precise
 9. If a tool fails, analyze the error and try a different approach
 10. Always explain what you're doing and why before taking action
 11. Respect the workspace boundary - all file operations are scoped to the workspace
 12. When running shell commands, be cautious with destructive operations
 13. For browser tools, the preview must be on the "Preview" tab with a page loaded
-14. **ALWAYS test your code changes** — run the code, check for errors, and verify the fix works before reporting completion
+14. **ALWAYS test your code changes** — use `run_linter` and `run_tests` after modifications, or manually verify
 15. **Use `server_logs` after backend changes** to check for server-side errors
 16. **Use browser tools after frontend changes** to verify the UI renders and functions correctly
 17. **Use `delegate_task` for complex subtasks** — don't try to do everything in one conversation turn
 18. **Use `parallel_tasks` when 2+ subtasks are independent** — save time by running them concurrently
+19. **Use `run_linter` after editing files** to catch issues early — it's faster than running commands manually
+20. **Use `run_tests` to verify changes** — auto-detects the framework, no need to remember the exact command
 
 ## Important: Platform Awareness
 - Use the system environment info below (injected dynamically) to choose correct shell commands and paths.
@@ -324,7 +350,11 @@ AGENT_TOOLS = [
                 'it with new_text. If old_text appears multiple times, all occurrences will be replaced - be '
                 'specific with surrounding context to avoid unintended changes. Returns the number of replacements made. '
                 'For multiple edits to the same file, use the "replacements" array parameter — all replacements are '
-                'applied atomically (all succeed or all fail, no partial changes).'
+                'applied atomically (all succeed or all fail, no partial changes).\n'
+                'TIPS for reliable matching:\n'
+                '- Use line_hint to narrow the search scope (e.g. the approximate line number where old_text appears)\n'
+                '- Use fuzzy_match=true when whitespace might differ slightly (trailing spaces, tab vs spaces)\n'
+                '- On match failure, the tool returns nearby context to help you correct the old_text'
             ),
             'parameters': {
                 'type': 'object',
@@ -341,14 +371,24 @@ AGENT_TOOLS = [
                         'type': 'string',
                         'description': 'Replacement text',
                     },
+                    'line_hint': {
+                        'type': 'integer',
+                        'description': 'Approximate line number where old_text is expected (1-based). Narrows search scope and speeds up matching. Helpful for large files.',
+                    },
+                    'fuzzy_match': {
+                        'type': 'boolean',
+                        'description': 'If true, tolerate minor whitespace differences (trailing spaces, tab/space mixing, trailing newlines). Default: false (exact match)',
+                        'default': False,
+                    },
                     'replacements': {
                         'type': 'array',
-                        'description': 'Array of {old_text, new_text} objects for atomic multi-edit. All applied or none. Mutually exclusive with old_text/new_text.',
+                        'description': 'Array of {old_text, new_text, line_hint?} objects for atomic multi-edit. All applied or none. Mutually exclusive with old_text/new_text.',
                         'items': {
                             'type': 'object',
                             'properties': {
                                 'old_text': {'type': 'string', 'description': 'Exact text to search for'},
                                 'new_text': {'type': 'string', 'description': 'Replacement text'},
+                                'line_hint': {'type': 'integer', 'description': 'Approximate line number hint (1-based)'},
                             },
                             'required': ['old_text', 'new_text'],
                         },
@@ -999,6 +1039,76 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── Quality Assurance Tools ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'run_linter',
+            'description': (
+                'Run a linter on the project or a specific file. Auto-detects the project type and appropriate linter:\n'
+                '- Python: ruff (preferred), flake8, pylint (tries in order)\n'
+                '- JavaScript/TypeScript: eslint (if configured), otherwise skips\n'
+                '- Go: go vet\n'
+                'Returns a structured list of issues with file, line, column, severity, and message.\n'
+                'Use this after editing code to catch issues early — much faster than manual run_command.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {
+                        'type': 'string',
+                        'description': 'File or directory to lint. Defaults to the current project directory.',
+                    },
+                    'linter': {
+                        'type': 'string',
+                        'description': 'Force a specific linter (e.g. "ruff", "flake8", "eslint", "go_vet"). Default: auto-detect.',
+                    },
+                    'severity': {
+                        'type': 'string',
+                        'enum': ['all', 'error', 'warning'],
+                        'description': 'Minimum severity to report. "error" shows only errors, "warning" shows errors+warnings, "all" shows everything. Default: "warning"',
+                    },
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'run_tests',
+            'description': (
+                'Run tests in the project. Auto-detects the test framework:\n'
+                '- Python: pytest (preferred), unittest\n'
+                '- JavaScript/TypeScript: jest, vitest, mocha (tries in order)\n'
+                '- Go: go test\n'
+                'Returns a structured summary: total tests, passed, failed, and details of each failure.\n'
+                'Use this to verify your code changes work correctly.'
+            ),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {
+                        'type': 'string',
+                        'description': 'Directory or specific test file to run. Defaults to the project directory.',
+                    },
+                    'framework': {
+                        'type': 'string',
+                        'description': 'Force a specific test framework (e.g. "pytest", "jest", "go_test"). Default: auto-detect.',
+                    },
+                    'filter': {
+                        'type': 'string',
+                        'description': 'Test name filter/pattern (e.g. "test_login", "UserModel"). Runs only matching tests.',
+                    },
+                    'verbose': {
+                        'type': 'boolean',
+                        'description': 'Show verbose output including passing test names. Default: false',
+                    },
+                },
+                'required': [],
+            },
+        },
+    },
     # ── Sub-Agent Tools ──
     {
         'type': 'function',
@@ -1168,13 +1278,119 @@ def _tool_write_file(args):
                 project_index.index_file(path, content.encode('utf-8'))
             except Exception:
                 pass
-        return f'File written successfully: {path} ({os.path.getsize(path)} bytes)'
+        
+        # Auto-lint check for source files (configurable via .phoneide/rules.md)
+        lint_result = ''
+        if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            lint_result = _auto_lint_check(path)
+        
+        base_msg = f'File written successfully: {path} ({os.path.getsize(path)} bytes)'
+        if lint_result:
+            return base_msg + '\n\n' + lint_result
+        return base_msg
     except Exception as e:
         return f'Error writing file {path}: {e}'
+
+def _normalize_whitespace(text):
+    """Normalize whitespace for fuzzy matching: strip trailing spaces per line, normalize line endings."""
+    lines = text.split('\n')
+    return '\n'.join(line.rstrip() for line in lines)
+
+def _find_text_in_content(content, old_text, line_hint=None, fuzzy_match=False):
+    """Find old_text in content with optional line_hint and fuzzy_match support.
+    
+    Returns (found_text, start_pos, line_number) or None if not found.
+    - found_text: the actual matched text in the file (may differ from old_text with fuzzy_match)
+    - start_pos: character offset in content
+    - line_number: 1-based line number of the match
+    """
+    if fuzzy_match:
+        # Normalize both content and old_text for fuzzy comparison
+        norm_old = _normalize_whitespace(old_text)
+        norm_content = _normalize_whitespace(content)
+        
+        # Try normalized match first
+        idx = norm_content.find(norm_old)
+        if idx == -1:
+            return None
+        
+        # Map normalized position back to original content
+        # Count characters up to idx in normalized content to find the original position
+        norm_lines = norm_content.split('\n')
+        orig_lines = content.split('\n')
+        
+        # Find which line the match starts on
+        char_count = 0
+        match_line = 0
+        for i, line in enumerate(norm_lines):
+            if char_count + len(line) + (1 if i > 0 else 0) > idx:
+                match_line = i
+                break
+            char_count += len(line) + (1 if i > 0 else 0)
+        else:
+            match_line = len(norm_lines) - 1
+        
+        # Reconstruct the matched text from original lines
+        old_text_lines = old_text.split('\n')
+        num_lines = len(old_text_lines)
+        actual_text = '\n'.join(orig_lines[match_line:match_line + num_lines])
+        
+        # Calculate start position in original content
+        start_pos = sum(len(orig_lines[i]) + 1 for i in range(match_line))
+        
+        return (actual_text, start_pos, match_line + 1)
+    
+    # Exact match
+    if line_hint and line_hint > 0:
+        # Narrow search to a window around line_hint
+        lines = content.split('\n')
+        hint_idx = max(0, line_hint - 1)  # Convert to 0-based
+        window = 50  # Search ±50 lines around hint
+        search_start_line = max(0, hint_idx - window)
+        search_end_line = min(len(lines), hint_idx + window)
+        
+        # First try exact match in the window
+        window_content = '\n'.join(lines[search_start_line:search_end_line])
+        idx = window_content.find(old_text)
+        if idx != -1:
+            # Map back to full content position
+            start_pos = sum(len(lines[i]) + 1 for i in range(search_start_line)) + idx
+            # Find line number
+            before_match = content[:start_pos]
+            line_num = before_match.count('\n') + 1
+            return (old_text, start_pos, line_num)
+        
+        # Fallback: try in full content
+        idx = content.find(old_text)
+        if idx != -1:
+            line_num = content[:idx].count('\n') + 1
+            return (old_text, idx, line_num)
+        return None
+    
+    # Standard search
+    idx = content.find(old_text)
+    if idx != -1:
+        line_num = content[:idx].count('\n') + 1
+        return (old_text, idx, line_num)
+    return None
+
+def _get_context_around_line(content, line_number, context_lines=5):
+    """Get context around a specific line number to help AI correct failed matches."""
+    lines = content.split('\n')
+    target_idx = max(0, line_number - 1)  # 0-based
+    start = max(0, target_idx - context_lines)
+    end = min(len(lines), target_idx + context_lines + 1)
+    result_lines = []
+    for i in range(start, end):
+        marker = ' →' if i == target_idx else '  '
+        result_lines.append(f'{marker} {i+1:>5}\t{lines[i]}')
+    return '\n'.join(result_lines)
 
 def _tool_edit_file(args):
     path = _validate_path(args['path'])
     replacements = args.get('replacements')
+    fuzzy_match = args.get('fuzzy_match', False)
+    line_hint = args.get('line_hint')
     try:
         if not os.path.isfile(path):
             return f'Error: File not found: {path}'
@@ -1189,16 +1405,29 @@ def _tool_edit_file(args):
             for i, rep in enumerate(replacements):
                 old_text = rep.get('old_text', '')
                 new_text = rep.get('new_text', '')
+                rep_line_hint = rep.get('line_hint')
                 if not old_text:
                     errors.append(f'Replacement {i+1}: missing old_text')
                     continue
-                count = content.count(old_text)
-                if count == 0:
-                    errors.append(f'Replacement {i+1}: old_text not found')
+                
+                match_result = _find_text_in_content(content, old_text, 
+                                                      line_hint=rep_line_hint, 
+                                                      fuzzy_match=fuzzy_match)
+                if match_result is None:
+                    # Provide context to help AI fix the match
+                    hint_line = rep_line_hint or 1
+                    context = _get_context_around_line(content, hint_line)
+                    errors.append(f'Replacement {i+1}: old_text not found. Context around line {hint_line}:\n{context}')
                     continue
-                if count > 1:
-                    errors.append(f'Replacement {i+1}: old_text found {count} times (ambiguous)')
-                content = content.replace(old_text, new_text, 1)
+                
+                actual_text, start_pos, match_line = match_result
+                # Check for ambiguous matches
+                remaining = content[start_pos + len(actual_text):]
+                second_match = _find_text_in_content(remaining, old_text, fuzzy_match=fuzzy_match)
+                if second_match is not None:
+                    errors.append(f'Replacement {i+1}: old_text found at multiple locations (line {match_line} and later) — ambiguous')
+                
+                content = content[:start_pos] + new_text + content[start_pos + len(actual_text):]
                 total_replacements += 1
 
             if errors:
@@ -1245,17 +1474,46 @@ def _tool_edit_file(args):
                     project_index.index_file(path, content.encode('utf-8'))
                 except Exception:
                     pass
-            return f'MultiEdit applied to {path}: {total_replacements} replacement(s) made'
+            
+            # Auto-lint check
+            lint_result = ''
+            if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+                lint_result = _auto_lint_check(path)
+            
+            base_msg = f'MultiEdit applied to {path}: {total_replacements} replacement(s) made'
+            if lint_result:
+                return base_msg + '\n\n' + lint_result
+            return base_msg
 
         # Legacy single-replacement mode
-        old_text = args['old_text']
-        new_text = args['new_text']
-        count = content.count(old_text)
-        if count == 0:
-            return f'Error: old_text not found in file. Make sure the text matches exactly (including whitespace).'
-        if count > 1:
-            return f'Error: old_text found {count} times — ambiguous match. Provide more surrounding context to uniquely identify the target, or use the "replacements" array parameter for multiple specific edits.'
-        new_content = content.replace(old_text, new_text)
+        old_text = args.get('old_text', '')
+        new_text = args.get('new_text', '')
+        if not old_text:
+            return 'Error: old_text is required (or use "replacements" array)'
+
+        match_result = _find_text_in_content(content, old_text, 
+                                              line_hint=line_hint, 
+                                              fuzzy_match=fuzzy_match)
+        if match_result is None:
+            # Provide context around line_hint to help AI fix the match
+            hint_line = line_hint or 1
+            context = _get_context_around_line(content, hint_line)
+            return (f'Error: old_text not found in file. '
+                    f'Make sure the text matches exactly (including whitespace). '
+                    f'Try fuzzy_match=true if whitespace differs.\n'
+                    f'Context around line {hint_line}:\n{context}')
+        
+        actual_text, start_pos, match_line = match_result
+        
+        # Check for ambiguous matches in the remaining content
+        remaining = content[start_pos + len(actual_text):]
+        second_match = _find_text_in_content(remaining, old_text, fuzzy_match=fuzzy_match)
+        if second_match is not None:
+            return (f'Error: old_text found at multiple locations (line {match_line} and later) — ambiguous match. '
+                    f'Provide more surrounding context to uniquely identify the target, use line_hint to narrow scope, '
+                    f'or use the "replacements" array parameter for multiple specific edits.')
+        
+        new_content = content[:start_pos] + new_text + content[start_pos + len(actual_text):]
         # Atomic write
         _dir = os.path.dirname(path) or '.'
         fd, tmp_path = tempfile.mkstemp(dir=_dir, suffix='.tmp', prefix='.phoneide_edit_')
@@ -1276,7 +1534,16 @@ def _tool_edit_file(args):
                 project_index.index_file(path, new_content.encode('utf-8'))
             except Exception:
                 pass
-        return f'Edited file: {path} ({count} replacement(s) made)'
+        
+        # Auto-lint check
+        lint_result = ''
+        if ext in ('.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.mjs', '.cjs'):
+            lint_result = _auto_lint_check(path)
+        
+        base_msg = f'Edited file: {path} (1 replacement made at line {match_line})'
+        if lint_result:
+            return base_msg + '\n\n' + lint_result
+        return base_msg
     except Exception as e:
         return f'Error editing file {path}: {e}'
 
@@ -1867,6 +2134,692 @@ def _tool_glob_files(args):
         lines.append(f'  [showing first {max_results} results, sorted by modification time]')
     return '\n'.join(lines)
 
+# ==================== Quality Assurance Tools ====================
+
+# Auto-lint configuration: can be toggled via .phoneide/rules.md or config
+_AUTO_LINT_ENABLED = True  # Default: enabled; set False to disable auto-lint after edit/write
+_AUTO_LINT_TIMEOUT = 15    # seconds — max time for auto-lint check
+
+def _auto_lint_check(filepath):
+    """Run a quick lint check on a single file after write/edit. 
+    Returns a string with lint results, or empty string if no issues/skipped.
+    Can be disabled by setting _AUTO_LINT_ENABLED = False or adding 
+    'auto_lint: false' to .phoneide/rules.md.
+    """
+    if not _AUTO_LINT_ENABLED:
+        return ''
+    
+    # Check if auto-lint is disabled in project config
+    try:
+        rules_path = os.path.join(WORKSPACE, '.phoneide', 'rules.md')
+        if os.path.isfile(rules_path):
+            with open(rules_path, 'r', encoding='utf-8') as f:
+                rules = f.read().lower()
+            if 'auto_lint: false' in rules or 'auto_lint:false' in rules or 'auto-lint: false' in rules:
+                return ''
+    except Exception:
+        pass
+    
+    ext = os.path.splitext(filepath)[1].lower()
+    from utils import IS_WINDOWS
+    
+    # Build venv-aware environment
+    env = os.environ.copy()
+    try:
+        config = load_config()
+        venv_path = config.get('venv_path', '')
+        if venv_path and os.path.exists(venv_path):
+            _bin_dir = 'Scripts' if IS_WINDOWS else 'bin'
+            venv_bin = os.path.join(venv_path, _bin_dir)
+            if os.path.exists(venv_bin):
+                _path_sep = ';' if IS_WINDOWS else ':'
+                env['PATH'] = venv_bin + _path_sep + env.get('PATH', '')
+                env['VIRTUAL_ENV'] = venv_path
+    except Exception:
+        pass
+    
+    cmd = None
+    cwd = os.path.dirname(filepath) or '.'
+    
+    if ext == '.py':
+        # Try ruff first (fastest), then flake8
+        try:
+            result = subprocess.run(
+                f'ruff check --output-format=concise {shlex_quote(filepath)}',
+                shell=True, cwd=cwd, capture_output=True, text=True, 
+                timeout=_AUTO_LINT_TIMEOUT, env=env
+            )
+            output = (result.stdout or '').strip()
+            if output:
+                errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
+                warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
+                msg = '[Auto-lint: ruff]'
+                if errors:
+                    msg += f' {len(errors)} error(s)'
+                if warnings:
+                    msg += f' {len(warnings)} warning(s)'
+                msg += '\n' + output[:800]
+                return msg
+            return ''  # No issues
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        
+        try:
+            result = subprocess.run(
+                f'flake8 {shlex_quote(filepath)}',
+                shell=True, cwd=cwd, capture_output=True, text=True,
+                timeout=_AUTO_LINT_TIMEOUT, env=env
+            )
+            output = (result.stdout or '').strip()
+            if output:
+                errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
+                warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
+                msg = '[Auto-lint: flake8]'
+                if errors:
+                    msg += f' {len(errors)} error(s)'
+                if warnings:
+                    msg += f' {len(warnings)} warning(s)'
+                msg += '\n' + output[:800]
+                return msg
+            return ''
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    
+    elif ext in ('.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs'):
+        # Try eslint if configured
+        has_eslint = (
+            os.path.isfile(os.path.join(cwd, '.eslintrc.js')) or
+            os.path.isfile(os.path.join(cwd, '.eslintrc.json')) or
+            os.path.isfile(os.path.join(cwd, '.eslintrc.yml')) or
+            os.path.isfile(os.path.join(cwd, '.eslintrc')) or
+            os.path.isfile(os.path.join(cwd, 'eslint.config.js'))
+        )
+        if not has_eslint:
+            return ''
+        
+        try:
+            result = subprocess.run(
+                f'npx eslint --format compact {shlex_quote(filepath)}',
+                shell=True, cwd=cwd, capture_output=True, text=True,
+                timeout=_AUTO_LINT_TIMEOUT, env=env
+            )
+            output = (result.stdout or '').strip()
+            if output:
+                errors = [l for l in output.split('\n') if l.strip() and ' error' in l.lower()]
+                warnings = [l for l in output.split('\n') if l.strip() and ' error' not in l.lower()]
+                msg = '[Auto-lint: eslint]'
+                if errors:
+                    msg += f' {len(errors)} error(s)'
+                if warnings:
+                    msg += f' {len(warnings)} warning(s)'
+                msg += '\n' + output[:800]
+                return msg
+            return ''
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    
+    elif ext == '.go':
+        try:
+            result = subprocess.run(
+                f'go vet {shlex_quote(filepath)}',
+                shell=True, cwd=cwd, capture_output=True, text=True,
+                timeout=_AUTO_LINT_TIMEOUT, env=env
+            )
+            output = (result.stdout or result.stderr or '').strip()
+            if output:
+                return f'[Auto-lint: go vet]\n' + output[:800]
+            return ''
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    
+    return ''  # No linter available or no issues
+
+def _detect_project_type(project_dir):
+    """Auto-detect project type by checking for config files."""
+    indicators = {
+        'python': ['setup.py', 'pyproject.toml', 'requirements.txt', 'Pipfile', 'setup.cfg'],
+        'javascript': ['package.json'],
+        'typescript': ['tsconfig.json'],
+        'go': ['go.mod', 'go.sum'],
+    }
+    detected = []
+    for proj_type, files in indicators.items():
+        for f in files:
+            if os.path.isfile(os.path.join(project_dir, f)):
+                detected.append(proj_type)
+                break
+    # TypeScript implies JavaScript too
+    if 'typescript' in detected and 'javascript' not in detected:
+        detected.append('javascript')
+    return detected if detected else ['unknown']
+
+def _tool_run_linter(args):
+    """Run a linter on the project or a specific file. Auto-detects project type and linter."""
+    from utils import IS_WINDOWS
+    target_path = args.get('path')
+    if target_path:
+        target_path = _validate_path(target_path)
+    else:
+        target_path = _get_effective_cwd()
+    
+    forced_linter = args.get('linter', '').strip().lower()
+    min_severity = args.get('severity', 'warning')
+    
+    # Determine project root and file types
+    if os.path.isfile(target_path):
+        project_dir = os.path.dirname(target_path)
+        # Walk up to find project root
+        for parent in _walk_up_dirs(project_dir):
+            if any(os.path.isfile(os.path.join(parent, f)) for f in 
+                   ['setup.py', 'pyproject.toml', 'package.json', 'go.mod', 'tsconfig.json']):
+                project_dir = parent
+                break
+        target_ext = os.path.splitext(target_path)[1].lower()
+        project_types = _detect_project_type(project_dir)
+        # If file type doesn't match detected project, add it
+        if target_ext in ('.py',) and 'python' not in project_types:
+            project_types.append('python')
+        elif target_ext in ('.js', '.jsx', '.mjs', '.cjs') and 'javascript' not in project_types:
+            project_types.append('javascript')
+        elif target_ext in ('.ts', '.tsx') and 'typescript' not in project_types:
+            project_types.append('typescript')
+        elif target_ext in ('.go',) and 'go' not in project_types:
+            project_types.append('go')
+    else:
+        project_dir = target_path
+        project_types = _detect_project_type(project_dir)
+        target_path = project_dir
+    
+    if 'unknown' in project_types and not forced_linter:
+        return 'Error: Could not detect project type. No pyproject.toml, package.json, or go.mod found. Use the "linter" parameter to specify one explicitly.'
+    
+    # Build venv-aware environment
+    config = load_config()
+    env = os.environ.copy()
+    venv_path = config.get('venv_path', '')
+    if venv_path and os.path.exists(venv_path):
+        _bin_dir = 'Scripts' if IS_WINDOWS else 'bin'
+        venv_bin = os.path.join(venv_path, _bin_dir)
+        if os.path.exists(venv_bin):
+            _path_sep = ';' if IS_WINDOWS else ':'
+            env['PATH'] = venv_bin + _path_sep + env.get('PATH', '')
+            env['VIRTUAL_ENV'] = venv_path
+    
+    all_issues = []
+    linters_tried = []
+    
+    for proj_type in project_types:
+        if proj_type == 'python' or forced_linter in ('ruff', 'flake8', 'pylint'):
+            linters = []
+            if forced_linter in ('ruff', 'flake8', 'pylint'):
+                linters = [forced_linter]
+            else:
+                # Try ruff first, then flake8, then pylint
+                linters = ['ruff', 'flake8', 'pylint']
+            
+            for linter in linters:
+                linters_tried.append(linter)
+                cmd = None
+                if linter == 'ruff':
+                    cmd = f'ruff check --output-format=concise {shlex_quote(target_path)}'
+                elif linter == 'flake8':
+                    cmd = f'flake8 --format="%(path)s:%(row)d:%(col)d: %(code)s %(text)s" {shlex_quote(target_path)}'
+                elif linter == 'pylint':
+                    cmd = f'pylint --output-format=text --disable=C0114,C0115,C0116 {shlex_quote(target_path)}'
+                
+                if cmd:
+                    try:
+                        result = subprocess.run(cmd, shell=True, cwd=project_dir, 
+                                              capture_output=True, text=True, timeout=60, env=env)
+                        output = result.stdout or result.stderr or ''
+                        if output.strip():
+                            for line in output.strip().split('\n'):
+                                line = line.strip()
+                                if not line or line.startswith('-'):
+                                    continue
+                                # Parse severity
+                                severity = 'warning'
+                                if linter == 'ruff':
+                                    if ':E' in line or ':F' in line:
+                                        severity = 'error'
+                                elif linter == 'flake8':
+                                    if ':E' in line or ':F' in line:
+                                        severity = 'error'
+                                elif linter == 'pylint':
+                                    if '[E]' in line or '[F]' in line:
+                                        severity = 'error'
+                                    elif '[W]' in line:
+                                        severity = 'warning'
+                                    elif '[C]' in line or '[R]' in line:
+                                        severity = 'info'
+                                
+                                # Filter by minimum severity
+                                sev_order = {'error': 0, 'warning': 1, 'info': 2, 'convention': 2}
+                                if sev_order.get(severity, 1) <= sev_order.get(min_severity, 1):
+                                    all_issues.append({'severity': severity, 'message': line, 'linter': linter})
+                        # If linter ran successfully, don't try alternatives
+                        break
+                    except FileNotFoundError:
+                        continue
+                    except subprocess.TimeoutExpired:
+                        all_issues.append({'severity': 'error', 'message': f'{linter} timed out after 60s', 'linter': linter})
+                        break
+                    except Exception as e:
+                        continue
+        
+        elif proj_type in ('javascript', 'typescript') or forced_linter == 'eslint':
+            linter = 'eslint'
+            linters_tried.append(linter)
+            # Check if ESLint is configured
+            has_eslint = (
+                os.path.isfile(os.path.join(project_dir, '.eslintrc.js')) or
+                os.path.isfile(os.path.join(project_dir, '.eslintrc.json')) or
+                os.path.isfile(os.path.join(project_dir, '.eslintrc.yml')) or
+                os.path.isfile(os.path.join(project_dir, '.eslintrc')) or
+                os.path.isfile(os.path.join(project_dir, 'eslint.config.js'))
+            )
+            if not has_eslint and not forced_linter:
+                continue
+            
+            cmd = f'npx eslint --format compact {shlex_quote(target_path)}'
+            if os.path.isfile(target_path):
+                cmd = f'npx eslint --format compact {shlex_quote(target_path)}'
+            else:
+                cmd = f'npx eslint --format compact .'
+            
+            try:
+                result = subprocess.run(cmd, shell=True, cwd=project_dir,
+                                      capture_output=True, text=True, timeout=60, env=env)
+                output = result.stdout or result.stderr or ''
+                if output.strip():
+                    for line in output.strip().split('\n'):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        severity = 'warning'
+                        if ' error' in line.lower():
+                            severity = 'error'
+                        if sev_order.get(severity, 1) <= sev_order.get(min_severity, 1):
+                            all_issues.append({'severity': severity, 'message': line, 'linter': linter})
+                break
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                all_issues.append({'severity': 'error', 'message': 'eslint timed out after 60s', 'linter': linter})
+            except Exception:
+                continue
+        
+        elif proj_type == 'go' or forced_linter == 'go_vet':
+            linter = 'go_vet'
+            linters_tried.append(linter)
+            cmd = 'go vet ./...'
+            try:
+                result = subprocess.run(cmd, shell=True, cwd=project_dir,
+                                      capture_output=True, text=True, timeout=60, env=env)
+                output = result.stdout or result.stderr or ''
+                if output.strip():
+                    for line in output.strip().split('\n'):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        all_issues.append({'severity': 'error', 'message': line, 'linter': 'go_vet'})
+                break
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                all_issues.append({'severity': 'error', 'message': 'go vet timed out after 60s', 'linter': 'go_vet'})
+            except Exception:
+                continue
+    
+    if not linters_tried:
+        return 'Error: No linter found. Install ruff (`pip install ruff`), flake8, or eslint.'
+    
+    # Format output
+    if not all_issues:
+        return f'✓ No issues found by {", ".join(linters_tried)}. Code looks clean!'
+    
+    # Group by severity
+    errors = [i for i in all_issues if i['severity'] == 'error']
+    warnings = [i for i in all_issues if i['severity'] == 'warning']
+    infos = [i for i in all_issues if i['severity'] in ('info', 'convention')]
+    
+    output_lines = [f'Lint results ({", ".join(linters_tried)}): {len(all_issues)} issue(s) found']
+    output_lines.append(f'  Errors: {len(errors)}, Warnings: {len(warnings)}, Info: {len(infos)}')
+    output_lines.append('')
+    
+    for issue in all_issues:
+        icon = '❌' if issue['severity'] == 'error' else ('⚠️' if issue['severity'] == 'warning' else 'ℹ️')
+        output_lines.append(f'{icon} [{issue["linter"]}] {issue["message"]}')
+    
+    return _truncate('\n'.join(output_lines), 15000)
+
+def _walk_up_dirs(path):
+    """Walk up directory tree from path to root."""
+    path = os.path.abspath(path)
+    while True:
+        yield path
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+
+# Global cache for sev_order used by run_linter
+sev_order = {'error': 0, 'warning': 1, 'info': 2, 'convention': 2}
+
+def _tool_run_tests(args):
+    """Run tests in the project. Auto-detects the test framework."""
+    from utils import IS_WINDOWS
+    target_path = args.get('path')
+    if target_path:
+        target_path = _validate_path(target_path)
+    else:
+        target_path = _get_effective_cwd()
+    
+    forced_framework = args.get('framework', '').strip().lower()
+    test_filter = args.get('filter', '').strip()
+    verbose = args.get('verbose', False)
+    
+    # Determine project root
+    if os.path.isfile(target_path):
+        project_dir = os.path.dirname(target_path)
+        for parent in _walk_up_dirs(project_dir):
+            if any(os.path.isfile(os.path.join(parent, f)) for f in 
+                   ['setup.py', 'pyproject.toml', 'package.json', 'go.mod', 'tsconfig.json']):
+                project_dir = parent
+                break
+    else:
+        project_dir = target_path
+    
+    # Build venv-aware environment
+    config = load_config()
+    env = os.environ.copy()
+    venv_path = config.get('venv_path', '')
+    if venv_path and os.path.exists(venv_path):
+        _bin_dir = 'Scripts' if IS_WINDOWS else 'bin'
+        venv_bin = os.path.join(venv_path, _bin_dir)
+        if os.path.exists(venv_bin):
+            _path_sep = ';' if IS_WINDOWS else ':'
+            env['PATH'] = venv_bin + _path_sep + env.get('PATH', '')
+            env['VIRTUAL_ENV'] = venv_path
+    
+    project_types = _detect_project_type(project_dir)
+    
+    # Try test frameworks in order
+    frameworks_tried = []
+    
+    for proj_type in project_types:
+        if proj_type == 'python' or forced_framework in ('pytest', 'unittest'):
+            frameworks = []
+            if forced_framework in ('pytest', 'unittest'):
+                frameworks = [forced_framework]
+            else:
+                frameworks = ['pytest', 'unittest']
+            
+            for fw in frameworks:
+                frameworks_tried.append(fw)
+                cmd = None
+                if fw == 'pytest':
+                    cmd_parts = ['pytest', '--tb=short', '-q']
+                    if test_filter:
+                        cmd_parts.extend(['-k', shlex_quote(test_filter)])
+                    if verbose:
+                        cmd_parts.append('-v')
+                    if os.path.isfile(target_path):
+                        cmd_parts.append(shlex_quote(target_path))
+                    cmd = ' '.join(cmd_parts)
+                elif fw == 'unittest':
+                    python_bin = 'python' if IS_WINDOWS else 'python3'
+                    cmd_parts = [python_bin, '-m', 'unittest', '-v' if verbose else '-q']
+                    if test_filter:
+                        cmd_parts.append(shlex_quote(test_filter))
+                    cmd = ' '.join(cmd_parts)
+                
+                if cmd:
+                    try:
+                        result = subprocess.run(cmd, shell=True, cwd=project_dir,
+                                              capture_output=True, text=True, timeout=120, env=env)
+                        output = ''
+                        if result.stdout:
+                            output += result.stdout
+                        if result.stderr:
+                            output += ('\n' if output else '') + result.stderr
+                        
+                        # Parse results
+                        passed = 0
+                        failed = 0
+                        errors = 0
+                        failures = []
+                        
+                        if fw == 'pytest':
+                            # Parse pytest output
+                            # Look for "X passed, Y failed, Z errors"
+                            summary_match = re.search(r'(\d+) passed', output)
+                            if summary_match:
+                                passed = int(summary_match.group(1))
+                            fail_match = re.search(r'(\d+) failed', output)
+                            if fail_match:
+                                failed = int(fail_match.group(1))
+                            err_match = re.search(r'(\d+) error', output)
+                            if err_match:
+                                errors = int(err_match.group(1))
+                            
+                            # Extract failure details
+                            fail_sections = re.split(r'=+ FAILURES =+', output)
+                            if len(fail_sections) > 1:
+                                for section in fail_sections[1:]:
+                                    section = section.strip()
+                                    if section:
+                                        # Truncate long failures
+                                        failures.append(section[:500])
+                        else:
+                            # unittest output
+                            if 'OK' in output:
+                                ran_match = re.search(r'Ran (\d+) test', output)
+                                if ran_match:
+                                    passed = int(ran_match.group(1))
+                            elif 'FAILED' in output:
+                                ran_match = re.search(r'Ran (\d+) test', output)
+                                if ran_match:
+                                    total = int(ran_match.group(1))
+                                fail_match = re.search(r'failures=(\d+)', output)
+                                if fail_match:
+                                    failed = int(fail_match.group(1))
+                                err_match = re.search(r'errors=(\d+)', output)
+                                if err_match:
+                                    errors = int(err_match.group(1))
+                                passed = total - failed - errors if 'total' in dir() else 0
+                                failures.append(output[:1000])
+                        
+                        # Format structured output
+                        total = passed + failed + errors
+                        if total == 0 and not output.strip():
+                            return f'No tests found by {fw}. Check test file names and locations.'
+                        
+                        result_lines = [f'Test results ({fw}): {total} test(s)']
+                        result_lines.append(f'  ✅ Passed: {passed}')
+                        if failed > 0:
+                            result_lines.append(f'  ❌ Failed: {failed}')
+                        if errors > 0:
+                            result_lines.append(f'  💥 Errors: {errors}')
+                        
+                        if failed > 0 or errors > 0:
+                            result_lines.append('')
+                            result_lines.append('Failure details:')
+                            for i, f in enumerate(failures[:10], 1):
+                                result_lines.append(f'--- Failure {i} ---')
+                                result_lines.append(f[:500])
+                        
+                        if verbose and passed > 0:
+                            # Include passing test names from output
+                            pass_lines = [l for l in output.split('\n') if 'PASSED' in l or l.strip().startswith('test_')]
+                            if pass_lines:
+                                result_lines.append('')
+                                result_lines.append('Passing tests:')
+                                for pl in pass_lines[:30]:
+                                    result_lines.append(f'  ✅ {pl.strip()[:120]}')
+                        
+                        return _truncate('\n'.join(result_lines), 15000)
+                    
+                    except FileNotFoundError:
+                        continue
+                    except subprocess.TimeoutExpired:
+                        return f'Error: {fw} timed out after 120s. Tests may be stuck.'
+                    except Exception as e:
+                        continue
+        
+        elif proj_type in ('javascript', 'typescript') or forced_framework in ('jest', 'vitest', 'mocha'):
+            frameworks = []
+            if forced_framework in ('jest', 'vitest', 'mocha'):
+                frameworks = [forced_framework]
+            else:
+                # Check package.json for test framework
+                pkg_json = os.path.join(project_dir, 'package.json')
+                test_cmd = None
+                if os.path.isfile(pkg_json):
+                    try:
+                        with open(pkg_json, 'r') as f:
+                            pkg = json.load(f)
+                        deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
+                        if 'vitest' in deps:
+                            frameworks = ['vitest']
+                        elif 'jest' in deps:
+                            frameworks = ['jest']
+                        elif 'mocha' in deps:
+                            frameworks = ['mocha']
+                        test_cmd = pkg.get('scripts', {}).get('test', '')
+                    except Exception:
+                        pass
+                
+                if not frameworks:
+                    frameworks = ['jest', 'vitest']
+            
+            for fw in frameworks:
+                frameworks_tried.append(fw)
+                cmd = None
+                if fw == 'jest':
+                    cmd_parts = ['npx', 'jest', '--no-coverage']
+                    if test_filter:
+                        cmd_parts.extend(['-t', shlex_quote(test_filter)])
+                    if verbose:
+                        cmd_parts.append('--verbose')
+                    cmd = ' '.join(cmd_parts)
+                elif fw == 'vitest':
+                    cmd_parts = ['npx', 'vitest', 'run', '--reporter=verbose']
+                    if test_filter:
+                        cmd_parts.extend(['-t', shlex_quote(test_filter)])
+                    cmd = ' '.join(cmd_parts)
+                elif fw == 'mocha':
+                    cmd_parts = ['npx', 'mocha']
+                    if verbose:
+                        cmd_parts.append('--reporter spec')
+                    cmd = ' '.join(cmd_parts)
+                
+                if cmd:
+                    try:
+                        result = subprocess.run(cmd, shell=True, cwd=project_dir,
+                                              capture_output=True, text=True, timeout=120, env=env)
+                        output = ''
+                        if result.stdout:
+                            output += result.stdout
+                        if result.stderr:
+                            output += ('\n' if output else '') + result.stderr
+                        
+                        # Parse JS test output
+                        passed = 0
+                        failed = 0
+                        failures = []
+                        
+                        # Jest format: "Tests: X failed, Y passed, Z total"
+                        jest_match = re.search(r'Tests:\s+(\d+)\s+failed.*?(\d+)\s+passed.*?(\d+)\s+total', output)
+                        if jest_match:
+                            failed = int(jest_match.group(1))
+                            passed = int(jest_match.group(2))
+                        else:
+                            jest_pass = re.search(r'Tests:\s+(\d+)\s+passed', output)
+                            if jest_pass:
+                                passed = int(jest_pass.group(1))
+                        
+                        # Vitest format: similar
+                        vit_match = re.search(r'(\d+)\s+failed.*?(\d+)\s+passed', output)
+                        if vit_match and passed == 0:
+                            failed = int(vit_match.group(1))
+                            passed = int(vit_match.group(2))
+                        
+                        # Extract failure details
+                        fail_match = re.findall(r'● .*?(?:\n|$)', output)
+                        failures = [f.strip()[:300] for f in fail_match[:10]]
+                        
+                        total = passed + failed
+                        if total == 0 and 'no tests found' in output.lower():
+                            return f'No tests found by {fw}. Check test configuration.'
+                        
+                        result_lines = [f'Test results ({fw}): {total} test(s)']
+                        result_lines.append(f'  ✅ Passed: {passed}')
+                        if failed > 0:
+                            result_lines.append(f'  ❌ Failed: {failed}')
+                        
+                        if failures:
+                            result_lines.append('')
+                            result_lines.append('Failure details:')
+                            for i, f in enumerate(failures, 1):
+                                result_lines.append(f'--- Failure {i} ---')
+                                result_lines.append(f)
+                        
+                        return _truncate('\n'.join(result_lines), 15000)
+                    
+                    except FileNotFoundError:
+                        continue
+                    except subprocess.TimeoutExpired:
+                        return f'Error: {fw} timed out after 120s.'
+                    except Exception:
+                        continue
+        
+        elif proj_type == 'go' or forced_framework == 'go_test':
+            fw = 'go_test'
+            frameworks_tried.append(fw)
+            cmd_parts = ['go', 'test', '-v' if verbose else '', './...']
+            if test_filter:
+                cmd_parts.extend(['-run', shlex_quote(test_filter)])
+            cmd = ' '.join(cmd_parts)
+            try:
+                result = subprocess.run(cmd, shell=True, cwd=project_dir,
+                                      capture_output=True, text=True, timeout=120, env=env)
+                output = ''
+                if result.stdout:
+                    output += result.stdout
+                if result.stderr:
+                    output += ('\n' if output else '') + result.stderr
+                
+                # Parse go test output
+                passed = len(re.findall(r'--- PASS:', output))
+                failed = len(re.findall(r'--- FAIL:', output))
+                failures = [line.strip()[:300] for line in output.split('\n') if '--- FAIL:' in line]
+                
+                total = passed + failed
+                result_lines = [f'Test results (go test): {total} test(s)']
+                result_lines.append(f'  ✅ Passed: {passed}')
+                if failed > 0:
+                    result_lines.append(f'  ❌ Failed: {failed}')
+                    result_lines.append('')
+                    result_lines.append('Failure details:')
+                    for i, f in enumerate(failures[:10], 1):
+                        result_lines.append(f'--- Failure {i} ---')
+                        result_lines.append(f)
+                
+                return _truncate('\n'.join(result_lines), 15000)
+            
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                return 'Error: go test timed out after 120s.'
+            except Exception as e:
+                continue
+    
+    if not frameworks_tried:
+        return 'Error: No test framework detected. Install pytest, jest, or specify framework explicitly.'
+    
+    return f'Error: Could not run tests with {", ".join(frameworks_tried)}. Try installing the test framework or specify framework parameter.'
+
 def _tool_find_definition(args):
     """Find definition of a symbol using AST (tree-sitter) semantic analysis."""
     symbol = args['symbol']
@@ -2135,6 +3088,8 @@ _SUBAGENT_TOOLS = {
     'find_references': _tool_find_references,
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
+    'run_linter': _tool_run_linter,
+    'run_tests': _tool_run_tests,
 }
 
 # Write-capable tools for sub-agents (write mode) — includes all read tools + write/edit/run
@@ -2444,6 +3399,9 @@ _TOOL_HANDLERS = {
     'parallel_tasks': _tool_parallel_tasks,
     'todo_write': _tool_todo_write,
     'todo_read': _tool_todo_read,
+    # Quality Assurance tools
+    'run_linter': _tool_run_linter,
+    'run_tests': _tool_run_tests,
 }
 
 def execute_agent_tool(name, arguments):
@@ -2482,6 +3440,7 @@ _READONLY_TOOLS = frozenset({
     'list_packages', 'git_status', 'git_diff', 'git_log',
     'web_search', 'web_fetch',
     'browser_page_info', 'browser_console', 'server_logs',
+    'run_linter', 'run_tests',
 })
 
 def _execute_tools_parallel(tool_calls_raw, emit_fn=None):

@@ -41,16 +41,14 @@ const ChatManager = (() => {
     const MSG_BACKUP_INTERVAL = 3000; // save backup every 3s during streaming
     let _backupTimer = null;
     const KNOWN_TOOLS = [
-        'read_file', 'write_file', 'execute_code', 'search_files',
-        'list_files', 'git_status', 'git_diff', 'terminal', 'install_package',
+        'read_file', 'write_file', 'edit_file', 'search_files',
+        'list_directory', 'git_status', 'git_diff', 'run_command', 'install_package',
         'web_search', 'web_fetch', 'git_commit', 'git_log', 'git_checkout',
-        'edit_file', 'create_directory', 'delete_path', 'file_info', 'grep_code', 'list_packages',
-        'browser_navigate', 'browser_evaluate', 'browser_inspect', 'browser_query_all',
-        'browser_click', 'browser_input', 'browser_console', 'browser_cookies', 'browser_page_info',
-        'browser_open_external',
-        'debug_start', 'debug_stop', 'debug_set_breakpoints', 'debug_continue',
-        'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
-        'server_logs',
+        'create_directory', 'delete_path', 'file_info', 'grep_code', 'list_packages',
+        'browser_navigate', 'browser_console', 'browser_page_info', 'server_logs',
+        'glob_files', 'find_definition', 'find_references', 'file_structure',
+        'delegate_task', 'parallel_tasks', 'todo_write', 'todo_read',
+        'move_file', 'append_file', 'run_linter', 'run_tests',
     ];
 
     const TOOL_ICONS = {
@@ -75,23 +73,8 @@ const ChatManager = (() => {
         web_search:    '🌐',
         web_fetch:     '📄',
         browser_navigate:    '🌐',
-        browser_evaluate:    '⚡',
-        browser_inspect:    '🔍',
-        browser_query_all:    '📋',
-        browser_click:       '👆',
-        browser_input:       '⌨️',
         browser_console:     '📋',
-        browser_cookies:     '🍪',
         browser_page_info:   'ℹ️',
-        browser_open_external: '🌐',
-        debug_start:         '🐛',
-        debug_stop:          '⏹',
-        debug_set_breakpoints: '🔴',
-        debug_continue:      '▶️',
-        debug_step:          '⏭',
-        debug_inspect:       '🔎',
-        debug_evaluate:      '⚡',
-        debug_stack:         '📚',
         server_logs:         '📋',
         // P0+P1 new tools
         glob_files:          '📂',
@@ -102,6 +85,9 @@ const ChatManager = (() => {
         parallel_tasks:      '🔄',
         todo_write:          '📋',
         todo_read:           '📋',
+        // Quality Assurance tools
+        run_linter:          '🔍',
+        run_tests:           '🧪',
     };
 
     const COLLAPSE_THRESHOLD = 500; // chars before showing "Show more"
