@@ -78,14 +78,40 @@ RING_BUFFER_SIZE = 100
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
 You have access to specialized tools for reading, writing, editing, searching, and managing code projects.
 
+## 🎯 Choose the Most Efficient Tool for Each Task
+Each tool is designed for a specific purpose. Using the right tool gives you **better accuracy, structured output, and faster results**. Here's how to choose:
+
+| You want to... | Best tool | Why it's better than run_command |
+|---|---|---|
+| Read a file | `read_file` | Line numbers, encoding auto-detection, offset/limit support |
+| Edit 1 place in a file | `edit_file` (old_text/new_text) | Atomic, preserves rest of file, auto-lint after edit |
+| Edit 2+ places in a file | `edit_file` (replacements array) | All edits applied atomically — all succeed or all fail |
+| Rewrite an entire file | `write_file` | Cleaner for full rewrites |
+| Add to end of a file | `append_file` | No need to read+rewrite |
+| List directory contents | `list_directory` | Structured: shows file sizes, types, sorted |
+| Find files by name | `glob_files` | Pattern matching: "**/*.py", "src/**/*.tsx" |
+| Get file/directory size | `file_info` | Direct metadata: size, dates, permissions |
+| Search text in code | `grep_code` | Returns matches with context lines + file info |
+| Find a function/class definition | `find_definition` | AST-based: precise, understands scopes/decorators |
+| Find all usages of a symbol | `find_references` | AST-based: excludes comments/strings |
+| Understand file structure | `file_structure` | AST outline: classes, functions, imports |
+| Check code quality | `run_linter` | Auto-detects project type and linter |
+| Run tests | `run_tests` | Auto-detects test framework |
+| Install a package | `install_package` | Auto-handles venv, version specs |
+| Git operations | `git_status`/`git_diff`/`git_log`/`git_commit`/`git_checkout` | Structured output |
+| Test a web page | `browser_navigate` + `browser_click`/`browser_input`/`browser_inspect` | Full DOM interaction |
+| Start a dev server, compile, run scripts | `run_command` | Shell commands — the right choice for these tasks |
+
+**Key principle**: `run_command` is NOT wrong — it's just **less efficient** for tasks that have a dedicated tool. You CAN use it, but the specialized tool will give you better results.
+
 ## Core Workflow Rules
 1. **ALWAYS use `todo_write` BEFORE starting any complex task (3+ steps)** — plan first, then execute
 2. **Update todo status in real-time** — mark items in_progress when starting, completed when done
-3. **ALWAYS prefer specialized tools over shell commands** — use `read_file` to read, `write_file`/`edit_file` to write, `grep_code`/`search_files` to search, `list_directory` to list, etc.
+3. **Choose the most efficient tool** — check the table above before falling back to `run_command`
 4. **ALWAYS test your changes** — use `run_linter` and `run_tests` after modifications
 5. Before writing a file, read it first to understand existing content
 6. When modifying code, use `edit_file` for targeted changes instead of rewriting entire files
-7. **PREFER `find_definition`/`find_references` over `grep_code` for code navigation** — they use AST analysis and are more precise
+7. **PREFER `find_definition`/`find_references` over `grep_code` for code navigation** — AST analysis is more precise
 8. Always use absolute paths when referencing files
 9. After executing commands, check the output for errors before proceeding
 10. For large files, use offset_line and limit_lines to read specific sections
@@ -99,7 +125,7 @@ You have access to specialized tools for reading, writing, editing, searching, a
 ### File Operations
 - `read_file` — Read file content with line numbers
 - `write_file` — Create or overwrite a file
-- `edit_file` — Search and replace text in a file
+- `edit_file` — Search and replace text in a file (supports single edit or multi-edit via "replacements" array)
 - `append_file` — Append content to a file
 - `list_directory` — List directory contents
 - `file_info` — Get file metadata (size, dates, permissions)
@@ -148,7 +174,7 @@ You have access to specialized tools for reading, writing, editing, searching, a
 
 ### Process & Port
 - `kill_port` — Kill process on a port (before starting servers)
-- `run_command` — **Last resort only** — Execute shell command. Only use when NO specialized tool fits (e.g. starting dev server, compiling). NEVER use for reading/writing/searching files when specialized tools exist.
+- `run_command` — Execute shell command (starting servers, compiling, running scripts, and other tasks without a dedicated tool)
 
 ## Task Planning Workflow (MANDATORY)
 **You MUST use `todo_write` before starting ANY task with 3+ steps.**
@@ -164,13 +190,6 @@ After every code modification:
 3. Use `run_tests` to verify changes
 4. Use `server_logs` after backend changes
 5. Use `browser_navigate` + `browser_console` after frontend changes
-
-## Code Navigation (IMPORTANT)
-**Prefer `find_definition` and `find_references` over `grep_code`** — they use AST analysis and are more precise.
-- Find where a function/class is defined → `find_definition`
-- Find all usages of a symbol → `find_references`
-- Understand file structure → `file_structure`
-- Search text in non-code files → `grep_code` or `search_files`
 
 ## 🚫 CRITICAL SAFETY RULES — NEVER VIOLATE
 **The process `phoneide_server.py` and port `{_IDE_PORT}` are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.**
@@ -1255,18 +1274,17 @@ AGENT_TOOLS = [
             },
         },
     },
-    # ── Shell Command (LAST RESORT — placed last to discourage overuse) ──
+    # ── Shell Command (general-purpose — specialized tools are more efficient for specific tasks) ──
     {
         'type': 'function',
         'function': {
             'name': 'run_command',
             'description': (
-                'Execute a shell command. LAST RESORT — only use when no specialized tool fits. '
-                'Use for: starting dev servers, compiling code, running custom scripts. '
-                'Do NOT use for file operations (use read_file/write_file/edit_file), '
-                'directory listing (use list_directory), searching (use grep_code), '
-                'git (use git_*), packages (use install_package/list_packages), '
-                'linting (use run_linter), or testing (use run_tests).'
+                'Execute a shell command. Best for: starting dev servers, compiling code, running custom scripts, '
+                'and other tasks without a dedicated tool. '
+                'For better results, consider: read_file (reading files), edit_file (editing files), '
+                'list_directory (listing dirs), grep_code (searching code), glob_files (finding files), '
+                'install_package (installing packages), run_linter (linting), run_tests (testing).'
             ),
             'parameters': {
                 'type': 'object',
@@ -1763,43 +1781,46 @@ def _tool_run_command(args):
     timeout = args.get('timeout', 120)
     cwd = args.get('cwd', None) or _get_effective_cwd()
 
-    # ── HARD ENFORCEMENT: Redirect to specialized tools ──
-    # When the LLM tries to use run_command for operations that have dedicated tools,
-    # reject the command and tell it which tool to use instead. This creates a feedback
-    # loop that forces the LLM to use the correct tools.
+    # ── SMART SUGGESTION: Point out better tools when appropriate ──
+    # Instead of hard-blocking, we add a suggestion prefix to the output when
+    # the command could have been done more efficiently with a specialized tool.
+    # The command still executes, but the LLM learns to use better tools next time.
+    _suggestion = None
     cmd_stripped = command.strip()
     first_word = cmd_stripped.split()[0].lower() if cmd_stripped.split() else ''
 
-    # Map of shell commands → (specialized tool, brief explanation)
-    _REDIRECT_RULES = [
-        # File reading → read_file
-        (['cat', 'head', 'tail', 'less', 'more', 'bat'], 'read_file', 'Read file content'),
-        # Directory listing → list_directory
-        (['ls', 'dir', 'find', 'tree', 'll'], 'list_directory', 'List directory contents'),
-        # Text search → grep_code / search_files
-        (['grep', 'rg', 'ack', 'ag'], 'grep_code', 'Search text in code'),
-        # File info → file_info
-        (['stat', 'wc', 'file', 'du'], 'file_info', 'Get file metadata'),
-        # Git → git_* tools
-        (['git'], 'git_status/git_diff/etc', 'Use git_* tools for Git operations'),
-        # Package management → install_package/list_packages
-        (['pip', 'npm', 'yarn', 'pnpm'], 'install_package/list_packages', 'Manage packages'),
-        # Linting → run_linter
-        (['ruff', 'flake8', 'pylint', 'eslint', 'mypy'], 'run_linter', 'Run linter'),
-        # Testing → run_tests
-        (['pytest', 'jest', 'mocha', 'unittest', 'nose'], 'run_tests', 'Run tests'),
-    ]
-
-    for cmd_names, tool_name, explanation in _REDIRECT_RULES:
-        if first_word in cmd_names:
-            # Allow if it's a compound command that actually needs shell (e.g. "pip install && python server.py")
-            if '&&' in cmd_stripped or '||' in cmd_stripped or ';' in cmd_stripped:
-                break  # Compound commands might genuinely need run_command
-            return (
-                f'⛔ REJECTED: Use the `{tool_name}` tool instead of `{first_word}`. '
-                f'{explanation} with `{tool_name}` — it is faster, safer, and provides better-structured output. '
-                f'Do NOT use run_command when a dedicated tool exists.'
-            )
+    # Only suggest for simple (non-compound) commands
+    if not any(sep in cmd_stripped for sep in ['&&', '||', ';', '|']):
+        _BETTER_TOOL = {
+            'cat': ('read_file', 'returns structured output with line numbers'),
+            'head': ('read_file', 'supports offset_line to read specific sections'),
+            'tail': ('read_file', 'supports offset_line/limit_lines to read end of file'),
+            'less': ('read_file', 'returns full content with line numbers'),
+            'more': ('read_file', 'returns full content with line numbers'),
+            'bat': ('read_file', 'returns content with line numbers'),
+            'ls': ('list_directory', 'returns structured file listing with sizes'),
+            'll': ('list_directory', 'returns structured file listing with sizes'),
+            'dir': ('list_directory', 'returns structured file listing with sizes'),
+            'tree': ('file_structure', 'returns AST-based structure outline'),
+            'find': ('glob_files', 'supports pattern matching like "**/*.py"'),
+            'grep': ('grep_code', 'returns matches with context lines and file info'),
+            'rg': ('grep_code', 'returns matches with context lines and file info'),
+            'wc': ('file_info', 'returns file size and metadata'),
+            'stat': ('file_info', 'returns file metadata directly'),
+            'du': ('file_info', 'returns file/directory size info'),
+            'git': ('git_status/git_diff/etc', 'provides structured parsed output'),
+            'pip': ('install_package/list_packages', 'handles venv automatically'),
+            'npm': ('install_package/list_packages', 'handles venv automatically'),
+            'ruff': ('run_linter', 'auto-detects linter and project type'),
+            'flake8': ('run_linter', 'auto-detects linter and project type'),
+            'pylint': ('run_linter', 'auto-detects linter and project type'),
+            'eslint': ('run_linter', 'auto-detects linter and project type'),
+            'pytest': ('run_tests', 'auto-detects test framework'),
+            'jest': ('run_tests', 'auto-detects test framework'),
+        }
+        if first_word in _BETTER_TOOL:
+            better_tool, why = _BETTER_TOOL[first_word]
+            _suggestion = f'💡 Tip: `{better_tool}` is more efficient here — {why}.\n\n'
 
     # SAFETY: Block commands that would kill the IDE server
     ide_port = os.environ.get('PHONEIDE_PORT', '12345')
@@ -1839,7 +1860,7 @@ def _tool_run_command(args):
         # Return error status when command exits with non-zero code
         if result.returncode != 0:
             raise RuntimeError(full_output)
-        return _truncate(full_output)
+        return (_suggestion or '') + _truncate(full_output)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'Command timed out after {timeout} seconds')
     except RuntimeError:
