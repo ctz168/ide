@@ -141,11 +141,40 @@ const BrowserInspector = (() => {
         const win = tryIframeWin();
         if (!win) return { error: '无法访问 iframe（跨域或未加载页面）' };
         try {
-            const result = win.eval(expression);
+            let result = win.eval(expression);
+
+            // If result is undefined, try to extract the last variable declaration's value.
+            // e.g. "const inner = document.getElementById('x')" → eval returns undefined,
+            // but the user/AI wants to see the value of `inner`.
+            if (result === undefined) {
+                // Match const/let/var declarations: captures the variable name
+                const declMatch = expression.match(/(?:const|let|var)\s+(\w+)\s*=/g);
+                if (declMatch) {
+                    // Get the last declared variable name
+                    const lastDecl = declMatch[declMatch.length - 1];
+                    const varName = lastDecl.match(/(?:const|let|var)\s+(\w+)/)[1];
+                    try {
+                        const varValue = win.eval(varName);
+                        if (varValue !== undefined) {
+                            result = varValue;
+                        }
+                    } catch (e) { /* keep original undefined result */ }
+                }
+            }
+
             // Try to serialize
             if (result === undefined) return { ok: true, result: 'undefined' };
             if (result === null) return { ok: true, result: 'null' };
             if (typeof result === 'object') {
+                // For DOM elements, return a useful summary instead of JSON
+                if (result.nodeType) {
+                    const tag = result.tagName || result.nodeName || '?';
+                    const id = result.id ? '#' + result.id : '';
+                    const cls = result.className ? '.' + String(result.className).split(/\s+/).join('.') : '';
+                    const text = (result.textContent || '').trim().substring(0, 200);
+                    const html = (result.outerHTML || '').substring(0, 500);
+                    return { ok: true, result: `<${tag}${id}${cls}> text="${text}"\nHTML: ${html}` };
+                }
                 try { return { ok: true, result: JSON.stringify(result, null, 2).substring(0, 5000) }; }
                 catch (e) { return { ok: true, result: String(result).substring(0, 5000) }; }
             }
