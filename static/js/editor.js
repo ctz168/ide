@@ -1524,8 +1524,12 @@ const EditorManager = (() => {
         if (window.FileManager && window.FileManager.currentFilePath) {
             relPath = window.FileManager.currentFilePath;
         }
+        // Strip /workspace/ prefix if present
+        relPath = relPath.replace(/^\/workspace\/?/, '');
 
-        const previewUrl = '/api/files/preview?path=' + encodeURIComponent(relPath);
+        // Use /preview/<path> route so that the <base> tag injected in HTML
+        // makes relative CSS/JS paths resolve correctly via /preview/<dir>/
+        const previewUrl = '/preview/' + relPath;
 
         // Switch to the browser tab in the bottom panel
         const browserTab = document.querySelector('[data-btab="browser"]');

@@ -230,11 +230,94 @@ document.getElementById('content').innerHTML = marked.parse({md_json});
         for enc in ['utf-8', 'utf-8-sig', 'gbk', 'latin-1']:
             try:
                 content = raw.decode(enc)
-                return Response(content, mimetype=mime_type)
+                break
             except (UnicodeDecodeError, LookupError):
                 continue
-        # Fallback
-        return Response(raw, mimetype=mime_type)
+        else:
+            return Response(raw, mimetype=mime_type)
+
+        # For HTML files: inject <base> tag so relative CSS/JS paths resolve correctly
+        # The preview is served via /preview/<dir_path>/ so relative paths like
+        # "style.css" will resolve to /preview/<dir_path>/style.css
+        if ext in ('.html', '.htm'):
+            # Calculate the directory path of the HTML file relative to workspace
+            dir_path = os.path.dirname(path)
+            if dir_path:
+                base_href = f'/preview/{dir_path}/'
+            else:
+                base_href = '/preview/'
+            # Inject <base> tag right after <head> or at the start of the document
+            if '<head>' in content:
+                content = content.replace('<head>', f'<head><base href="{base_href}">', 1)
+            elif '<HEAD>' in content:
+                content = content.replace('<HEAD>', f'<HEAD><base href="{base_href}">', 1)
+            elif '<html>' in content:
+                content = content.replace('<html>', f'<html><head><base href="{base_href}"></head>', 1)
+            else:
+                # No <head> tag at all — prepend it
+                content = f'<head><base href="{base_href}"></head>' + content
+
+        return Response(content, mimetype=mime_type)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/preview/<path:subpath>', methods=['GET'])
+@handle_error
+def serve_preview_file(subpath):
+    """Serve static files for browser preview with correct relative path resolution.
+    
+    When an HTML file is previewed with a <base href="/preview/project_dir/"> tag,
+    relative paths like "style.css" will resolve to /preview/project_dir/style.css.
+    This route serves those files from the workspace.
+    """
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    # Security: prevent directory traversal
+    target = os.path.realpath(os.path.join(base, subpath))
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isfile(target):
+        return jsonify({'error': 'File not found'}), 404
+
+    # Determine MIME type
+    ext = os.path.splitext(target)[1].lower()
+    mime_type = _PREVIEW_MIME_TYPES.get(ext, 'application/octet-stream')
+
+    # For binary file types, use send_file
+    if mime_type.startswith('image/') or mime_type == 'application/pdf':
+        return send_file(target, mimetype=mime_type)
+
+    # For text-based files, serve with proper encoding
+    try:
+        with open(target, 'rb') as f:
+            raw = f.read()
+        content = None
+        for enc in ['utf-8', 'utf-8-sig', 'gbk', 'latin-1']:
+            try:
+                content = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if content is None:
+            return Response(raw, mimetype=mime_type)
+
+        # For HTML files: inject <base> tag so relative CSS/JS paths resolve correctly
+        if ext in ('.html', '.htm'):
+            dir_path = os.path.dirname(subpath)
+            base_href = f'/preview/{dir_path}/' if dir_path else '/preview/'
+            if '<head>' in content:
+                content = content.replace('<head>', f'<head><base href="{base_href}">', 1)
+            elif '<HEAD>' in content:
+                content = content.replace('<HEAD>', f'<HEAD><base href="{base_href}">', 1)
+            elif '<html>' in content:
+                content = content.replace('<html>', f'<html><head><base href="{base_href}"></head>', 1)
+            else:
+                content = f'<head><base href="{base_href}"></head>' + content
+
+        return Response(content, mimetype=mime_type)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
