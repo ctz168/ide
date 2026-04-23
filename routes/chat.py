@@ -78,132 +78,72 @@ RING_BUFFER_SIZE = 100
 # Debug store for last LLM payload (used when errors need raw payload inspection)
 _last_llm_payload_debug = {}
 
-DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
-You have access to specialized tools for reading, writing, editing, searching, and managing code projects.
+# Load system prompt template from external file (routes/system_prompt.txt)
+# The template uses {_IDE_PORT} as placeholder, injected at load time.
+_SYSTEM_PROMPT_TEMPLATE = None  # raw template string (loaded once, cached)
+_SYSTEM_PROMPT_MTIME = None     # file modification time for hot-reload
 
-## Choose the Most Efficient Tool for Each Task
-Each tool is designed for a specific purpose. Using the right tool gives you **better accuracy, structured output, and faster results** than run_command. Here's when to use each:
+def _load_system_prompt_template():
+    """Load system prompt template from system_prompt.txt, cache it, and inject runtime variables.
+    
+    - First call: reads file, caches template and mtime, returns rendered prompt.
+    - Subsequent calls: checks mtime — if file changed, re-reads and re-caches.
+    - Uses str.format_map() to inject {_IDE_PORT} etc.
+    - Falls back to a minimal hardcoded prompt if file is missing.
+    """
+    global _SYSTEM_PROMPT_TEMPLATE, _SYSTEM_PROMPT_MTIME
+    
+    _prompt_file = os.path.join(os.path.dirname(__file__), 'system_prompt.txt')
+    
+    # Check if file has been modified (hot-reload support)
+    try:
+        current_mtime = os.path.getmtime(_prompt_file)
+    except OSError:
+        current_mtime = None
+    
+    if current_mtime is not None and _SYSTEM_PROMPT_TEMPLATE is not None and _SYSTEM_PROMPT_MTIME == current_mtime:
+        # Cache hit — file unchanged, just re-render with current variables
+        return _SYSTEM_PROMPT_TEMPLATE.format_map({'_IDE_PORT': _IDE_PORT})
+    
+    # Cache miss or file changed — load from file
+    _file_changed = (_SYSTEM_PROMPT_MTIME is not None and current_mtime != _SYSTEM_PROMPT_MTIME)
+    if current_mtime is not None:
+        try:
+            with open(_prompt_file, 'r', encoding='utf-8') as f:
+                _SYSTEM_PROMPT_TEMPLATE = f.read().strip()
+            _SYSTEM_PROMPT_MTIME = current_mtime
+            log_write(f'[phoneide] System prompt loaded from {_prompt_file} ({len(_SYSTEM_PROMPT_TEMPLATE)} chars, mtime={current_mtime})')
+            # Invalidate _SYSTEM_PROMPT_CACHE so next API call picks up the new prompt
+            if _file_changed:
+                try:
+                    _SYSTEM_PROMPT_CACHE.clear()
+                    log_write(f'[phoneide] System prompt file changed — cleared API cache')
+                except NameError:
+                    pass  # _SYSTEM_PROMPT_CACHE not defined yet (first load)
+        except Exception as e:
+            log_write(f'[phoneide] ERROR loading system_prompt.txt: {e}, using fallback')
+            if _SYSTEM_PROMPT_TEMPLATE is None:
+                _SYSTEM_PROMPT_TEMPLATE = (
+                    'You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.\n'
+                    'You have access to specialized tools for reading, writing, editing, searching, and managing code projects.\n'
+                    f'CRITICAL: NEVER stop the IDE server (port {_IDE_PORT}) or use kill_port on it.\n'
+                )
+    else:
+        # File doesn't exist — use fallback
+        if _SYSTEM_PROMPT_TEMPLATE is None:
+            _SYSTEM_PROMPT_TEMPLATE = (
+                'You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.\n'
+                'You have access to specialized tools for reading, writing, editing, searching, and managing code projects.\n'
+                f'CRITICAL: NEVER stop the IDE server (port {_IDE_PORT}) or use kill_port on it.\n'
+            )
+            log_write(f'[phoneide] WARNING: system_prompt.txt not found at {_prompt_file}, using fallback prompt')
+    
+    # Render template with runtime variables
+    return _SYSTEM_PROMPT_TEMPLATE.format_map({'_IDE_PORT': _IDE_PORT})
 
-**Planning:** todo_write (plan tasks), todo_read (check progress)
-**Read:** read_file (line numbers, encoding, offset/limit)
-**Edit 1 spot:** edit_file with old_text/new_text (atomic, auto-lint)
-**Edit 2+ spots:** edit_file with replacements array (all succeed or all fail)
-**Rewrite whole file:** write_file
-**Append to file:** append_file
-**List dir:** list_directory (structured with sizes)
-**Find files:** glob_files (pattern: "**/*.py")
-**Search content:** search_files (regex, line numbers)
-**File metadata:** file_info (size, dates, permissions)
-**Create dirs:** create_directory (mkdir -p)
-**Delete:** delete_path (recursive option)
-**Move/rename:** move_file (auto-updates AST index)
-**Search code:** grep_code (context lines, file info)
-**Find definition:** find_definition (AST-based, precise)
-**Find usages:** find_references (AST-based, excludes comments)
-**File structure:** file_structure (AST outline)
-**Lint:** run_linter (auto-detects project+linter)
-**Test:** run_tests (auto-detects framework)
-**Install pkg:** install_package (auto-handles venv)
-**List pkgs:** list_packages (shows versions)
-**Git:** git_status/git_diff/git_log/git_commit/git_checkout (structured output)
-**Web search:** web_search (structured results)
-**Fetch page:** web_fetch (clean text, no HTML)
-**Preview:** browser_navigate (open URL in iframe)
-**JS in page:** browser_evaluate (DOM access)
-**Inspect element:** browser_inspect (tag, attrs, styles, position)
-**Find elements:** browser_query_all (CSS selector, up to 50)
-**Click:** browser_click (simulate click)
-**Type input:** browser_input (React/Vue compatible)
-**Console:** browser_console (captured logs)
-**Page info:** browser_page_info (title, URL, viewport)
-**Cookies:** browser_cookies (parsed pairs)
-**Server logs:** server_logs (backend errors)
-**Subtask:** delegate_task (independent sub-agent)
-**Parallel:** parallel_tasks (2-4 sub-agents)
-**Kill port:** kill_port (stop process by port)
-**Shell:** run_command (dev servers, compiling, scripts — right choice for these)
-
-Key principle: run_command is NOT wrong — just less efficient for tasks that have a dedicated tool.
-
-**DO NOT use run_command for these (use the dedicated tool instead):**
-- Reading files → use read_file (NOT cat/head/tail)
-- Editing files → use edit_file (NOT sed/echo/awk)
-- Listing directories → use list_directory (NOT ls)
-- Finding files → use glob_files (NOT find)
-- Searching code → use grep_code or search_files (NOT grep/rg)
-- Git operations → use git_status/git_diff/git_log/git_commit/git_checkout (NOT git commands)
-
-## Core Workflow Rules
-1. ALWAYS use todo_write BEFORE starting any complex task (3+ steps) - plan first, then execute
-2. Update todo status in real-time - mark items in_progress when starting, completed when done
-3. Choose the most efficient tool - check the list above before falling back to run_command
-4. Before writing a file, read it first to understand existing content
-5. When modifying code, use edit_file for targeted changes instead of rewriting entire files
-6. PREFER find_definition/find_references over grep_code for code navigation - AST analysis is more precise
-7. Always use absolute paths when referencing files
-8. After executing commands, check the output for errors before proceeding
-9. For large files, use offset_line and limit_lines to read specific sections
-
-## Task Planning Workflow (MANDATORY)
-You MUST use todo_write before starting ANY task with 3+ steps.
-- Break complex tasks into specific, actionable steps
-- Use id like "1", "2", "3" for ordering
-- Set priority: high/medium/low
-- Update status in real-time: in_progress -> completed
-
-## Self-Reflection & Quality Gate (MANDATORY)
-Before marking ANY task as completed, you MUST pass the quality gate:
-
-**Step 1: Self-Review** — After making changes, re-read the modified code and verify:
-- Does the change do exactly what was requested? No more, no less?
-- Are there any syntax errors, typos, or logic bugs?
-- Did you accidentally break any existing functionality?
-- Are all imports present? Are all variables defined before use?
-- Are there any edge cases you missed?
-
-**Step 2: Test** — Run appropriate verification:
-- Python/JS changes → run_linter, then run_tests
-- Backend changes → run_linter, run_tests, then server_logs to check for errors
-- Frontend changes → browser_navigate + browser_console to verify no errors
-- Config/file changes → read_file to verify the content is correct
-
-**Step 3: Verify** — Check the actual results:
-- If linter found errors → FIX them before proceeding, do NOT ignore
-- If tests failed → FIX the code until tests pass, do NOT skip
-- If server has errors → read the error, fix the code, restart if needed
-- If browser console has errors → FIX them before marking complete
-
-**CRITICAL: Do NOT mark a todo item as "completed" if:**
-- Linter still shows errors in your changed files
-- Tests are failing (even if unrelated to your change, at least investigate)
-- You haven't actually verified the change works (just writing code is not enough)
-- You made a change but didn't read it back to confirm it was applied correctly
-
-**Self-Reflection Questions (ask yourself before each completion):**
-1. "Did I read back the file to confirm my edit was applied correctly?"
-2. "Did I run the linter? Are there any errors?"
-3. "Did I test the specific functionality I changed?"
-4. "Could this change break anything else? Did I check?"
-
-## Common Mistakes to Avoid
-- Writing code without reading the file first → causes lost existing code
-- Using edit_file with wrong old_text → edit fails silently, code unchanged
-- Marking tasks complete without testing → broken code delivered to user
-- Forgetting to check imports after adding new function calls → NameError at runtime
-- Changing one file but not updating dependent files → broken references
-- Assuming the edit worked without reading the file back to verify
-
-## CRITICAL SAFETY RULES - NEVER VIOLATE
-The process phoneide_server.py and port {_IDE_PORT} are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.
-- NEVER stop, kill, or terminate the phoneide_server.py process
-- NEVER use kill_port on port {_IDE_PORT} - this is the IDE's own port
-- NEVER run any command that would stop phoneide_server.py
-- If you need to start a user's project server and port {_IDE_PORT} is mentioned, use a DIFFERENT port
-
-## Platform Awareness
-- On Windows: paths use backslashes, Python is python, venv binaries in Scripts/
-- On Linux/macOS: paths use forward slashes, Python is python3, venv binaries in bin/
-"""
+# Initialize DEFAULT_SYSTEM_PROMPT at module load time
+default_system_prompt_raw = _load_system_prompt_template()
+DEFAULT_SYSTEM_PROMPT = default_system_prompt_raw
 
 # ==================== Tool Definitions ====================
 # NOTE: Keep descriptions concise! Payload must stay under ~28KB for ModelScope API compatibility.
@@ -3650,7 +3590,7 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     # Cache miss — build system prompt from scratch
     # Split into static (tool docs) and dynamic (workspace/env) parts
     # for provider-level prompt caching (Anthropic cache_control, OpenAI cache breakpoints)
-    _static_sys_prompt = DEFAULT_SYSTEM_PROMPT
+    _static_sys_prompt = _load_system_prompt_template()  # hot-reload from system_prompt.txt
     _dynamic_sys_prompt = ''  # workspace, env, AST — changes per request
 
     custom_prompt = llm_config.get('system_prompt', '').strip()
