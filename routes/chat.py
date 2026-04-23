@@ -142,8 +142,9 @@ def _load_system_prompt_template():
     return _SYSTEM_PROMPT_TEMPLATE.format_map({'_IDE_PORT': _IDE_PORT})
 
 # Initialize DEFAULT_SYSTEM_PROMPT at module load time
-default_system_prompt_raw = _load_system_prompt_template()
-DEFAULT_SYSTEM_PROMPT = default_system_prompt_raw
+# NOTE: For hot-reload, always call _load_system_prompt_template() to get the latest prompt.
+# DEFAULT_SYSTEM_PROMPT is kept as a static snapshot for backward compatibility (e.g. comparisons).
+DEFAULT_SYSTEM_PROMPT = _load_system_prompt_template()
 
 # ==================== Tool Definitions ====================
 # NOTE: Keep descriptions concise! Payload must stay under ~28KB for ModelScope API compatibility.
@@ -3551,6 +3552,9 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     # P2-6: Check cache first (60s TTL) — fast path for repeated calls
     _sp_cache_key = _get_system_prompt_cache_key(llm_config)
     _sp_now = time.time()
+    # Always touch _load_system_prompt_template() so hot-reload mtime check runs
+    # (if file changed, it will clear _SYSTEM_PROMPT_CACHE and force a cache miss below)
+    _fresh_static_prompt = _load_system_prompt_template()
     _sp_cached = _SYSTEM_PROMPT_CACHE.get(_sp_cache_key)
     if _sp_cached and (_sp_now - _sp_cached['time'] < _SYSTEM_PROMPT_CACHE_TTL):
         _static_sys_prompt = _sp_cached.get('static', _sp_cached['prompt'])
@@ -3594,7 +3598,7 @@ def _build_api_messages(messages, llm_config, skip_system_inject=False):
     _dynamic_sys_prompt = ''  # workspace, env, AST — changes per request
 
     custom_prompt = llm_config.get('system_prompt', '').strip()
-    if custom_prompt and custom_prompt != DEFAULT_SYSTEM_PROMPT.strip():
+    if custom_prompt and custom_prompt != _load_system_prompt_template().strip():
         _static_sys_prompt += '\n\n## Additional Instructions from User\n' + custom_prompt
 
     # Inject project-aware workspace info and system environment
