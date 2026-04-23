@@ -30,6 +30,13 @@ const ChatManager = (() => {
     let sseConnectionAlive = false;     // whether the SSE connection is currently alive
     let sseConnectionLostWhileHidden = false; // set to true if SSE dies while page is hidden
 
+    // ── Pending Message Queue ──────────────────────────────────────
+    // When user sends a message while AI is processing, it gets queued.
+    // After current task completes, queued messages are auto-sent.
+    // Queue is persisted in localStorage for crash/recovery.
+    const PENDING_QUEUE_KEY = 'phoneide_pending_messages';
+    let pendingMessages = [];  // array of {text, convId, timestamp}
+
     // ── Chat Search State ──────────────────────────────────────────
     let searchMatches = [];             // array of {el, mark} for each match
     let searchCurrentIndex = -1;        // current highlighted match index
@@ -1191,13 +1198,21 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const statusEl = document.getElementById('chat-execute-status');
 
         if (sendBtn) {
-            sendBtn.disabled = processing;
-            sendBtn.textContent = processing ? 'Thinking...' : 'Send';
-            sendBtn.style.display = processing ? 'none' : '';
+            if (processing) {
+                // Show send button as "Queue" mode during processing
+                sendBtn.disabled = false;
+                sendBtn.textContent = '排队';
+                sendBtn.style.display = '';
+            } else {
+                sendBtn.disabled = false;
+                sendBtn.textContent = '发送';
+                sendBtn.style.display = '';
+            }
         }
 
         if (input) {
-            input.disabled = processing;
+            // Always allow input — user can queue messages while AI is processing
+            input.disabled = false;
             if (!processing) {
                 input.focus();
             }
@@ -1206,9 +1221,15 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (processing) {
             showStopButton();
             if (statusEl) statusEl.textContent = '';
+            // Update pending queue badge
+            updatePendingBadge();
         } else {
             hideStopButton();
             hideTyping();
+            // Process pending messages after a short delay
+            if (pendingMessages.length > 0) {
+                setTimeout(() => processPendingQueue(), 300);
+            }
         }
     }
 
@@ -1217,6 +1238,127 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (el) {
             el.textContent = text || '';
         }
+    }
+
+    // ── Pending Message Queue ──────────────────────────────────────
+
+    /**
+     * Add a message to the pending queue (persisted in localStorage).
+     * Called when user sends a message while AI is processing.
+     */
+    function addToPendingQueue(text) {
+        if (!text || !text.trim()) return;
+        const entry = {
+            text: text.trim(),
+            convId: currentConvId,
+            timestamp: Date.now()
+        };
+        pendingMessages.push(entry);
+        savePendingQueue();
+        updatePendingBadge();
+        showToast(`已加入排队 (第${pendingMessages.length}条)`, 'info');
+    }
+
+    /**
+     * Save pending queue to localStorage for crash recovery / page refresh.
+     */
+    function savePendingQueue() {
+        try {
+            if (pendingMessages.length > 0) {
+                localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(pendingMessages));
+            } else {
+                localStorage.removeItem(PENDING_QUEUE_KEY);
+            }
+        } catch (e) { /* ignore storage errors */ }
+    }
+
+    /**
+     * Load pending queue from localStorage (called on init / page refresh).
+     */
+    function loadPendingQueue() {
+        try {
+            const saved = localStorage.getItem(PENDING_QUEUE_KEY);
+            if (saved) {
+                pendingMessages = JSON.parse(saved);
+                if (!Array.isArray(pendingMessages)) pendingMessages = [];
+            }
+        } catch (e) {
+            pendingMessages = [];
+        }
+        updatePendingBadge();
+    }
+
+    /**
+     * Update the pending queue badge/indicator in the UI.
+     */
+    function updatePendingBadge() {
+        // Update badge on the send button
+        const sendBtn = document.getElementById('chat-send');
+        if (sendBtn && isProcessing) {
+            if (pendingMessages.length > 0) {
+                sendBtn.textContent = `排队(${pendingMessages.length})`;
+            } else {
+                sendBtn.textContent = '排队';
+            }
+        }
+
+        // Update or create pending badge in the input area
+        let badge = document.getElementById('chat-pending-badge');
+        if (pendingMessages.length > 0) {
+            if (!badge) {
+                badge = document.createElement('div');
+                badge.id = 'chat-pending-badge';
+                badge.style.cssText = `
+                    display: flex; align-items: center; gap: 6px;
+                    padding: 4px 10px; margin: 0;
+                    background: rgba(255, 149, 0, 0.15);
+                    border: 1px solid rgba(255, 149, 0, 0.3);
+                    border-radius: 6px; font-size: 12px;
+                    color: #ff9500; cursor: pointer;
+                `;
+                const statusArea = document.getElementById('chat-execute-status');
+                if (statusArea && statusArea.parentNode) {
+                    statusArea.parentNode.insertBefore(badge, statusArea.nextSibling);
+                }
+                // Click to clear queue
+                badge.addEventListener('click', () => {
+                    if (confirm(`清除 ${pendingMessages.length} 条排队消息？`)) {
+                        pendingMessages = [];
+                        savePendingQueue();
+                        updatePendingBadge();
+                    }
+                });
+            }
+            badge.innerHTML = `⏳ ${pendingMessages.length}条消息排队中 · 点击清除`;
+            badge.style.display = 'flex';
+        } else if (badge) {
+            badge.style.display = 'none';
+        }
+    }
+
+    /**
+     * Process the pending queue: send the first message and keep the rest queued.
+     * Called automatically when setProcessing(false) detects pending messages.
+     */
+    async function processPendingQueue() {
+        if (pendingMessages.length === 0) return;
+        if (isProcessing) return; // safety check
+
+        // Take the first message from the queue
+        const entry = pendingMessages.shift();
+        savePendingQueue();
+        updatePendingBadge();
+
+        // Restore conversation id if saved with the entry
+        if (entry.convId && !currentConvId) {
+            currentConvId = entry.convId;
+        }
+
+        // Add a separator showing this was a queued message
+        addMessage('system', `📤 发送排队消息...`);
+
+        // Send it
+        await sendMessage(entry.text);
     }
 
     // ── API: Load History ──────────────────────────────────────────
@@ -1319,7 +1461,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 if (resp.status === 404) {
                     // Task already finished — clean up UI state
                     isReconnecting = false;
-                    isProcessing = false;
                     setProcessing(false);
                     return;
                 }
@@ -1508,9 +1649,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         } finally {
             currentAbortController = null;
             isReconnecting = false;
-            isProcessing = false;
-            hideStopButton();
-            hideTyping();
             hideTurnIndicator();
             hideTaskActivityBadge();
             stopTaskStatusPolling();
@@ -1519,16 +1657,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // Stop backup timer — backend has saved the history on completion
             stopBackupTimer();
 
-            const sendBtn = document.getElementById('chat-send');
-            if (sendBtn) {
-                sendBtn.disabled = false;
-                sendBtn.textContent = 'Send';
-                sendBtn.style.display = '';
-            }
-            const inputEl = document.getElementById('chat-input');
-            if (inputEl) {
-                inputEl.disabled = false;
-            }
+            // setProcessing(false) handles: sendBtn, input, hideStopButton, hideTyping, pending queue
+            setProcessing(false);
         }
     }
 
@@ -1636,13 +1766,23 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * @param {string} [text] - message text (defaults to input field value)
      */
     async function sendMessage(text) {
-        if (isProcessing) return;
-
         const input = document.getElementById('chat-input');
         const message = text || (input ? input.value : '').trim();
 
         if (!message) {
-            showToast('Please enter a message', 'warning');
+            showToast('请输入消息', 'warning');
+            return;
+        }
+
+        // If AI is currently processing, queue the message instead
+        if (isProcessing) {
+            addToPendingQueue(message);
+            // Clear input
+            if (input) {
+                input.value = '';
+                localStorage.removeItem('phoneide_chat_input');
+            }
+            autoResizeInput();
             return;
         }
 
@@ -1933,25 +2073,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // (i.e. if SSE didn't die while hidden)
             if (!sseConnectionLostWhileHidden) {
                 currentAbortController = null;
-                isProcessing = false;
-                hideStopButton();
-                hideTyping();
                 hideTurnIndicator();
                 autoResizeInput();
 
                 // Stop the periodic backup timer
                 stopBackupTimer();
 
-                const sendBtn = document.getElementById('chat-send');
-                if (sendBtn) {
-                    sendBtn.disabled = false;
-                    sendBtn.textContent = 'Send';
-                    sendBtn.style.display = '';
-                }
-                const inputEl = document.getElementById('chat-input');
-                if (inputEl) {
-                    inputEl.disabled = false;
-                }
+                // setProcessing(false) handles: isProcessing, sendBtn, input, hideStopButton, hideTyping, pending queue
+                setProcessing(false);
             }
         }
     }
@@ -1980,13 +2109,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
     async function newChat() {
         if (isProcessing) {
-            showToast('Please wait for current generation to finish', 'warning');
+            showToast('请等待当前任务完成', 'warning');
             return;
         }
         // Reset conversation
         currentConvId = null;
         messages = [];
         lastUserMessage = null;
+        pendingMessages = [];
+        savePendingQueue();
+        updatePendingBadge();
         renderMessages([]);
         clearBackup();
         updateContextRing();
@@ -2278,23 +2410,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         } finally {
             if (!sseConnectionLostWhileHidden) {
                 currentAbortController = null;
-                isProcessing = false;
-                hideStopButton();
-                hideTyping();
                 hideTurnIndicator();
                 autoResizeInput();
                 stopBackupTimer();
 
-                const sendBtn = document.getElementById('chat-send');
-                if (sendBtn) {
-                    sendBtn.disabled = false;
-                    sendBtn.textContent = 'Send';
-                    sendBtn.style.display = '';
-                }
-                const inputEl = document.getElementById('chat-input');
-                if (inputEl) {
-                    inputEl.disabled = false;
-                }
+                // setProcessing(false) handles: isProcessing, sendBtn, input, hideStopButton, hideTyping, pending queue
+                setProcessing(false);
             }
         }
     }
@@ -4186,8 +4307,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 const resp = await fetch('/api/chat/task/status');
                 if (!resp.ok) {
                     // Backend task is gone — reload history instead
-                    isProcessing = false;
-                    hideStopButton();
+                    setProcessing(false);
                     hideTurnIndicator();
                     autoResizeInput();
                     await loadHistory();
@@ -4205,8 +4325,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     await reconnectTask(data.conv_id);
                 } else {
                     // Task already finished — reload history
-                    isProcessing = false;
-                    hideStopButton();
+                    setProcessing(false);
                     hideTurnIndicator();
                     autoResizeInput();
                     await loadHistory();
@@ -4214,8 +4333,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 }
             } catch (err) {
                 console.warn('ChatManager: visibilitychange reconnect error:', err.message);
-                isProcessing = false;
-                hideStopButton();
+                setProcessing(false);
                 hideTurnIndicator();
                 autoResizeInput();
                 await loadHistory();
@@ -4249,9 +4367,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         currentAbortController = null;
-                        isProcessing = false;
-                        hideStopButton();
-                        hideTyping();
+                        setProcessing(false);
                         hideTurnIndicator();
                         stopBackupTimer();
                         autoResizeInput();
@@ -4273,10 +4389,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         wireEvents();
         await loadHistory();
         autoResizeInput();
+        // Load pending message queue from localStorage (crash/refresh recovery)
+        loadPendingQueue();
         // Check for a running task and reconnect if needed
         await checkAndRecoverTask();
         // Start polling for task status (for the activity badge)
         startTaskStatusPolling();
+        // If not processing and there are pending messages, process them
+        if (!isProcessing && pendingMessages.length > 0) {
+            setTimeout(() => processPendingQueue(), 500);
+        }
         console.log('ChatManager: initialized (SSE streaming enabled)');
     }
 
@@ -4320,6 +4442,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         get messages() { return messages.slice(); },
         get lastUserMessage() { return lastUserMessage; },
         get currentConvId() { return currentConvId; },
+        get pendingMessages() { return pendingMessages.slice(); },
+
+        // Pending queue management
+        addToPendingQueue,
+        clearPendingQueue: () => { pendingMessages = []; savePendingQueue(); updatePendingBadge(); },
+        processPendingQueue,
 
         // Mode control
         get chatMode() { return chatMode; },
