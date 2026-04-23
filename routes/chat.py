@@ -5493,6 +5493,7 @@ def send_chat_stream():
 
     def _run_agent():
         """Background thread: runs the agent loop and puts events into queue + buffer."""
+        my_thread_id = threading.current_thread().ident
         try:
             for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id, is_retry=is_retry):
                 # Check cancellation before enqueueing
@@ -5516,8 +5517,15 @@ def send_chat_stream():
                 _active_task['event_buffer'].append(done_event)
         finally:
             # Signal completion and mark task as no longer running
+            # Only set running=False if we are still the active task thread
+            # (a new task may have started while we were running)
             with _active_task['lock']:
-                _active_task['running'] = False
+                current_thread = _active_task.get('thread')
+                if current_thread is not None and current_thread.ident == my_thread_id:
+                    _active_task['running'] = False
+                else:
+                    # A new task has already started — don't interfere with it
+                    print(f'[LLM] Old agent thread (id={my_thread_id}) finished after new task started, not resetting running state')
             event_queue.put(None)
 
     # Start the agent in a background thread
@@ -5529,6 +5537,7 @@ def send_chat_stream():
     def generate():
         """Read from the shared queue and yield SSE events to this client."""
         q = None
+        my_event_queue = event_queue  # capture our queue ref for safe cleanup
         try:
             with _active_task['lock']:
                 q = _active_task['event_queue']
@@ -5548,14 +5557,21 @@ def send_chat_stream():
                 _active_task['subscribers'] -= 1
                 if _active_task['subscribers'] <= 0:
                     # Full cleanup when last subscriber disconnects
-                    _active_task['running'] = False
-                    _active_task['cancelled'] = False
-                    _active_task['conv_id'] = None
-                    _active_task['message'] = None
-                    _active_task['started_at'] = None
-                    _active_task['event_queue'] = None
-                    _active_task['event_buffer'] = None
-                    _active_task['thread'] = None
+                    # But only if we're still the active task (a new task may have started)
+                    current_queue = _active_task.get('event_queue')
+                    if current_queue is my_event_queue:
+                        # Safe to clean up — no new task has taken over
+                        _active_task['running'] = False
+                        _active_task['cancelled'] = False
+                        _active_task['conv_id'] = None
+                        _active_task['message'] = None
+                        _active_task['started_at'] = None
+                        _active_task['event_queue'] = None
+                        _active_task['event_buffer'] = None
+                        _active_task['thread'] = None
+                    else:
+                        # A new task has started — don't interfere with its state
+                        print(f'[LLM] Old SSE subscriber disconnecting after new task started, not cleaning up state')
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
@@ -5579,6 +5595,30 @@ def stop_task():
                 stop_process(pid)
             except Exception:
                 pass
+
+    # Force cleanup after a short delay as a safety net.
+    # The normal cleanup path is: agent thread finishes → running=False,
+    # then SSE subscriber disconnects → subscribers=0 → full cleanup.
+    # But if the SSE client already disconnected before we got here,
+    # or if the agent thread hangs, the task state may never get cleaned up.
+    # This delayed cleanup ensures the task is always marked as stopped.
+    def _force_cleanup():
+        time.sleep(3)  # Give the normal cleanup path a chance first
+        with _active_task['lock']:
+            if _active_task['running'] and _active_task.get('cancelled'):
+                print('[LLM] Force-cleaning up task state after stop request (normal cleanup did not run)')
+                _active_task['running'] = False
+                _active_task['cancelled'] = False
+                _active_task['conv_id'] = None
+                _active_task['message'] = None
+                _active_task['started_at'] = None
+                _active_task['event_queue'] = None
+                _active_task['event_buffer'] = None
+                _active_task['thread'] = None
+                _active_task['subscribers'] = 0
+
+    cleanup_thread = threading.Thread(target=_force_cleanup, daemon=True)
+    cleanup_thread.start()
 
     return jsonify({'ok': True, 'message': 'Task cancellation requested'})
 
@@ -5605,6 +5645,7 @@ def task_reconnect_stream():
             return jsonify({'error': 'No active task'}), 404
 
         q = _active_task['event_queue']
+        my_event_queue = q  # capture for safe cleanup
         # Snapshot the ring buffer for catch-up
         buffered = list(_active_task['event_buffer'])
         _active_task['subscribers'] += 1
@@ -5633,14 +5674,17 @@ def task_reconnect_stream():
                 _active_task['subscribers'] -= 1
                 if _active_task['subscribers'] <= 0:
                     # Full cleanup when last subscriber disconnects
-                    _active_task['running'] = False
-                    _active_task['cancelled'] = False
-                    _active_task['conv_id'] = None
-                    _active_task['message'] = None
-                    _active_task['started_at'] = None
-                    _active_task['event_queue'] = None
-                    _active_task['event_buffer'] = None
-                    _active_task['thread'] = None
+                    # But only if we're still the active task (a new task may have started)
+                    current_queue = _active_task.get('event_queue')
+                    if current_queue is my_event_queue:
+                        _active_task['running'] = False
+                        _active_task['cancelled'] = False
+                        _active_task['conv_id'] = None
+                        _active_task['message'] = None
+                        _active_task['started_at'] = None
+                        _active_task['event_queue'] = None
+                        _active_task['event_buffer'] = None
+                        _active_task['thread'] = None
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
