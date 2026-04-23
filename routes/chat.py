@@ -4711,7 +4711,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                 _emit({'type': 'tool_result', 'tool': tool_name, 'ok': ok,
                        'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2)})
                 context.append({'role': 'tool', 'tool_call_id': tool_call_id,
-                                'name': tool_name, 'content': result_str,
+                                'name': tool_name, 'tool': tool_name, 'content': result_str,
                                 'time': datetime.now().isoformat()})
                 _batch_results.append((tool_name, {}, ok, result_str))
             context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
@@ -4751,6 +4751,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                     'role': 'tool',
                     'tool_call_id': tool_call_id,
                     'name': tool_name,
+                    'tool': tool_name,
                     'content': result_str,
                     'time': datetime.now().isoformat(),
                 })
@@ -5193,7 +5194,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name})}\n\n"
                 yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
                 tool_msg = {'role': 'tool', 'tool_call_id': tool_call_id,
-                            'name': tool_name, 'content': result_str,
+                            'name': tool_name, 'tool': tool_name, 'content': result_str,
                             'time': datetime.now().isoformat()}
                 context.append(tool_msg)
                 history.append(tool_msg)
@@ -5234,6 +5235,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     'role': 'tool',
                     'tool_call_id': tool_call_id,
                     'name': tool_name,
+                    'tool': tool_name,
                     'content': result_str,
                     'time': datetime.now().isoformat(),
                 }

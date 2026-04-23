@@ -605,7 +605,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         // Tool execution details
         if (role === 'tool') {
-            const toolName = extra.tool || 'unknown';
+            const toolName = extra.tool || extra.name || 'unknown';
             const icon = TOOL_ICONS[toolName] || '🔧';
             const argsStr = extra.args ? formatToolArgs(extra.args) : '';
             const ok = extra.ok !== false;

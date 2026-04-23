@@ -1761,6 +1761,7 @@ html, body {
 
 .chat-msg.tool {
     align-self: flex-start;
+    max-width: 100%;
     background: rgba(203, 166, 247, 0.15);
     border: 1px solid rgba(203, 166, 247, 0.3);
     color: var(--text-secondary);
