@@ -981,6 +981,88 @@ def _tool_read_file(args):
     except Exception as e:
         return f'Error reading file: {str(e)}'
 
+def _sanitize_json_strings(raw_json):
+    """Fix common JSON escaping issues that cause json.loads to fail.
+    
+    The most common issue: the model puts literal newlines, tabs, and carriage
+    returns inside JSON string values instead of their escaped forms (\\n, \\t, \\r).
+    JSON spec does NOT allow literal control characters in strings.
+    
+    This function walks through the JSON text and replaces literal control chars
+    inside strings with their escaped equivalents, while being careful not to
+    modify characters that are already properly escaped.
+    
+    Returns: sanitized JSON text
+    """
+    if not raw_json or not isinstance(raw_json, str):
+        return raw_json
+    
+    result = []
+    in_string = False
+    i = 0
+    length = len(raw_json)
+    
+    while i < length:
+        ch = raw_json[i]
+        
+        if ch == '\\' and in_string and i + 1 < length:
+            # Already escaped — pass through both characters unchanged
+            result.append(ch)
+            result.append(raw_json[i + 1])
+            i += 2
+            continue
+        
+        if ch == '"':
+            # Check if this quote is escaped (preceded by odd number of backslashes)
+            # Simple check: just look at the immediately preceding char
+            # (since we've already passed through escaped sequences above)
+            in_string = not in_string
+            result.append(ch)
+            i += 1
+            continue
+        
+        if in_string:
+            # Inside a JSON string — replace literal control characters
+            if ch == '\n':
+                result.append('\\n')
+            elif ch == '\r':
+                result.append('\\r')
+            elif ch == '\t':
+                result.append('\\t')
+            elif ord(ch) < 0x20:
+                # Other control characters — replace with \\uXXXX
+                result.append(f'\\u{ord(ch):04x}')
+            else:
+                result.append(ch)
+        else:
+            result.append(ch)
+        
+        i += 1
+    
+    return ''.join(result)
+
+
+def _json_unescape_string(s):
+    """Properly unescape a JSON string fragment using json.loads.
+    
+    This handles all JSON escape sequences correctly (\\n, \\t, \\", \\\\, etc.)
+    without the ordering bugs of manual replace() chains.
+    """
+    try:
+        return json.loads('"' + s + '"')
+    except (json.JSONDecodeError, Exception):
+        # Fallback: manual unescape with correct order
+        # IMPORTANT: process \\\\ first, then \\", then \\n/\\t/\\r
+        result = s
+        result = result.replace('\\\\', '\x00BACKSLASH\x00')
+        result = result.replace('\\"', '"')
+        result = result.replace('\\n', '\n')
+        result = result.replace('\\r', '\r')
+        result = result.replace('\\t', '\t')
+        result = result.replace('\x00BACKSLASH\x00', '\\')
+        return result
+
+
 def _recover_broken_json_args(raw_args, tool_name):
     """Try to recover path and content from broken JSON tool_call arguments.
     
@@ -997,94 +1079,118 @@ def _recover_broken_json_args(raw_args, tool_name):
     
     import re as _re
     
-    # Strategy 1: Try to fix common JSON escaping issues and re-parse
-    # The model often forgets to escape: backslashes, quotes inside strings, newlines
+    # ── Strategy 1: Sanitize literal control characters and re-parse ──
+    # Most common cause: model outputs real newlines/tabs inside JSON strings
     try:
-        fixed = raw_args
+        sanitized = _sanitize_json_strings(raw_args)
         # Try adding missing closing braces/brackets
-        open_braces = fixed.count('{') - fixed.count('}')
-        open_brackets = fixed.count('[') - fixed.count(']')
+        open_braces = sanitized.count('{') - sanitized.count('}')
+        open_brackets = sanitized.count('[') - sanitized.count(']')
         if open_braces > 0:
-            fixed += '}' * open_braces
+            sanitized += '}' * open_braces
         if open_brackets > 0:
-            fixed += ']' * open_brackets
-        # Try parsing the fixed version
-        result = json.loads(fixed)
+            sanitized += ']' * open_brackets
+        result = json.loads(sanitized)
         if isinstance(result, dict):
-            # Validate that the recovered result has the essential keys
-            if tool_name in ('write_file', 'edit_file'):
-                if 'path' in result or 'content' in result:
-                    print(f'[LLM] Recovered broken JSON args by fixing braces (tool: {tool_name})')
-                    return result
-            else:
+            if 'path' in result or 'content' in result:
+                print(f'[LLM] Recovered broken JSON by sanitizing control chars + fixing braces (tool: {tool_name}, content_len: {len(str(result.get("content", "")))})')
                 return result
-    except (json.JSONDecodeError, Exception):
-        pass
+    except (json.JSONDecodeError, Exception) as e:
+        print(f'[LLM] Strategy 1 (sanitize+reparse) failed: {e}')
     
-    # Strategy 2: Extract path using regex (path usually has simple value, no special chars)
+    # ── Strategy 1b: Try closing the content string and re-parse ──
+    # If the JSON is truncated (max_tokens), add closing "}" to complete it
+    try:
+        # Find where content string value starts
+        content_match = _re.search(r'"content"\s*:\s*"', raw_args)
+        if content_match:
+            content_begin = content_match.end()
+            remaining = raw_args[content_begin:]
+            # Find the last occurrence of a pattern that looks like the end of a JSON string
+            # Try different closing patterns from the end
+            for closing in ['"}', '"\n}', '"\r\n}', '" }', '"\n}\n']:
+                idx = remaining.rfind(closing)
+                if idx > 0:
+                    candidate_json = raw_args[:content_begin + idx] + '"}'
+                    # Sanitize control characters
+                    candidate_json = _sanitize_json_strings(candidate_json)
+                    try:
+                        result = json.loads(candidate_json)
+                        if isinstance(result, dict) and 'content' in result:
+                            print(f'[LLM] Recovered broken JSON by closing content string (tool: {tool_name}, content_len: {len(result["content"])})')
+                            return result
+                    except (json.JSONDecodeError, Exception):
+                        pass
+            
+            # Also try: just add closing "}" at the very end
+            for suffix in ['"}', '"}', '"}']:
+                candidate_json = _sanitize_json_strings(raw_args) + suffix[len(raw_args.rstrip()):]
+                # Actually, just append the closing
+                candidate_json = _sanitize_json_strings(raw_args.rstrip().rstrip('}').rstrip().rstrip('"'))
+                candidate_json = raw_args[:content_begin] + '"' + _sanitize_json_strings(remaining.rstrip().rstrip('}').rstrip().rstrip('"')) + '"}'
+                try:
+                    result = json.loads(candidate_json)
+                    if isinstance(result, dict) and 'content' in result:
+                        print(f'[LLM] Recovered broken JSON by appending closing (tool: {tool_name}, content_len: {len(result["content"])})')
+                        return result
+                except (json.JSONDecodeError, Exception):
+                    break  # Don't retry with different suffixes, the approach is fundamentally wrong if it fails
+    except Exception as e:
+        print(f'[LLM] Strategy 1b (close content string) failed: {e}')
+    
+    # ── Strategy 2: Extract path using regex ──
     _path_match = _re.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
     if _path_match:
         recovered['path'] = _path_match.group(1)
     
-    # Strategy 3: For write_file, extract content field robustly
-    # Content is typically the LAST field and the LARGEST — it often contains
-    # unescaped quotes that break JSON. We find where "content": " starts,
-    # then grab everything until the last possible closing quote+brace.
+    # ── Strategy 3: For write_file, extract content field robustly ──
     if tool_name == 'write_file':
         _content_start = _re.search(r'"content"\s*:\s*"', raw_args)
         if _content_start:
-            # Content starts right after the opening quote
             content_begin = _content_start.end()
-            # Try to find the end: look for the last occurrence of '"}' or '"\n}'
-            # which would be the closing of the content field + JSON object
-            # But since content itself may contain "}, we need a smarter approach
-            
-            # Approach: try progressively shorter substrings that end with "}
-            # Start from the end and work backwards
             remaining = raw_args[content_begin:]
             
-            # First try: find the LAST valid closing pattern
-            # Look for a quote followed by optional whitespace and closing braces
+            # Try to find the closing quote of the content string
+            # Look for the LAST occurrence of '"}' at or near the end
+            content_text = None
+            
+            # Method A: Find the last '"}' — this is the JSON closing pattern
             last_close = -1
             for m in _re.finditer(r'"\s*\}\s*$', remaining):
                 last_close = m.start()
             
             if last_close > 0:
-                candidate = remaining[:last_close]
-                # Try to unescape JSON string sequences
-                try:
-                    # This is a partial JSON string — try unescaping it
-                    unescaped = candidate.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"')
-                    recovered['content'] = unescaped
-                    recovered['_recovered_from_broken_json'] = True
-                    print(f'[LLM] Recovered content from broken JSON (tool: {tool_name}, content_len: {len(unescaped)})')
-                except Exception:
-                    pass
+                raw_content = remaining[:last_close]
+                content_text = _json_unescape_string(raw_content)
             
-            # If the above didn't work, try a simpler approach:
-            # just take everything between "content": " and the end,
-            # strip trailing quotes/braces, and unescape
-            if 'content' not in recovered:
-                try:
-                    # Remove trailing JSON closing characters
-                    content_raw = remaining.rstrip().rstrip('}').rstrip().rstrip('"')
-                    unescaped = content_raw.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"')
-                    if len(unescaped) > 10:  # Only use if we got meaningful content
-                        recovered['content'] = unescaped
-                        recovered['_recovered_from_broken_json'] = True
-                        print(f'[LLM] Recovered content from broken JSON (fallback, tool: {tool_name}, content_len: {len(unescaped)})')
-                except Exception:
-                    pass
+            # Method B: If no '"}' found (truncated response), take everything
+            # and strip trailing incomplete JSON
+            if content_text is None:
+                # Strip trailing partial JSON artifacts
+                raw_content = remaining.rstrip()
+                # Remove trailing partial structures like: ", "}, etc.
+                while raw_content and raw_content[-1] in '}",':
+                    # Only strip if it looks like a JSON artifact, not CSS content
+                    if raw_content.endswith('"}') or raw_content.endswith('",'):
+                        raw_content = raw_content[:-1].rstrip()
+                    else:
+                        break
+                if len(raw_content) > 10:
+                    content_text = _json_unescape_string(raw_content)
+            
+            if content_text and len(content_text) > 0:
+                recovered['content'] = content_text
+                recovered['_recovered_from_broken_json'] = True
+                print(f'[LLM] Recovered content from broken JSON (tool: {tool_name}, content_len: {len(content_text)})')
     
-    # Strategy 4: For edit_file, extract replacements if possible
+    # ── Strategy 4: For edit_file, extract replacements ──
     if tool_name == 'edit_file':
-        # Try to extract old_text and new_text from replacements
         _old_match = _re.search(r'"old_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_args)
         _new_match = _re.search(r'"new_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_args)
         if _old_match and _new_match:
             recovered['replacements'] = [{
-                'old_text': _old_match.group(1).replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"'),
-                'new_text': _new_match.group(1).replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"'),
+                'old_text': _json_unescape_string(_old_match.group(1)),
+                'new_text': _json_unescape_string(_new_match.group(1)),
             }]
             recovered['_recovered_from_broken_json'] = True
             print(f'[LLM] Recovered edit_file replacements from broken JSON')
@@ -4932,28 +5038,40 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                     tool_args = json.loads(raw_args)
                     _json_parse_ok = True
                 except json.JSONDecodeError:
-                    print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
-                    _json_parse_ok = False
-                    # Try robust recovery for write_file/edit_file
-                    if tool_name in ('write_file', 'edit_file'):
-                        tool_args = _recover_broken_json_args(raw_args, tool_name)
-                        if tool_args.get('content') or tool_args.get('replacements'):
-                            # Successfully recovered key args — proceed with execution
-                            print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                    # First, try sanitizing literal control chars (most common cause of failure)
+                    _sanitized_ok = False
+                    try:
+                        _sanitized = _sanitize_json_strings(raw_args)
+                        tool_args = json.loads(_sanitized)
+                        _json_parse_ok = True
+                        _sanitized_ok = True
+                        print(f'[LLM] Fixed JSON args by sanitizing control chars (tool: {tool_name})')
+                    except (json.JSONDecodeError, Exception):
+                        pass
+                    
+                    if not _sanitized_ok:
+                        print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
+                        _json_parse_ok = False
+                        # Try robust recovery for write_file/edit_file
+                        if tool_name in ('write_file', 'edit_file'):
+                            tool_args = _recover_broken_json_args(raw_args, tool_name)
+                            if tool_args.get('content') or tool_args.get('replacements'):
+                                # Successfully recovered key args — proceed with execution
+                                print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                            else:
+                                # Could not recover — skip and report error
+                                _skip_path = tool_args.get('path', '(unknown)')
+                                tool_args = {'_skip_broken_args': True, 'path': _skip_path}
                         else:
-                            # Could not recover — skip and report error
-                            _skip_path = tool_args.get('path', '(unknown)')
-                            tool_args = {'_skip_broken_args': True, 'path': _skip_path}
-                    else:
-                        tool_args = {}
-                        # For other tools, try simple path extraction
-                        try:
-                            import re as _re_tc
-                            _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
-                            if _path_match:
-                                tool_args['path'] = _path_match.group(1)
-                        except Exception:
-                            pass
+                            tool_args = {}
+                            # For other tools, try simple path extraction
+                            try:
+                                import re as _re_tc
+                                _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                                if _path_match:
+                                    tool_args['path'] = _path_match.group(1)
+                            except Exception:
+                                pass
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
                 all_tool_calls.append({'name': tool_name, 'args': tool_args})
@@ -5529,28 +5647,40 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     tool_args = json.loads(raw_args)
                     _json_parse_ok = True
                 except json.JSONDecodeError:
-                    print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
-                    _json_parse_ok = False
-                    # Try robust recovery for write_file/edit_file
-                    if tool_name in ('write_file', 'edit_file'):
-                        tool_args = _recover_broken_json_args(raw_args, tool_name)
-                        if tool_args.get('content') or tool_args.get('replacements'):
-                            # Successfully recovered key args — proceed with execution
-                            print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                    # First, try sanitizing literal control chars (most common cause of failure)
+                    _sanitized_ok = False
+                    try:
+                        _sanitized = _sanitize_json_strings(raw_args)
+                        tool_args = json.loads(_sanitized)
+                        _json_parse_ok = True
+                        _sanitized_ok = True
+                        print(f'[LLM] Fixed JSON args by sanitizing control chars (tool: {tool_name})')
+                    except (json.JSONDecodeError, Exception):
+                        pass
+                    
+                    if not _sanitized_ok:
+                        print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
+                        _json_parse_ok = False
+                        # Try robust recovery for write_file/edit_file
+                        if tool_name in ('write_file', 'edit_file'):
+                            tool_args = _recover_broken_json_args(raw_args, tool_name)
+                            if tool_args.get('content') or tool_args.get('replacements'):
+                                # Successfully recovered key args — proceed with execution
+                                print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                            else:
+                                # Could not recover — skip and report error
+                                _skip_path = tool_args.get('path', '(unknown)')
+                                tool_args = {'_skip_broken_args': True, 'path': _skip_path}
                         else:
-                            # Could not recover — skip and report error
-                            _skip_path = tool_args.get('path', '(unknown)')
-                            tool_args = {'_skip_broken_args': True, 'path': _skip_path}
-                    else:
-                        tool_args = {}
-                        # For other tools, try simple path extraction
-                        try:
-                            import re as _re_tc
-                            _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
-                            if _path_match:
-                                tool_args['path'] = _path_match.group(1)
-                        except Exception:
-                            pass
+                            tool_args = {}
+                            # For other tools, try simple path extraction
+                            try:
+                                import re as _re_tc
+                                _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                                if _path_match:
+                                    tool_args['path'] = _path_match.group(1)
+                            except Exception:
+                                pass
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
                 tool_calls_in_progress.append({'name': tool_name, 'args': tool_args})
