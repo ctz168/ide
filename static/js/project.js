@@ -368,6 +368,102 @@ const ProjectManager = (() => {
     }
 
     /**
+     * Create a new project: folder + venv + git init + open it
+     */
+    async function newProject() {
+        // Ensure workspace is set
+        if (!currentWorkspace) {
+            safeToast('请先设置工作目录', 'warning');
+            return;
+        }
+
+        // Show input dialog for project name
+        const values = await window.showInputDialog('✨ 新建项目', [
+            { name: 'name', label: '项目名称', type: 'text', placeholder: 'my-project' },
+        ]);
+
+        if (!values || !values.name) return;
+
+        const projectName = values.name.trim();
+        if (!projectName) return;
+
+        // Validate name (no slashes, no dots at start, no spaces)
+        if (/[/\\]/.test(projectName)) {
+            safeToast('项目名称不能包含路径分隔符', 'error');
+            return;
+        }
+        if (/^\./.test(projectName)) {
+            safeToast('项目名称不能以点号开头', 'error');
+            return;
+        }
+
+        safeToast('正在创建项目...', 'info');
+
+        try {
+            // Step 1: Create the folder via API
+            const createResp = await fetch('/api/project/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: projectName })
+            });
+            if (!createResp.ok) {
+                const err = await createResp.json().catch(() => ({}));
+                throw new Error(err.error || '创建文件夹失败');
+            }
+            const createData = await createResp.json();
+            const projectPath = createData.project;
+
+            safeToast(`文件夹已创建: ${projectName}`, 'success');
+
+            // Step 2: Open the project (sets config, updates UI)
+            await openProject(projectPath);
+
+            // Step 3: Create virtual environment with same name
+            safeToast('正在创建虚拟环境...', 'info');
+            try {
+                const venvResp = await fetch('/api/venv/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: projectName })
+                });
+                if (venvResp.ok) {
+                    const venvData = await venvResp.json();
+                    safeToast(`虚拟环境已创建: ${projectName}`, 'success');
+                    // Activate the new venv
+                    const activateResp = await fetch('/api/venv/activate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: projectName })
+                    });
+                    if (activateResp.ok) {
+                        updateVenvUI(venvData.venv_path || projectName);
+                        safeToast('虚拟环境已激活', 'success');
+                    }
+                } else {
+                    const venvErr = await venvResp.json().catch(() => ({}));
+                    safeToast('虚拟环境创建失败: ' + (venvErr.error || '未知错误'), 'warning');
+                }
+            } catch (venvErr) {
+                safeToast('虚拟环境创建失败: ' + venvErr.message, 'warning');
+            }
+
+            // Step 4: Refresh directory listing
+            if (window.FileManager) {
+                await window.FileManager.loadFileList(projectPath);
+            }
+
+            // Step 5: Refresh git status
+            if (window.GitManager) {
+                await window.GitManager.refresh();
+            }
+
+            safeToast(`项目「${projectName}」创建完成！`, 'success');
+        } catch (err) {
+            safeToast('新建项目失败: ' + err.message, 'error');
+        }
+    }
+
+    /**
      * Clone a project — custom dialog with:
      *   Row 1: OAuth login button
      *   Row 2: Repo dropdown (visible when logged in)
@@ -926,7 +1022,7 @@ const ProjectManager = (() => {
                 <div style="text-align:center;padding:30px 12px;">
                     <div style="font-size:36px;margin-bottom:10px;">📁</div>
                     <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px;">未打开项目</div>
-                    <div style="font-size:11px;color:var(--text-muted);">点击「打开项目」选择一个文件夹，或点击「克隆项目」从远程克隆</div>
+                    <div style="font-size:11px;color:var(--text-muted);">点击「新建」创建项目，或点击「打开」选择文件夹，或点击「克隆」从远程克隆</div>
                 </div>`;
         }
 
@@ -1046,6 +1142,16 @@ const ProjectManager = (() => {
             }
         }
 
+        const newBtn = document.getElementById('btn-new-project');
+        if (newBtn) {
+            const handler = () => newProject();
+            if (window.bindTouchButton) {
+                window.bindTouchButton(newBtn, handler);
+            } else {
+                newBtn.addEventListener('click', handler);
+            }
+        }
+
         const cloneBtn = document.getElementById('btn-clone-project');
         if (cloneBtn) {
             const handler = () => cloneProject();
@@ -1129,6 +1235,7 @@ const ProjectManager = (() => {
     return {
         loadProjectInfo,
         openProject,
+        newProject,
         closeProject,
         cloneProject,
         getCurrentProject: () => currentProject,

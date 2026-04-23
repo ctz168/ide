@@ -388,6 +388,52 @@ def project_open():
     })
 
 
+@bp.route('/api/project/create', methods=['POST'])
+@handle_error
+def project_create():
+    """Create a new project folder in the workspace and return its relative path."""
+    data = request.json
+    name = data.get('name', '').strip()
+
+    if not name:
+        return jsonify({'error': '项目名称不能为空'}), 400
+
+    # Validate name: no path separators, no leading dots
+    if '/' in name or '\\' in name:
+        return jsonify({'error': '项目名称不能包含路径分隔符'}), 400
+    if name.startswith('.'):
+        return jsonify({'error': '项目名称不能以点号开头'}), 400
+
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    if not base or not os.path.isdir(base):
+        return jsonify({'error': '工作目录未设置或不存在，请先设置工作目录'}), 400
+
+    target = os.path.realpath(os.path.join(base, name))
+
+    # Security: must be under workspace
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    # Check if already exists
+    if os.path.exists(target):
+        return jsonify({'error': f'文件夹已存在: {name}'}), 409
+
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as e:
+        return jsonify({'error': f'创建文件夹失败: {e}'}), 500
+
+    project_rel = name
+    return jsonify({
+        'ok': True,
+        'project': project_rel,
+        'name': name,
+        'path': target,
+    })
+
+
 @bp.route('/api/project/close', methods=['POST'])
 @handle_error
 def project_close():
