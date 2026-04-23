@@ -820,7 +820,66 @@ AGENT_TOOLS = [
     },
 ]
 
-# ==================== Security Helpers ====================
+# ==================== Compact Tool Variants ====================
+# Some API providers (e.g., ModelScope) have request body size limits that
+# can cause "Unterminated string" errors with the full 42-tool set.
+# We maintain a compact variant with shortened descriptions for fallback.
+
+def _make_compact_tools(full_tools, max_desc_len=60):
+    """Create a compact copy of tool definitions with truncated descriptions.
+    Keeps all parameter schemas intact — only shortens description strings."""
+    compact = []
+    for t in full_tools:
+        f = t['function']
+        desc = f['description']
+        if len(desc) > max_desc_len:
+            # Truncate at last sentence boundary or space before limit
+            truncated = desc[:max_desc_len]
+            last_period = truncated.rfind('.')
+            last_space = truncated.rfind(' ')
+            cut = max(last_period, last_space, max_desc_len - 20)
+            if cut > max_desc_len // 2:
+                desc = truncated[:cut + 1].rstrip() + '..'
+            else:
+                desc = truncated.rstrip() + '..'
+        compact.append({
+            'type': 'function',
+            'function': {
+                'name': f['name'],
+                'description': desc,
+                'parameters': f['parameters'],
+            },
+        })
+    return compact
+
+def _make_minimal_tools(full_tools):
+    """Create minimal tool definitions — name + ultra-short description, no parameter details.
+    Used as last resort when even compact tools cause payload size errors."""
+    minimal = []
+    for t in full_tools:
+        f = t['function']
+        desc = f['description']
+        # Keep first sentence only
+        first_period = desc.find('.')
+        if first_period > 0 and first_period < 80:
+            desc = desc[:first_period + 1]
+        elif len(desc) > 80:
+            desc = desc[:77] + '...'
+        minimal.append({
+            'type': 'function',
+            'function': {
+                'name': f['name'],
+                'description': desc,
+                'parameters': {'type': 'object', 'properties': {}, 'required': list(f['parameters'].get('required', []))},
+            },
+        })
+    return minimal
+
+# Pre-compute compact/minimal tool variants
+AGENT_TOOLS_COMPACT = _make_compact_tools(AGENT_TOOLS)
+AGENT_TOOLS_MINIMAL = _make_minimal_tools(AGENT_TOOLS)
+
+
 def _get_project_dir():
     """Get the current project directory (or workspace if no project is open)."""
     try:
@@ -3006,8 +3065,10 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None, context=
                 'tool_choice': 'auto',
             }
             url, headers = _get_llm_endpoint(llm_config, payload['model'])
-            headers = headers or {'Content-Type': 'application/json'}
-            req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+            headers = headers or {}
+            headers.setdefault('Content-Type', 'application/json; charset=utf-8')
+            body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+            req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
             with _urllib_opener.open(req, timeout=120) as resp:
                 response = json.loads(resp.read().decode('utf-8'))
         except Exception as e:
@@ -3745,7 +3806,7 @@ def _get_llm_endpoint(llm_config, model=None):
     api_base = (llm_config.get('api_base') or '').rstrip('/')
     model = model or llm_config.get('model', 'gpt-4o-mini')
 
-    headers = {'Content-Type': 'application/json'}
+    headers = {'Content-Type': 'application/json; charset=utf-8'}
 
     if api_type == 'ollama':
         # Ollama local server — no auth needed
@@ -3798,9 +3859,11 @@ def _call_llm_api(messages, llm_config, stream=False):
     except Exception as e:
         raise Exception(f'LLM config error: {e}')
 
-    headers = headers or {'Content-Type': 'application/json'}
+    headers = headers or {}
+    headers.setdefault('Content-Type', 'application/json; charset=utf-8')
 
-    req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+    body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
 
     with _urllib_opener.open(req, timeout=180) as resp:
         resp_body = resp.read().decode()
@@ -3831,8 +3894,13 @@ def _rewrite_for_reasoning_model(payload, api_messages):
     payload['messages'] = other_msgs
 
 
-def _call_llm_stream_raw(messages, llm_config):
-    """Stream LLM response as raw SSE data chunks. Yields parsed delta objects."""
+def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
+    """Stream LLM response as raw SSE data chunks. Yields parsed delta objects.
+    
+    tools_level: 'full' = all 42 tools with full descriptions
+                 'compact' = all 42 tools with shortened descriptions
+                 'minimal' = all 42 tools with minimal descriptions, no param details
+    """
     import urllib.request
 
     model = llm_config.get('model', 'gpt-4o-mini')
@@ -3842,12 +3910,20 @@ def _call_llm_stream_raw(messages, llm_config):
 
     api_messages = _build_api_messages(messages, llm_config)
 
+    # Select tool set based on level (for ModelScope API size limit compatibility)
+    if tools_level == 'minimal':
+        tools = AGENT_TOOLS_MINIMAL
+    elif tools_level == 'compact':
+        tools = AGENT_TOOLS_COMPACT
+    else:
+        tools = AGENT_TOOLS
+
     payload = {
         'model': model,
         'messages': api_messages,
         'temperature': temperature,
         'max_tokens': max_tokens,
-        'tools': AGENT_TOOLS,
+        'tools': tools,
         'tool_choice': 'auto',
         'stream': True,
     }
@@ -3898,10 +3974,16 @@ def _call_llm_stream_raw(messages, llm_config):
     except Exception as e:
         raise Exception(f'LLM config error: {e}')
 
-    headers = headers or {'Content-Type': 'application/json'}
+    headers = headers or {}
+    headers.setdefault('Content-Type', 'application/json; charset=utf-8')
 
-    req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+    # Use compact JSON encoding (no extra whitespace) and ensure_ascii=False
+    # to reduce payload size and avoid potential server-side parsing issues
+    # with \\uXXXX escape sequences (some ModelScope/vLLM backends struggle)
+    body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     print(f'[LLM] Calling: {url}')
+    print(f'[LLM] Payload size: {len(body_bytes)} bytes ({len(body_bytes)/1024:.1f} KB)')
+    req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
     print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}, Reasoning: {reasoning}')
     if reasoning:
         # Log which reasoning branch was matched
@@ -4120,7 +4202,7 @@ def _ai_summarize_messages(messages, llm_config):
     
     try:
         url, headers = _get_llm_endpoint(llm_config, llm_config.get('model'))
-        headers = headers or {'Content-Type': 'application/json'}
+        headers = headers or {'Content-Type': 'application/json; charset=utf-8'}
         
         payload = {
             'model': llm_config.get('model'),
@@ -4129,7 +4211,8 @@ def _ai_summarize_messages(messages, llm_config):
             'max_tokens': min(2000, llm_config.get('max_tokens', 4096)),
         }
         
-        req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+        body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
         with _urllib_opener.open(req, timeout=60) as resp:
             resp_body = resp.read().decode()
             result = json.loads(resp_body)
@@ -4785,6 +4868,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         retry = 0
         context_retries = 0
         MAX_CONTEXT_RETRIES = 20
+        # Tools degradation level: full -> compact -> minimal
+        # Auto-downgrades when server reports "Unterminated string" (payload too large)
+        current_tools_level = 'full'
         while retry < MAX_ITERATION_RETRIES:
             try:
                 current_tool_calls = []
@@ -4802,7 +4888,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 finish_reason = None
                 reasoning_text = ''  # accumulate reasoning/thinking content
                 reasoning_ended = False
-                for delta in _call_llm_stream_raw(context, llm_config):
+                for delta in _call_llm_stream_raw(context, llm_config, tools_level=current_tools_level):
                     # Check cancellation during LLM streaming
                     if _active_task.get('cancelled'):
                         yield f"data: {json.dumps({'type': 'error', 'content': 'Task cancelled by user.'})}\n\n"
@@ -4892,10 +4978,26 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         'too many tokens', 'input too large', 'prompt is too long',
                         'request too large', 'exceeds the model', 'context_length',
                         'max_tokens', 'too long', '超出', '上下文',
+                        'unterminated',  # ModelScope/vLLM truncation error
+                        'input_invalid',  # ModelScope API input validation
                     ])
                 )
                 
                 if is_context_error:
+                    # First try: degrade tools level (full -> compact -> minimal)
+                    # This handles ModelScope "Unterminated string" payload-size errors
+                    is_payload_error = any(kw in body.lower() for kw in ['unterminated', 'input_invalid'])
+                    if is_payload_error and current_tools_level != 'minimal':
+                        old_level = current_tools_level
+                        if current_tools_level == 'full':
+                            current_tools_level = 'compact'
+                        elif current_tools_level == 'compact':
+                            current_tools_level = 'minimal'
+                        print(f'[LLM] Payload error detected, degrading tools: {old_level} -> {current_tools_level}')
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'API payload error, switching to {current_tools_level} tool descriptions and retrying...'})}\n\n"
+                        time.sleep(0.5)
+                        continue  # retry immediately with degraded tools
+                    
                     context_retries += 1
                     if context_retries >= MAX_CONTEXT_RETRIES:
                         yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts. Please start a new conversation.'})}\n\n"
@@ -4925,7 +5027,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 err_lower = str(e).lower()
                 is_context_error = any(kw in err_lower for kw in [
                     'context', 'token', 'max_length', 'too many tokens',
-                    'prompt is too long', 'too long',
+                    'prompt is too long', 'too long', 'unterminated',
                 ])
                 
                 if is_context_error:
@@ -5497,7 +5599,8 @@ def test_llm_config():
             'stream': False,
         }
 
-        req = urllib.request.Request(url, json.dumps(payload).encode(), headers=headers, method='POST')
+        body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
         with _urllib_opener.open(req, timeout=60) as resp:
             resp_body = resp.read().decode()
             try:
