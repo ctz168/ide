@@ -907,12 +907,31 @@ def _get_project_dir():
         return os.path.realpath(WORKSPACE)
 
 def _validate_path(path):
-    """Ensure path stays within WORKSPACE. Returns resolved absolute path or raises ValueError."""
-    real_workspace = os.path.realpath(WORKSPACE)
+    """Ensure path stays within WORKSPACE or configured project directory.
+    Returns resolved absolute path or raises ValueError."""
     real_path = os.path.realpath(path)
-    if not real_path.startswith(real_workspace + os.sep) and real_path != real_workspace:
-        raise ValueError(f'Access denied: path "{path}" is outside workspace')
-    return real_path
+    # Check against all allowed roots: default WORKSPACE, configured workspace, and project dir
+    allowed_roots = [os.path.realpath(WORKSPACE)]
+    try:
+        from utils import load_config
+        config = load_config()
+        cfg_ws = config.get('workspace', '')
+        if cfg_ws:
+            allowed_roots.append(os.path.realpath(cfg_ws))
+        project = config.get('project', None)
+        if project and cfg_ws:
+            candidate = os.path.realpath(os.path.join(cfg_ws, project))
+            if os.path.isdir(candidate):
+                allowed_roots.append(candidate)
+    except Exception:
+        pass
+    # Deduplicate
+    allowed_roots = list(dict.fromkeys(allowed_roots))
+    for root in allowed_roots:
+        if real_path == root or real_path.startswith(root + os.sep):
+            return real_path
+    raise ValueError(f'Access denied: path "{path}" is outside workspace (allowed: {", ".join(allowed_roots)})')
+
 
 def _truncate(text, limit=30000, tail=3000):
     """Truncate text to limit characters, keeping head and tail for context."""
@@ -1415,7 +1434,7 @@ def _tool_run_command(args):
     try:
         cwd = _validate_path(cwd)
     except ValueError:
-        cwd = WORKSPACE
+        cwd = _get_effective_cwd()
     config = load_config()
     env = os.environ.copy()
     venv_path = config.get('venv_path', '')
