@@ -160,8 +160,6 @@ def list_compilers():
 @bp.route('/api/venv/create', methods=['POST'])
 @handle_error
 def create_venv():
-    from utils import run_process
-
     data = request.json
     path = data.get('path', '')
     config = load_config()
@@ -179,13 +177,36 @@ def create_venv():
     else:
         target = os.path.realpath(path)
 
-    venv_python = get_default_compiler()
-    # Note: --with-pip flag was removed in modern Python; pip is included by default in venv
-    proc_id = run_process(f'{venv_python} -m venv {shlex_quote(target)}', cwd=effective_base)
-    if proc_id:
+    # Check if venv already exists at target
+    if _is_venv_dir(target):
         config['venv_path'] = target
-    save_config(config)
-    return jsonify({'ok': True, 'proc_id': proc_id, 'venv_path': target})
+        save_config(config)
+        return jsonify({'ok': True, 'venv_path': target, 'already_exists': True})
+
+    venv_python = get_default_compiler()
+    # Run venv creation SYNCHRONOUSLY so the caller can activate immediately.
+    # The async run_process() returns before venv is ready, causing activate to fail.
+    try:
+        result = subprocess.run(
+            f'{venv_python} -m venv {shlex_quote(target)}',
+            shell=True, cwd=effective_base,
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or '').strip()
+            return jsonify({'ok': False, 'error': f'创建虚拟环境失败: {stderr}'}), 500
+
+        # Verify venv was created successfully
+        if not _is_venv_dir(target):
+            return jsonify({'ok': False, 'error': '虚拟环境创建完成但验证失败'}), 500
+
+        config['venv_path'] = target
+        save_config(config)
+        return jsonify({'ok': True, 'venv_path': target})
+    except subprocess.TimeoutExpired:
+        return jsonify({'ok': False, 'error': '创建虚拟环境超时（120秒）'}), 500
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'创建虚拟环境异常: {e}'}), 500
 
 
 @bp.route('/api/venv/list', methods=['GET'])

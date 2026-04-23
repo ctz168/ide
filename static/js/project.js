@@ -418,8 +418,8 @@ const ProjectManager = (() => {
             // Step 2: Open the project (sets config, updates UI)
             await openProject(projectPath);
 
-            // Step 3: Create virtual environment with same name
-            safeToast('正在创建虚拟环境...', 'info');
+            // Step 3: Create virtual environment with same name (synchronous on server)
+            safeToast('正在创建虚拟环境，请稍候...', 'info');
             try {
                 const venvResp = await fetch('/api/venv/create', {
                     method: 'POST',
@@ -428,17 +428,16 @@ const ProjectManager = (() => {
                 });
                 if (venvResp.ok) {
                     const venvData = await venvResp.json();
-                    safeToast(`虚拟环境已创建: ${projectName}`, 'success');
-                    // Activate the new venv
-                    const activateResp = await fetch('/api/venv/activate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: projectName })
-                    });
-                    if (activateResp.ok) {
-                        updateVenvUI(venvData.venv_path || projectName);
-                        safeToast('虚拟环境已激活', 'success');
+                    const venvName = venvData.venv_path ? venvData.venv_path.split(/[/\\]/).pop() : projectName;
+                    if (venvData.already_exists) {
+                        safeToast(`虚拟环境已存在: ${venvName}`, 'info');
+                    } else {
+                        safeToast(`虚拟环境已创建: ${venvName}`, 'success');
                     }
+                    // venv/create now runs synchronously and saves venv_path in config,
+                    // so the venv is already "activated" — just update UI
+                    updateVenvUI(venvData.venv_path || projectName);
+                    safeToast('虚拟环境已激活', 'success');
                 } else {
                     const venvErr = await venvResp.json().catch(() => ({}));
                     safeToast('虚拟环境创建失败: ' + (venvErr.error || '未知错误'), 'warning');
