@@ -78,7 +78,7 @@ RING_BUFFER_SIZE = 100
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
 You have access to specialized tools for reading, writing, editing, searching, and managing code projects.
 
-## 🎯 Choose the Most Efficient Tool for Each Task
+## Choose the Most Efficient Tool for Each Task
 Each tool is designed for a specific purpose. Using the right tool gives you **better accuracy, structured output, and faster results** than run_command. Here's when to use each:
 
 **Planning:** todo_write (plan tasks), todo_read (check progress)
@@ -162,31 +162,27 @@ The process phoneide_server.py and port {_IDE_PORT} are the core of this IDE and
 """
 
 # ==================== Tool Definitions ====================
+# NOTE: Keep descriptions concise! Payload must stay under ~28KB for ModelScope API compatibility.
 AGENT_TOOLS = [
-    # ── Task Planning & Tracking (PRIORITY: always first) ──
+    # -- Task Planning --
     {
         'type': 'function',
         'function': {
             'name': 'todo_write',
-            'description': (
-                'Create or update a task plan with a list of todo items. Each item has an id, content, status (pending/in_progress/completed), '
-                'and priority (high/medium/low). Use this BEFORE starting any complex multi-step task to plan your approach. '
-                'Update the status as you progress — mark items in_progress when working on them and completed when done. '
-                'This helps you stay organized and avoid missing steps. The todo list is displayed to the user in real-time.'
-            ),
+            'description': 'Create/update task plan. Use BEFORE any complex multi-step task. Status: pending/in_progress/completed.',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'todos': {
                         'type': 'array',
-                        'description': 'The updated todo list (replaces the entire list)',
+                        'description': 'Updated todo list (replaces entire list)',
                         'items': {
                             'type': 'object',
                             'properties': {
-                                'id': {'type': 'string', 'description': 'Unique identifier for this todo item'},
-                                'content': {'type': 'string', 'description': 'Description of the task'},
-                                'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed'], 'description': 'Task status'},
-                                'priority': {'type': 'string', 'enum': ['high', 'medium', 'low'], 'description': 'Priority level'},
+                                'id': {'type': 'string', 'description': 'Unique id'},
+                                'content': {'type': 'string', 'description': 'Task description'},
+                                'status': {'type': 'string', 'enum': ['pending', 'in_progress', 'completed'], 'description': 'Status'},
+                                'priority': {'type': 'string', 'enum': ['high', 'medium', 'low'], 'description': 'Priority'},
                             },
                             'required': ['id', 'content', 'status'],
                         },
@@ -200,44 +196,22 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'todo_read',
-            'description': (
-                'Read the current todo list. Returns all todo items with their id, content, status, and priority. '
-                'Use this to check your progress on a task plan.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
+            'description': 'Read the current todo list with status and priority.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
         },
     },
-    # ── File & Code Tools ──
+    # -- File Operations --
     {
         'type': 'function',
         'function': {
             'name': 'read_file',
-            'description': (
-                'Read the content of a file. Supports automatic encoding detection (UTF-8, GBK, Latin-1, etc.). '
-                'Returns file content with line numbers for easy reference. For large files, use offset_line and '
-                'limit_lines to read specific sections. Files larger than 10MB will be rejected. '
-                'Binary files will return an error.'
-            ),
+            'description': 'Read file with line numbers. Auto-detects encoding. Use offset_line/limit_lines for large files. Max 10MB.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the file to read',
-                    },
-                    'offset_line': {
-                        'type': 'integer',
-                        'description': 'Start reading from this line number (1-based). Default: 1',
-                        'default': 1,
-                    },
-                    'limit_lines': {
-                        'type': 'integer',
-                        'description': 'Maximum number of lines to read. Default: read entire file',
-                    },
+                    'path': {'type': 'string', 'description': 'Absolute file path'},
+                    'offset_line': {'type': 'integer', 'description': 'Start line (1-based). Default: 1', 'default': 1},
+                    'limit_lines': {'type': 'integer', 'description': 'Max lines to read'},
                 },
                 'required': ['path'],
             },
@@ -247,27 +221,13 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'write_file',
-            'description': (
-                'Write content to a file, creating it if it does not exist. Parent directories are automatically '
-                'created. Overwrites existing files entirely. For targeted modifications, prefer edit_file instead. '
-                'Content is written as UTF-8 text.'
-            ),
+            'description': 'Write full content to file (creates dirs, overwrites). For edits, prefer edit_file.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the file to write',
-                    },
-                    'content': {
-                        'type': 'string',
-                        'description': 'Full content to write to the file',
-                    },
-                    'create_dirs': {
-                        'type': 'boolean',
-                        'description': 'Automatically create parent directories. Default: true',
-                        'default': True,
-                    },
+                    'path': {'type': 'string', 'description': 'Absolute file path'},
+                    'content': {'type': 'string', 'description': 'Content to write'},
+                    'create_dirs': {'type': 'boolean', 'description': 'Create parent dirs. Default: true', 'default': True},
                 },
                 'required': ['path', 'content'],
             },
@@ -277,50 +237,24 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'edit_file',
-            'description': (
-                'Search and replace text within a file. Performs exact string matching of old_text and replaces '
-                'it with new_text. If old_text appears multiple times, all occurrences will be replaced - be '
-                'specific with surrounding context to avoid unintended changes. Returns the number of replacements made. '
-                'For multiple edits to the same file, use the "replacements" array parameter — all replacements are '
-                'applied atomically (all succeed or all fail, no partial changes).\n'
-                'TIPS for reliable matching:\n'
-                '- Use line_hint to narrow the search scope (e.g. the approximate line number where old_text appears)\n'
-                '- Use fuzzy_match=true when whitespace might differ slightly (trailing spaces, tab vs spaces)\n'
-                '- On match failure, the tool returns nearby context to help you correct the old_text'
-            ),
+            'description': 'Search-and-replace in a file. Use old_text/new_text for single edit, or replacements array for atomic multi-edit. Use line_hint and fuzzy_match for reliable matching.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the file to edit',
-                    },
-                    'old_text': {
-                        'type': 'string',
-                        'description': 'Exact text to search for (must match precisely including whitespace)',
-                    },
-                    'new_text': {
-                        'type': 'string',
-                        'description': 'Replacement text',
-                    },
-                    'line_hint': {
-                        'type': 'integer',
-                        'description': 'Approximate line number where old_text is expected (1-based). Narrows search scope and speeds up matching. Helpful for large files.',
-                    },
-                    'fuzzy_match': {
-                        'type': 'boolean',
-                        'description': 'If true, tolerate minor whitespace differences (trailing spaces, tab/space mixing, trailing newlines). Default: false (exact match)',
-                        'default': False,
-                    },
+                    'path': {'type': 'string', 'description': 'Absolute file path'},
+                    'old_text': {'type': 'string', 'description': 'Exact text to find'},
+                    'new_text': {'type': 'string', 'description': 'Replacement text'},
+                    'line_hint': {'type': 'integer', 'description': 'Approximate line number hint (1-based)'},
+                    'fuzzy_match': {'type': 'boolean', 'description': 'Tolerate whitespace differences. Default: false', 'default': False},
                     'replacements': {
                         'type': 'array',
-                        'description': 'Array of {old_text, new_text, line_hint?} objects for atomic multi-edit. All applied or none. Mutually exclusive with old_text/new_text.',
+                        'description': 'Array of {old_text, new_text, line_hint?} for atomic multi-edit. Exclusive with old_text/new_text.',
                         'items': {
                             'type': 'object',
                             'properties': {
-                                'old_text': {'type': 'string', 'description': 'Exact text to search for'},
-                                'new_text': {'type': 'string', 'description': 'Replacement text'},
-                                'line_hint': {'type': 'integer', 'description': 'Approximate line number hint (1-based)'},
+                                'old_text': {'type': 'string', 'description': 'Text to find'},
+                                'new_text': {'type': 'string', 'description': 'Replacement'},
+                                'line_hint': {'type': 'integer', 'description': 'Line hint (1-based)'},
                             },
                             'required': ['old_text', 'new_text'],
                         },
@@ -333,27 +267,45 @@ AGENT_TOOLS = [
     {
         'type': 'function',
         'function': {
-            'name': 'list_directory',
-            'description': (
-                'List files and directories at a given path. Returns file names, types (file/directory), sizes, '
-                'and modification times. Automatically detects file types by extension. Hidden files are excluded '
-                'by default unless show_hidden is true.'
-            ),
+            'name': 'append_file',
+            'description': 'Append content to end of existing file. Auto-adds trailing newline.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the directory to list. Default: project directory',
-                        'default': '.',
-                    },
-                    'show_hidden': {
-                        'type': 'boolean',
-                        'description': 'Include hidden files (starting with dot). Default: false',
-                        'default': False,
-                    },
+                    'path': {'type': 'string', 'description': 'File path (must exist)'},
+                    'content': {'type': 'string', 'description': 'Content to append'},
+                },
+                'required': ['path', 'content'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'list_directory',
+            'description': 'List files/dirs with sizes and types. Hidden files excluded by default.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Directory path. Default: project dir', 'default': '.'},
+                    'show_hidden': {'type': 'boolean', 'description': 'Show dot files. Default: false', 'default': False},
                 },
                 'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'glob_files',
+            'description': 'Find files by glob pattern (e.g. "**/*.py"). Fast, sorted by mtime. Up to 100 results.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'pattern': {'type': 'string', 'description': 'Glob pattern (e.g. "**/*.py")'},
+                    'path': {'type': 'string', 'description': 'Base directory. Default: project dir'},
+                },
+                'required': ['pattern'],
             },
         },
     },
@@ -361,160 +313,16 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'search_files',
-            'description': (
-                'Search for text patterns across files in the workspace. Supports both literal text and regex '
-                'patterns. Skips common ignore directories (.git, node_modules, __pycache__, etc.). Returns '
-                'file paths, line numbers, and matching line content. Use specific patterns for better performance.'
-            ),
+            'description': 'Search text/regex across files. Returns paths, line numbers, content. Skips .git/node_modules.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'pattern': {
-                        'type': 'string',
-                        'description': 'Text or regex pattern to search for',
-                    },
-                    'path': {
-                        'type': 'string',
-                        'description': 'Root directory to search in. Default: project directory',
-                        'default': '.',
-                    },
-                    'include': {
-                        'type': 'string',
-                        'description': 'File glob pattern to filter files (e.g. "*.py", "*.{js,ts}"). Default: all files',
-                    },
-                    'max_results': {
-                        'type': 'integer',
-                        'description': 'Maximum number of results to return. Default: 50',
-                        'default': 50,
-                    },
+                    'pattern': {'type': 'string', 'description': 'Text or regex pattern'},
+                    'path': {'type': 'string', 'description': 'Root dir. Default: project dir', 'default': '.'},
+                    'include': {'type': 'string', 'description': 'File glob filter (e.g. "*.py")'},
+                    'max_results': {'type': 'integer', 'description': 'Max results. Default: 50', 'default': 50},
                 },
                 'required': ['pattern'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'git_status',
-            'description': (
-                'Show the current git repository status including branch name, staged changes, modified files, '
-                'and untracked files. Useful for understanding what has changed before committing.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'repo_path': {
-                        'type': 'string',
-                        'description': 'Path to the git repository. Default: project directory',
-                        'default': '.',
-                    },
-                },
-                'required': [],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'git_diff',
-            'description': (
-                'Show git diff output. Can show staged changes, unstaged changes, or changes to a specific file. '
-                'Returns the unified diff format.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'repo_path': {
-                        'type': 'string',
-                        'description': 'Path to the git repository. Default: project directory',
-                    },
-                    'staged': {
-                        'type': 'boolean',
-                        'description': 'Show staged changes (git diff --cached). Default: false',
-                        'default': False,
-                    },
-                    'file_path': {
-                        'type': 'string',
-                        'description': 'Specific file to show diff for. If omitted, shows all changes.',
-                    },
-                },
-                'required': [],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'git_commit',
-            'description': (
-                'Stage all changes and create a git commit. By default stages all changes (git add -A) before '
-                'committing. Use add_all=false to only commit previously staged changes.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'message': {
-                        'type': 'string',
-                        'description': 'Commit message',
-                    },
-                    'repo_path': {
-                        'type': 'string',
-                        'description': 'Path to the git repository. Default: project directory',
-                    },
-                    'add_all': {
-                        'type': 'boolean',
-                        'description': 'Stage all changes before committing (git add -A). Default: true',
-                        'default': True,
-                    },
-                },
-                'required': ['message'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'install_package',
-            'description': (
-                'Install a package using pip or npm. Automatically detects the package manager based on package '
-                'name format. If a virtual environment is configured, uses the venv pip. Supports version '
-                'specifiers (e.g. "flask==2.3.0", "numpy>=1.24").'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'package_name': {
-                        'type': 'string',
-                        'description': 'Package name to install (e.g. "flask", "numpy>=1.24", "express")',
-                    },
-                    'manager': {
-                        'type': 'string',
-                        'description': 'Package manager: "pip", "npm", or "auto-detect". Default: auto-detect',
-                        'default': 'auto',
-                    },
-                },
-                'required': ['package_name'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'list_packages',
-            'description': (
-                'List installed packages. Returns package names and versions. For pip, uses the virtual environment '
-                'pip if one is configured.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'manager': {
-                        'type': 'string',
-                        'description': 'Package manager: "pip" or "npm". Default: "pip"',
-                        'default': 'pip',
-                    },
-                },
-                'required': [],
             },
         },
     },
@@ -522,467 +330,15 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'grep_code',
-            'description': (
-                'Advanced code search with context lines. Searches for a regex pattern across files and returns '
-                'matching lines with surrounding context. Useful for understanding function usage, variable '
-                'definitions, and code structure. Supports include/exclude file filters.'
-            ),
+            'description': 'Regex search with context lines. Returns matches with surrounding code. Supports include/exclude filters.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'pattern': {
-                        'type': 'string',
-                        'description': 'Regex pattern to search for',
-                    },
-                    'path': {
-                        'type': 'string',
-                        'description': 'Root directory to search in. Default: project directory',
-                    },
-                    'context_lines': {
-                        'type': 'integer',
-                        'description': 'Number of context lines before and after each match. Default: 2',
-                        'default': 2,
-                    },
-                    'include': {
-                        'type': 'string',
-                        'description': 'File glob pattern to include (e.g. "*.py"). Default: all files',
-                    },
-                    'exclude': {
-                        'type': 'string',
-                        'description': 'File glob pattern to exclude (e.g. "*.min.js"). Default: none',
-                    },
-                },
-                'required': ['pattern'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'file_info',
-            'description': (
-                'Get detailed metadata about a file or directory. Returns file size, last modified time, '
-                'file type (regular file, directory, symlink), and permissions (in octal and rwx format).'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the file or directory',
-                    },
-                },
-                'required': ['path'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'create_directory',
-            'description': (
-                'Create a new directory, including any necessary parent directories (equivalent to mkdir -p). '
-                'If the directory already exists, the operation succeeds silently.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path of the directory to create',
-                    },
-                },
-                'required': ['path'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'web_search',
-            'description': (
-                'Search the web for information using DuckDuckGo. Returns a list of search results with titles, URLs, and snippets. '
-                'Useful for finding documentation, APIs, libraries, or solutions to coding problems.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'query': {
-                        'type': 'string',
-                        'description': 'Search query string',
-                    },
-                },
-                'required': ['query'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'web_fetch',
-            'description': (
-                'Fetch a web page and return its text content. Strips HTML tags and returns plain text. '
-                'Useful for reading documentation, API references, or any web page content. Max 10000 characters.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'url': {
-                        'type': 'string',
-                        'description': 'URL to fetch',
-                    },
-                },
-                'required': ['url'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'git_log',
-            'description': (
-                'Show git commit history. Returns a list of recent commits in oneline format.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'count': {
-                        'type': 'integer',
-                        'description': 'Number of commits to show. Default: 10',
-                        'default': 10,
-                    },
-                    'repo_path': {
-                        'type': 'string',
-                        'description': 'Path to the git repository. Default: project directory',
-                        'default': '.',
-                    },
-                },
-                'required': [],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'git_checkout',
-            'description': (
-                'Switch to a different git branch or restore working tree files.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'branch': {
-                        'type': 'string',
-                        'description': 'Branch name or reference to checkout',
-                    },
-                    'repo_path': {
-                        'type': 'string',
-                        'description': 'Path to the git repository. Default: project directory',
-                        'default': '.',
-                    },
-                },
-                'required': ['branch'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'delete_path',
-            'description': (
-                'Delete a file or directory. WARNING: This is a destructive and irreversible operation. '
-                'For directories, use recursive=true to delete all contents. The workspace root itself '
-                'cannot be deleted for safety.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to delete',
-                    },
-                    'recursive': {
-                        'type': 'boolean',
-                        'description': 'For directories, delete all contents recursively. Default: false',
-                        'default': False,
-                    },
-                },
-                'required': ['path'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'move_file',
-            'description': (
-                'Move or rename a file or directory. Creates the destination parent directory if needed. '
-                'Useful for reorganizing project structure, renaming files, or moving files between directories. '
-                'Updates the AST index automatically for source code files.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'source': {
-                        'type': 'string',
-                        'description': 'Absolute path of the file/directory to move',
-                    },
-                    'destination': {
-                        'type': 'string',
-                        'description': 'Absolute path of the destination (new name or new location)',
-                    },
-                },
-                'required': ['source', 'destination'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'append_file',
-            'description': (
-                'Append content to an existing file. The content is added at the end of the file. '
-                'A newline is automatically added if the content does not end with one. '
-                'Useful for adding entries to log files, configuration files, or data files. '
-                'For creating new files or replacing content, use write_file instead.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Absolute path to the file to append to (must exist)',
-                    },
-                    'content': {
-                        'type': 'string',
-                        'description': 'Content to append to the file',
-                    },
-                },
-                'required': ['path', 'content'],
-            },
-        },
-    },
-    # ── Preview & Debugging Tools ──
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_navigate',
-            'description': (
-                'Navigate the built-in preview iframe to a URL. Returns success/error status.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'url': {
-                        'type': 'string',
-                        'description': 'URL to navigate to (e.g. "http://localhost:8080", "https://example.com")',
-                    },
-                },
-                'required': ['url'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_console',
-            'description': (
-                'Get captured console output (log, warn, error, info) from the preview page. '
-                'The console interceptor is auto-injected when a page loads in the preview. '
-                'Returns the last 100 log entries with timestamps and types.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-    },
-
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_page_info',
-            'description': (
-                'Get basic information about the currently loaded page in the preview. '
-                'Returns title, URL, character set, viewport size, scroll position, and body element count.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_evaluate',
-            'description': (
-                'Execute a JavaScript expression in the preview page and return the result. '
-                'Useful for getting page state, checking variables, or running custom queries. '
-                'The expression runs in the page context with full DOM access. '
-                'Requires the page to be same-origin (localhost) and the Bridge to be injected.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'expression': {
-                        'type': 'string',
-                        'description': 'JavaScript expression to evaluate (e.g. "document.title", "window.scrollY", "JSON.stringify(performance.timing)")',
-                    },
-                },
-                'required': ['expression'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_inspect',
-            'description': (
-                'Inspect a DOM element in the preview page. Returns detailed info: tag name, id, class, '
-                'attributes, text content, computed styles, position/size, visibility status, child count. '
-                'Use CSS selector to target elements (e.g. "#login-btn", ".nav-item", "form input[name=email]")'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the element to inspect',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_query_all',
-            'description': (
-                'List all elements matching a CSS selector in the preview page. Returns up to 50 results '
-                'with tag name, id, class, text preview, visibility, and position. '
-                'Useful for discovering what elements exist on a page.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector (e.g. "button", ".card", "a[href]")',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_click',
-            'description': (
-                'Simulate a mouse click on an element in the preview page. '
-                'Useful for testing button clicks, link navigation, form submissions, etc.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the element to click',
-                    },
-                },
-                'required': ['selector'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_input',
-            'description': (
-                'Simulate typing text into an input, textarea, or contenteditable element. '
-                'Compatible with React/Vue (uses native value setter). '
-                'Triggers input and change events.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'selector': {
-                        'type': 'string',
-                        'description': 'CSS selector of the input/textarea element',
-                    },
-                    'text': {
-                        'type': 'string',
-                        'description': 'Text to type into the element',
-                    },
-                },
-                'required': ['selector', 'text'],
-            },
-        },
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'browser_cookies',
-            'description': (
-                'Read cookies from the preview page. Returns parsed cookie name-value pairs. '
-                'Only works for same-origin pages. Returns empty if no cookies are set.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-    },
-    # ── Server & Environment Tools ──
-    {
-        'type': 'function',
-        'function': {
-            'name': 'server_logs',
-            'description': (
-                'Read IDE server logs to check for backend errors, startup issues, request failures, '
-                'or runtime exceptions. Returns the most recent log lines. Essential for debugging '
-                'backend problems after code modifications.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'count': {
-                        'type': 'integer',
-                        'description': 'Number of most recent log lines to return. Default: 50',
-                        'default': 50,
-                    },
-                },
-                'required': [],
-            },
-        },
-    },
-    # ── P0+P1 New Tools ──
-
-    {
-        'type': 'function',
-        'function': {
-            'name': 'glob_files',
-            'description': (
-                'Fast file pattern matching using glob syntax. Returns matching file paths sorted by modification time. '
-                'Supports patterns like "**/*.py", "src/**/*.{ts,tsx}", "static/css/*.css". '
-                'Much faster than search_files for finding files by name. Returns up to 100 results.'
-            ),
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    'pattern': {
-                        'type': 'string',
-                        'description': 'Glob pattern to match files (e.g. "**/*.py", "src/**/*.ts")',
-                    },
-                    'path': {
-                        'type': 'string',
-                        'description': 'Base directory to search in. Defaults to project directory.',
-                    },
+                    'pattern': {'type': 'string', 'description': 'Regex pattern'},
+                    'path': {'type': 'string', 'description': 'Root dir. Default: project dir'},
+                    'context_lines': {'type': 'integer', 'description': 'Context lines. Default: 2', 'default': 2},
+                    'include': {'type': 'string', 'description': 'Include glob (e.g. "*.py")'},
+                    'exclude': {'type': 'string', 'description': 'Exclude glob (e.g. "*.min.js")'},
                 },
                 'required': ['pattern'],
             },
@@ -992,23 +348,12 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'find_definition',
-            'description': (
-                'Find the definition location of a function, class, or variable in source code. '
-                'Uses AST (tree-sitter) semantic analysis for precise results — understands scopes, decorators, and nesting. '
-                'Returns file path, line number, kind (function/class/method/constant), parent class, and surrounding context. '
-                'Useful for understanding code structure and jumping to definitions.'
-            ),
+            'description': 'AST-based symbol definition lookup. Returns file, line, kind (function/class/method), parent. More precise than grep.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'symbol': {
-                        'type': 'string',
-                        'description': 'The symbol name to find (e.g. "execute_agent_tool", "MyClass", "API_KEY")',
-                    },
-                    'path': {
-                        'type': 'string',
-                        'description': 'Directory or file to search in. Defaults to project directory.',
-                    },
+                    'symbol': {'type': 'string', 'description': 'Symbol name (e.g. "MyClass", "process_data")'},
+                    'path': {'type': 'string', 'description': 'Search directory. Default: project dir'},
                 },
                 'required': ['symbol'],
             },
@@ -1018,26 +363,13 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'find_references',
-            'description': (
-                'Find all references/usages of a symbol across the codebase using AST (tree-sitter) analysis. '
-                'Automatically excludes definition lines, string literals, and comments for accurate results. '
-                'Returns file paths, line numbers, and matching lines. Useful for refactoring and understanding dependencies.'
-            ),
+            'description': 'AST-based reference finder. Excludes definitions, strings, comments. For refactoring and dependency analysis.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'symbol': {
-                        'type': 'string',
-                        'description': 'The symbol name to find references for (e.g. "execute_agent_tool", "WORKSPACE")',
-                    },
-                    'path': {
-                        'type': 'string',
-                        'description': 'Directory or file to search in. Defaults to project directory.',
-                    },
-                    'include_tests': {
-                        'type': 'boolean',
-                        'description': 'Whether to include test files in the search. Default: true',
-                    },
+                    'symbol': {'type': 'string', 'description': 'Symbol name'},
+                    'path': {'type': 'string', 'description': 'Search directory. Default: project dir'},
+                    'include_tests': {'type': 'boolean', 'description': 'Include test files. Default: true'},
                 },
                 'required': ['symbol'],
             },
@@ -1047,52 +379,346 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'file_structure',
-            'description': (
-                'Parse a source file using AST (tree-sitter) and return its structural outline: classes, functions, methods, imports, and top-level variables. '
-                'Supports Python, JavaScript, TypeScript, and Go files. Shows full parameter lists and parent classes. '
-                'Useful for quickly understanding file organization without reading the entire file.'
-            ),
+            'description': 'AST outline of a source file: classes, functions, methods, imports. Supports Python/JS/TS/Go.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Path to the source file to analyze.',
-                    },
+                    'path': {'type': 'string', 'description': 'Source file path'},
                 },
                 'required': ['path'],
             },
         },
     },
-    # ── Quality Assurance Tools ──
+    {
+        'type': 'function',
+        'function': {
+            'name': 'file_info',
+            'description': 'File/directory metadata: size, dates, type, permissions.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Absolute path'},
+                },
+                'required': ['path'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'create_directory',
+            'description': 'Create directory with parents (mkdir -p). Succeeds silently if exists.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Directory path to create'},
+                },
+                'required': ['path'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'delete_path',
+            'description': 'Delete file/directory. Destructive! Use recursive=true for dirs. Cannot delete workspace root.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Path to delete'},
+                    'recursive': {'type': 'boolean', 'description': 'Delete dir contents. Default: false', 'default': False},
+                },
+                'required': ['path'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'move_file',
+            'description': 'Move/rename file or directory. Auto-creates destination dir. Updates AST index.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'source': {'type': 'string', 'description': 'Source path'},
+                    'destination': {'type': 'string', 'description': 'Destination path'},
+                },
+                'required': ['source', 'destination'],
+            },
+        },
+    },
+    # -- Git --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'git_status',
+            'description': 'Git repo status: branch, staged/modified/untracked files.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'repo_path': {'type': 'string', 'description': 'Repo path. Default: project dir', 'default': '.'},
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'git_diff',
+            'description': 'Show git diff (staged/unstaged/specific file) in unified format.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'repo_path': {'type': 'string', 'description': 'Repo path. Default: project dir'},
+                    'staged': {'type': 'boolean', 'description': 'Show staged changes. Default: false', 'default': False},
+                    'file_path': {'type': 'string', 'description': 'Specific file diff'},
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'git_commit',
+            'description': 'Stage all and commit. Use add_all=false for staged-only commit.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'message': {'type': 'string', 'description': 'Commit message'},
+                    'repo_path': {'type': 'string', 'description': 'Repo path. Default: project dir'},
+                    'add_all': {'type': 'boolean', 'description': 'Stage all first. Default: true', 'default': True},
+                },
+                'required': ['message'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'git_log',
+            'description': 'Show recent commit history in oneline format.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'count': {'type': 'integer', 'description': 'Number of commits. Default: 10', 'default': 10},
+                    'repo_path': {'type': 'string', 'description': 'Repo path. Default: project dir', 'default': '.'},
+                },
+                'required': [],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'git_checkout',
+            'description': 'Switch branch or restore working tree files.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'branch': {'type': 'string', 'description': 'Branch or ref to checkout'},
+                    'repo_path': {'type': 'string', 'description': 'Repo path. Default: project dir', 'default': '.'},
+                },
+                'required': ['branch'],
+            },
+        },
+    },
+    # -- Packages --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'install_package',
+            'description': 'Install package via pip/npm. Auto-detects manager and venv. Supports version specs.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'package_name': {'type': 'string', 'description': 'Package name (e.g. "flask", "numpy>=1.24")'},
+                    'manager': {'type': 'string', 'description': '"pip"/"npm"/"auto". Default: auto', 'default': 'auto'},
+                },
+                'required': ['package_name'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'list_packages',
+            'description': 'List installed packages with versions. Uses venv pip if configured.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'manager': {'type': 'string', 'description': '"pip" or "npm". Default: "pip"', 'default': 'pip'},
+                },
+                'required': [],
+            },
+        },
+    },
+    # -- Web --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'web_search',
+            'description': 'Search the web via DuckDuckGo. Returns titles, URLs, snippets.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string', 'description': 'Search query'},
+                },
+                'required': ['query'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'web_fetch',
+            'description': 'Fetch web page as plain text. Strips HTML. Max 10000 chars.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'url': {'type': 'string', 'description': 'URL to fetch'},
+                },
+                'required': ['url'],
+            },
+        },
+    },
+    # -- Browser/Preview --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_navigate',
+            'description': 'Open URL in the built-in preview iframe.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'url': {'type': 'string', 'description': 'URL to navigate to'},
+                },
+                'required': ['url'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_evaluate',
+            'description': 'Run JavaScript in the preview page. Returns result. Full DOM access. Requires same-origin.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'expression': {'type': 'string', 'description': 'JS expression (e.g. "document.title")'},
+                },
+                'required': ['expression'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_inspect',
+            'description': 'Inspect DOM element by CSS selector. Returns tag, attrs, styles, position, visibility.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {'type': 'string', 'description': 'CSS selector (e.g. "#btn", ".nav-item")'},
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_query_all',
+            'description': 'List elements matching CSS selector. Up to 50 results with tag, id, class, text, position.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {'type': 'string', 'description': 'CSS selector (e.g. "button", ".card")'},
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_click',
+            'description': 'Click an element in the preview by CSS selector.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {'type': 'string', 'description': 'CSS selector of element to click'},
+                },
+                'required': ['selector'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_input',
+            'description': 'Type text into input/textarea. React/Vue compatible. Triggers input+change events.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'selector': {'type': 'string', 'description': 'CSS selector of input element'},
+                    'text': {'type': 'string', 'description': 'Text to type'},
+                },
+                'required': ['selector', 'text'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_console',
+            'description': 'Get captured console output (log/warn/error) from preview. Last 100 entries.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_page_info',
+            'description': 'Page info: title, URL, viewport, scroll position.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'browser_cookies',
+            'description': 'Read cookies from preview page. Same-origin only.',
+            'parameters': {'type': 'object', 'properties': {}, 'required': []},
+        },
+    },
+    # -- Server & QA --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'server_logs',
+            'description': 'Read IDE server logs for backend errors and exceptions.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'count': {'type': 'integer', 'description': 'Recent log lines. Default: 50', 'default': 50},
+                },
+                'required': [],
+            },
+        },
+    },
     {
         'type': 'function',
         'function': {
             'name': 'run_linter',
-            'description': (
-                'Run a linter on the project or a specific file. Auto-detects the project type and appropriate linter:\n'
-                '- Python: ruff (preferred), flake8, pylint (tries in order)\n'
-                '- JavaScript/TypeScript: eslint (if configured), otherwise skips\n'
-                '- Go: go vet\n'
-                'Returns a structured list of issues with file, line, column, severity, and message.\n'
-                'Use this after editing code to catch issues early — much faster than manual run_command.'
-            ),
+            'description': 'Run linter. Auto-detects: Python(ruff/flake8), JS(eslint), Go(go vet). Returns structured issues.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'File or directory to lint. Defaults to the current project directory.',
-                    },
-                    'linter': {
-                        'type': 'string',
-                        'description': 'Force a specific linter (e.g. "ruff", "flake8", "eslint", "go_vet"). Default: auto-detect.',
-                    },
-                    'severity': {
-                        'type': 'string',
-                        'enum': ['all', 'error', 'warning'],
-                        'description': 'Minimum severity to report. "error" shows only errors, "warning" shows errors+warnings, "all" shows everything. Default: "warning"',
-                    },
+                    'path': {'type': 'string', 'description': 'File/dir to lint. Default: project dir'},
+                    'linter': {'type': 'string', 'description': 'Force linter (e.g. "ruff", "eslint"). Default: auto'},
+                    'severity': {'type': 'string', 'enum': ['all', 'error', 'warning'], 'description': 'Min severity. Default: "warning"'},
                 },
                 'required': [],
             },
@@ -1102,74 +728,32 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'run_tests',
-            'description': (
-                'Run tests in the project. Auto-detects the test framework:\n'
-                '- Python: pytest (preferred), unittest\n'
-                '- JavaScript/TypeScript: jest, vitest, mocha (tries in order)\n'
-                '- Go: go test\n'
-                'Returns a structured summary: total tests, passed, failed, and details of each failure.\n'
-                'Use this to verify your code changes work correctly.'
-            ),
+            'description': 'Run tests. Auto-detects: Python(pytest), JS(jest/vitest), Go(go test). Returns pass/fail summary.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'path': {
-                        'type': 'string',
-                        'description': 'Directory or specific test file to run. Defaults to the project directory.',
-                    },
-                    'framework': {
-                        'type': 'string',
-                        'description': 'Force a specific test framework (e.g. "pytest", "jest", "go_test"). Default: auto-detect.',
-                    },
-                    'filter': {
-                        'type': 'string',
-                        'description': 'Test name filter/pattern (e.g. "test_login", "UserModel"). Runs only matching tests.',
-                    },
-                    'verbose': {
-                        'type': 'boolean',
-                        'description': 'Show verbose output including passing test names. Default: false',
-                    },
+                    'path': {'type': 'string', 'description': 'Test dir/file. Default: project dir'},
+                    'framework': {'type': 'string', 'description': 'Force framework (e.g. "pytest"). Default: auto'},
+                    'filter': {'type': 'string', 'description': 'Test name filter'},
+                    'verbose': {'type': 'boolean', 'description': 'Show passing tests. Default: false'},
                 },
                 'required': [],
             },
         },
     },
-    # ── Sub-Agent Tools ──
+    # -- Sub-Agents --
     {
         'type': 'function',
         'function': {
             'name': 'delegate_task',
-            'description': (
-                'Launch a sub-agent to handle an independent, well-defined subtask. Supports two modes:\n'
-                '- "read" (default): Read-only exploration/research — can use read_file, glob_files, grep_code, search_files, '
-                'list_directory, file_info, file_structure, find_definition, find_references, web_search, web_fetch. '
-                'Use this for code analysis, architecture exploration, finding usages, summarizing code, etc.\n'
-                '- "write": Full write-capable sub-agent — has access to ALL tools (read, write, edit, run commands, git, etc.). '
-                'Use this for parallel code modifications (e.g. "create unit tests for module X", "add error handling to all API routes"). '
-                'The sub-agent runs independently with its own context and returns a summary of what it did.\n'
-                'Max 15 iterations. Returns a concise summary of findings or changes made.'
-            ),
+            'description': 'Launch sub-agent for independent subtask. Mode "read"=exploration only (safe), "write"=full access. Max 15 iterations.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'task': {
-                        'type': 'string',
-                        'description': 'A clear description of the subtask to perform. Be specific about what to gather, analyze, or modify.',
-                    },
-                    'mode': {
-                        'type': 'string',
-                        'enum': ['read', 'write'],
-                        'description': '"read" for exploration only (safe, default). "write" for tasks that need to modify files or run commands.',
-                        'default': 'read',
-                    },
-                    'max_iterations': {
-                        'type': 'integer',
-                        'description': 'Max iterations for the sub-agent (1-15). Default: 8',
-                    },
-                    'context': {
-                        'type': 'string',
-                        'description': 'Optional context from the main agent (e.g. relevant file paths, current state, previous findings). This helps the sub-agent work more efficiently without re-discovering what you already know.',
-                    },
+                    'task': {'type': 'string', 'description': 'Subtask description'},
+                    'mode': {'type': 'string', 'enum': ['read', 'write'], 'description': '"read" (safe, default) or "write"', 'default': 'read'},
+                    'max_iterations': {'type': 'integer', 'description': 'Max iterations 1-15. Default: 8'},
+                    'context': {'type': 'string', 'description': 'Optional context for the sub-agent'},
                 },
                 'required': ['task'],
             },
@@ -1179,27 +763,20 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'parallel_tasks',
-            'description': (
-                'Launch multiple sub-agents simultaneously to handle independent subtasks in parallel. '
-                'Each task runs in its own thread with its own context. Supports both "read" and "write" modes per task. '
-                'Use this when you have 2-4 independent subtasks that can be done concurrently (e.g. '
-                'simultaneously analyze different modules, create tests for different files, or refactor different components). '
-                'All tasks must be truly independent — do NOT have them modify the same files. '
-                'Returns a combined summary of all results. Max 4 parallel tasks.'
-            ),
+            'description': 'Run 2-4 independent sub-agents in parallel. Each has own context. Tasks must NOT modify same files. Max 4.',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'tasks': {
                         'type': 'array',
-                        'description': 'List of tasks to run in parallel (max 4)',
+                        'description': 'Tasks to run in parallel (max 4)',
                         'items': {
                             'type': 'object',
                             'properties': {
-                                'task': {'type': 'string', 'description': 'Description of the subtask'},
-                                'mode': {'type': 'string', 'enum': ['read', 'write'], 'description': '"read" or "write" (default: "read")'},
-                                'max_iterations': {'type': 'integer', 'description': 'Max iterations (1-15). Default: 8'},
-                                'context': {'type': 'string', 'description': 'Optional context from main agent'},
+                                'task': {'type': 'string', 'description': 'Subtask description'},
+                                'mode': {'type': 'string', 'enum': ['read', 'write'], 'description': '"read" or "write"'},
+                                'max_iterations': {'type': 'integer', 'description': 'Max iterations 1-15. Default: 8'},
+                                'context': {'type': 'string', 'description': 'Optional context'},
                             },
                             'required': ['task'],
                         },
@@ -1209,57 +786,33 @@ AGENT_TOOLS = [
             },
         },
     },
-    # ── Process & Port Management ──
+    # -- Process Management --
     {
         'type': 'function',
         'function': {
             'name': 'kill_port',
-            'description': (
-                'Kill any process listening on a specific port. Use this BEFORE starting a server '
-                'to avoid "port already in use" errors. For example, if you need to start a Flask '
-                'app on port 5000 but get an "Address already in use" error, call kill_port first '
-                'to free the port, then start the server. Also useful for restarting a dev server.'
-            ),
+            'description': 'Kill process on a port. Use BEFORE starting servers to avoid "port in use" errors.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'port': {
-                        'type': 'integer',
-                        'description': 'The port number to free (e.g. 5000, 8080, 3000)',
-                    },
+                    'port': {'type': 'integer', 'description': 'Port number (e.g. 5000, 8080)'},
                 },
                 'required': ['port'],
             },
         },
     },
-    # ── Shell Command (general-purpose — specialized tools are more efficient for specific tasks) ──
+    # -- Shell --
     {
         'type': 'function',
         'function': {
             'name': 'run_command',
-            'description': (
-                'Execute a shell command. Best for: starting dev servers, compiling code, running custom scripts, '
-                'and other tasks without a dedicated tool. '
-                'For better results, consider: read_file (reading files), edit_file (editing files), '
-                'list_directory (listing dirs), grep_code (searching code), glob_files (finding files), '
-                'install_package (installing packages), run_linter (linting), run_tests (testing).'
-            ),
+            'description': 'Execute shell command. Best for: dev servers, compiling, scripts. Prefer specialized tools for reading/editing/searching files.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'command': {
-                        'type': 'string',
-                        'description': 'Shell command to execute',
-                    },
-                    'timeout': {
-                        'type': 'integer',
-                        'description': 'Timeout in seconds. Default: 120',
-                        'default': 120,
-                    },
-                    'cwd': {
-                        'type': 'string',
-                        'description': 'Working directory for the command. Default: project directory',
-                    },
+                    'command': {'type': 'string', 'description': 'Shell command'},
+                    'timeout': {'type': 'integer', 'description': 'Timeout in seconds. Default: 120', 'default': 120},
+                    'cwd': {'type': 'string', 'description': 'Working directory. Default: project dir'},
                 },
                 'required': ['command'],
             },
