@@ -3,8 +3,10 @@ PhoneIDE - Execution / Run API routes.
 """
 
 import os
+import re
 import json
 import time
+import subprocess as sp
 from flask import Blueprint, jsonify, request, Response
 from utils import (
     handle_error, load_config, WORKSPACE, shlex_quote,
@@ -13,6 +15,82 @@ from utils import (
 )
 
 bp = Blueprint('run', __name__)
+
+# IDE's own port — never kill this
+_IDE_PORT = int(os.environ.get('PHONEIDE_PORT', 12345))
+
+
+def _extract_ports_from_code(code_text):
+    """Extract port numbers from Python code.
+    Detects patterns like:
+      port=5000, port = 8080, app.run(port=3000)
+      .listen(3000), HOST:5000, 0.0.0.0:8000
+      socket.bind(('0.0.0.0', 9000))
+    """
+    ports = set()
+    # Pattern 1: port=NNNN or port = NNNN (most common: Flask, Django, etc.)
+    for m in re.finditer(r'port\s*=\s*(\d{2,5})', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    # Pattern 2: host:port pattern like '0.0.0.0:8000' or 'localhost:5000'
+    for m in re.finditer(r'(?:\d+\.\d+\.\d+\.\d+|localhost):(\d{2,5})', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    # Pattern 3: .listen(NNNN) (Node.js/Express style)
+    for m in re.finditer(r'\.listen\s*\(\s*(\d{2,5})', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    return ports
+
+
+def _kill_port_occupants(ports):
+    """Kill processes occupying the given ports. Returns list of killed info."""
+    killed = []
+    ide_port = _IDE_PORT
+    for port in ports:
+        if port == ide_port:
+            continue  # Never kill IDE's own port
+        if IS_WINDOWS:
+            try:
+                result = sp.run(
+                    f'netstat -ano | findstr :{port} | findstr LISTENING',
+                    shell=True, capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.strip().splitlines():
+                    parts = line.strip().split()
+                    if parts:
+                        pid = parts[-1]
+                        try:
+                            sp.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True, timeout=5)
+                            killed.append({'port': port, 'pid': pid})
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        else:
+            try:
+                result = sp.run(
+                    f'lsof -ti :{port}', shell=True, capture_output=True, text=True, timeout=5
+                )
+                for pid_str in result.stdout.strip().splitlines():
+                    pid_str = pid_str.strip()
+                    if pid_str:
+                        try:
+                            os.kill(int(pid_str), 9)
+                            killed.append({'port': port, 'pid': pid_str})
+                        except (OSError, ValueError):
+                            pass
+            except Exception:
+                pass
+        # Also stop any of our managed processes that might be using this port
+        for proc_id, info in list(running_processes.items()):
+            if info.get('running') and str(port) in info.get('cmd', ''):
+                stop_process(proc_id)
+                killed.append({'port': port, 'managed_proc': proc_id})
+    return killed
 
 
 @bp.route('/api/run/execute', methods=['POST'])
@@ -38,12 +116,23 @@ def execute_code():
     if compiler in ('python3', 'python') and not config.get('venv_path'):
         no_venv = True
 
+    # ── Auto-detect ports and kill occupants ──
+    # Read the source code to find port numbers, then kill any processes
+    # occupying those ports so the new process can start cleanly.
+    killed_ports = []
+    source_text = code  # start with inline code if provided
     if file_path:
         # file_path can be relative to workspace or project
         target = os.path.realpath(os.path.join(config.get('workspace', WORKSPACE), file_path))
         ws = os.path.realpath(config.get('workspace', WORKSPACE))
         if not target.startswith(ws):
             return jsonify({'error': 'Access denied'}), 403
+        # Also read the file content for port detection
+        try:
+            with open(target, 'r', encoding='utf-8', errors='ignore') as f:
+                source_text = f.read()
+        except Exception:
+            source_text = code
         cmd = f'{compiler} {shlex_quote(target)} {args}'
     else:
         # Write temp file in the effective base (project dir or workspace)
@@ -52,8 +141,27 @@ def execute_code():
             f.write(code)
         cmd = f'{compiler} {shlex_quote(tmp_file)} {args}'
 
+    # Detect ports from source code + args
+    detected_ports = _extract_ports_from_code(source_text)
+    # Also check args for --port NNNN pattern
+    for m in re.finditer(r'(?:--port|-p)\s+(\d{2,5})', args):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            detected_ports.add(port)
+
+    if detected_ports:
+        killed_ports = _kill_port_occupants(detected_ports)
+        # Small delay to let OS release the port
+        if killed_ports:
+            time.sleep(0.3)
+
     proc_id = run_process(cmd, cwd=base)
-    return jsonify({'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base})
+    result = {'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base}
+    if detected_ports:
+        result['detected_ports'] = sorted(detected_ports)
+    if killed_ports:
+        result['killed_ports'] = killed_ports
+    return jsonify(result)
 
 
 @bp.route('/api/run/shell', methods=['POST'])

@@ -268,6 +268,15 @@ const TerminalManager = (() => {
 
             const data = await resp.json();
 
+            // Show auto-killed port info
+            if (data.detected_ports && data.detected_ports.length > 0) {
+                appendOutput(`[auto] 检测到端口: ${data.detected_ports.join(', ')}`, 'info');
+            }
+            if (data.killed_ports && data.killed_ports.length > 0) {
+                const killInfo = data.killed_ports.map(k => `端口 ${k.port} (PID: ${k.pid || k.managed_proc})`).join(', ');
+                appendOutput(`[auto] 已自动释放占用端口: ${killInfo}`, 'warn');
+            }
+
             // Warn if no venv is configured for Python
             if (data.no_venv && (compiler === 'python3' || compiler === 'python')) {
                 appendOutput(`[warn] 未检测到虚拟环境。建议在调试面板创建虚拟环境以确保依赖隔离。`, 'warn');
@@ -350,6 +359,15 @@ const TerminalManager = (() => {
             if (!resp.ok) throw new Error(`Execution failed: ${resp.statusText}`);
 
             const data = await resp.json();
+
+            // Show auto-killed port info
+            if (data.detected_ports && data.detected_ports.length > 0) {
+                appendOutput(`[auto] 检测到端口: ${data.detected_ports.join(', ')}`, 'info');
+            }
+            if (data.killed_ports && data.killed_ports.length > 0) {
+                const killInfo = data.killed_ports.map(k => `端口 ${k.port} (PID: ${k.pid || k.managed_proc})`).join(', ');
+                appendOutput(`[auto] 已自动释放占用端口: ${killInfo}`, 'warn');
+            }
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
