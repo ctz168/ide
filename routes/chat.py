@@ -125,6 +125,14 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 
 Key principle: run_command is NOT wrong — just less efficient for tasks that have a dedicated tool.
 
+**DO NOT use run_command for these (use the dedicated tool instead):**
+- Reading files → use read_file (NOT cat/head/tail)
+- Editing files → use edit_file (NOT sed/echo/awk)
+- Listing directories → use list_directory (NOT ls)
+- Finding files → use glob_files (NOT find)
+- Searching code → use grep_code or search_files (NOT grep/rg)
+- Git operations → use git_status/git_diff/git_log/git_commit/git_checkout (NOT git commands)
+
 ## Core Workflow Rules
 1. ALWAYS use todo_write BEFORE starting any complex task (3+ steps) - plan first, then execute
 2. Update todo status in real-time - mark items in_progress when starting, completed when done
