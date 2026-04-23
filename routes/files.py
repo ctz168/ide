@@ -2,12 +2,13 @@
 PhoneIDE - File management API routes.
 """
 
+import json
 import os
 import re
 import fnmatch
 from pathlib import Path
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file, Response
 from utils import (
     handle_error, load_config, save_config, WORKSPACE,
     get_icon_for_file, get_file_type,
@@ -132,6 +133,108 @@ def read_file():
             'type': get_file_type(os.path.basename(target)),
             'size': size,
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# MIME type mapping for preview
+_PREVIEW_MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.htm': 'text/html; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8',
+    '.markdown': 'text/markdown; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.xml': 'application/xml; charset=utf-8',
+    '.svg': 'image/svg+xml; charset=utf-8',
+    '.txt': 'text/plain; charset=utf-8',
+    '.py': 'text/plain; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.ico': 'image/x-icon',
+    '.webp': 'image/webp',
+    '.pdf': 'application/pdf',
+}
+
+
+@bp.route('/api/files/preview', methods=['GET'])
+@handle_error
+def preview_file():
+    """Serve a local file for browser preview (HTML, MD, images, etc.).
+    This route returns raw file content with proper Content-Type so that
+    the browser's iframe can render it correctly."""
+    path = request.args.get('path', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    target = os.path.realpath(os.path.join(base, path))
+
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isfile(target):
+        return jsonify({'error': 'File not found'}), 404
+
+    # Determine MIME type from extension
+    ext = os.path.splitext(target)[1].lower()
+    mime_type = _PREVIEW_MIME_TYPES.get(ext, 'application/octet-stream')
+
+    # For Markdown files, convert to HTML before serving
+    if ext in ('.md', '.markdown'):
+        try:
+            with open(target, 'r', encoding='utf-8', errors='replace') as f:
+                md_content = f.read()
+            # Safely encode markdown content as JSON string to prevent XSS
+            md_json = json.dumps(md_content)
+            html_content = f'''<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }}
+h1,h2,h3,h4,h5,h6 {{ margin-top: 1.5em; margin-bottom: 0.5em; }}
+code {{ background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
+pre {{ background: #f5f5f5; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+pre code {{ background: none; padding: 0; }}
+blockquote {{ border-left: 4px solid #ddd; margin: 0; padding-left: 16px; color: #666; }}
+table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+th,td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+th {{ background: #f5f5f5; }}
+img {{ max-width: 100%; }}
+a {{ color: #0066cc; }}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head><body>
+<div id="content"></div>
+<script>
+document.getElementById('content').innerHTML = marked.parse({md_json});
+</script>
+</body></html>'''
+            return Response(html_content, mimetype='text/html; charset=utf-8')
+        except Exception as e:
+            return jsonify({'error': f'Markdown render error: {e}'}), 500
+
+    # For binary file types (images, PDF), use send_file
+    if mime_type.startswith('image/') or mime_type == 'application/pdf':
+        return send_file(target, mimetype=mime_type)
+
+    # For text-based files, serve with proper encoding
+    try:
+        with open(target, 'rb') as f:
+            raw = f.read()
+        # Try to decode as text
+        for enc in ['utf-8', 'utf-8-sig', 'gbk', 'latin-1']:
+            try:
+                content = raw.decode(enc)
+                return Response(content, mimetype=mime_type)
+            except (UnicodeDecodeError, LookupError):
+                continue
+        # Fallback
+        return Response(raw, mimetype=mime_type)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

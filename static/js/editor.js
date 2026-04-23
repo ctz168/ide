@@ -344,6 +344,12 @@ const EditorManager = (() => {
             mdToggleBtn.addEventListener('click', toggleMarkdownPreview);
         }
 
+        // Browser preview button (for HTML/HTM/MD files)
+        const previewBtn = document.getElementById('editor-preview-btn');
+        if (previewBtn) {
+            previewBtn.addEventListener('click', previewInBrowser);
+        }
+
         // ── Breakpoint Gutter Click ──────────────────────────────
         editor.on('gutterClick', (cm, n, gutterId) => {
             const filePath = currentFilePath;
@@ -1475,6 +1481,76 @@ const EditorManager = (() => {
             const cmWrapper = editor ? editor.getWrapperElement() : null;
             if (previewEl) previewEl.style.display = 'none';
             if (cmWrapper) cmWrapper.style.display = '';
+        }
+        // Update the browser preview button visibility
+        updatePreviewButton();
+    }
+
+    /**
+     * Check if the current file is previewable in the browser (HTML, HTM, MD)
+     */
+    function isPreviewableFile() {
+        if (!currentFilePath) return false;
+        const ext = currentFilePath.toLowerCase();
+        return ext.endsWith('.html') || ext.endsWith('.htm') || ext.endsWith('.md') || ext.endsWith('.markdown');
+    }
+
+    /**
+     * Update the browser preview button visibility based on current file
+     */
+    function updatePreviewButton() {
+        const btn = document.getElementById('editor-preview-btn');
+        if (btn) {
+            btn.style.display = isPreviewableFile() ? '' : 'none';
+        }
+    }
+
+    /**
+     * Preview the current file in the browser panel
+     */
+    function previewInBrowser() {
+        if (!currentFilePath) return;
+
+        // If the file has unsaved changes, auto-save first
+        if (editor && !editor.isClean()) {
+            if (window.EditorManager && window.EditorManager.saveCurrentFile) {
+                window.EditorManager.saveCurrentFile();
+            }
+        }
+
+        // Build the preview URL relative to workspace
+        let relPath = currentFilePath;
+        // currentFilePath might be absolute or relative — we need it relative to workspace
+        if (window.FileManager && window.FileManager.currentFilePath) {
+            relPath = window.FileManager.currentFilePath;
+        }
+
+        const previewUrl = '/api/files/preview?path=' + encodeURIComponent(relPath);
+
+        // Switch to the browser tab in the bottom panel
+        const browserTab = document.querySelector('[data-btab="browser"]');
+        if (browserTab) {
+            browserTab.click();
+        }
+
+        // Make sure the bottom panel is visible
+        const bottomPanel = document.getElementById('bottom-panel');
+        if (bottomPanel && bottomPanel.classList.contains('hidden')) {
+            bottomPanel.classList.remove('hidden');
+        }
+
+        // Navigate the preview iframe to the file
+        const iframe = document.getElementById('preview-frame');
+        if (iframe) {
+            iframe.src = previewUrl;
+        }
+
+        // Update the URL input to show what's being previewed
+        const urlInput = document.getElementById('browser-url-input');
+        if (urlInput) {
+            const filename = currentFilePath.split('/').pop();
+            urlInput.value = 'preview: ' + filename;
+            urlInput.dataset.originalUrl = previewUrl;
         }
     }
 
