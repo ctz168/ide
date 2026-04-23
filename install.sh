@@ -304,6 +304,34 @@ info "Detected server port: $IDE_PORT"
 IDE_URL="http://${LOCAL_IP}:${IDE_PORT}"
 IDE_LOCAL="http://localhost:${IDE_PORT}"
 
+# Kill any existing server on this port (leftover from previous background run)
+if command -v lsof &>/dev/null; then
+    OLD_PID=$(lsof -ti :$IDE_PORT 2>/dev/null)
+    if [ -n "$OLD_PID" ]; then
+        info "Killing old server on port $IDE_PORT (PID: $OLD_PID)..."
+        kill $OLD_PID 2>/dev/null
+        sleep 1
+        # Force kill if still running
+        kill -9 $OLD_PID 2>/dev/null
+    fi
+elif command -v fuser &>/dev/null; then
+    OLD_PID=$(fuser $IDE_PORT/tcp 2>/dev/null)
+    if [ -n "$OLD_PID" ]; then
+        info "Killing old server on port $IDE_PORT (PID: $OLD_PID)..."
+        kill $OLD_PID 2>/dev/null
+        sleep 1
+        kill -9 $OLD_PID 2>/dev/null
+    fi
+elif command -v ss &>/dev/null; then
+    OLD_PID=$(ss -tlnp "sport = :$IDE_PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1)
+    if [ -n "$OLD_PID" ]; then
+        info "Killing old server on port $IDE_PORT (PID: $OLD_PID)..."
+        kill $OLD_PID 2>/dev/null
+        sleep 1
+        kill -9 $OLD_PID 2>/dev/null
+    fi
+fi
+
 # Start server in foreground (so Ctrl+C can stop it)
 # First, open browser in background after a short delay
 (sleep 2 && (
