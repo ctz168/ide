@@ -237,15 +237,12 @@ document.getElementById('content').innerHTML = marked.parse({md_json});
             return Response(raw, mimetype=mime_type)
 
         # For HTML files: inject <base> tag so relative CSS/JS paths resolve correctly
-        # The preview is served via /preview/<dir_path>/ so relative paths like
-        # "style.css" will resolve to /preview/<dir_path>/style.css
+        # Set base to the full file path (not just directory) so that:
+        #   - Relative paths like "style.css" resolve to /preview/<dir>/style.css
+        #   - Anchor links like "#section" resolve to /preview/<dir>/index.html#section
+        #   (If base were just /preview/<dir>/, #links would load the directory, not the file)
         if ext in ('.html', '.htm'):
-            # Calculate the directory path of the HTML file relative to workspace
-            dir_path = os.path.dirname(path)
-            if dir_path:
-                base_href = f'/preview/{dir_path}/'
-            else:
-                base_href = '/preview/'
+            base_href = f'/preview/{path}'
             # Inject <base> tag right after <head> or at the start of the document
             if '<head>' in content:
                 content = content.replace('<head>', f'<head><base href="{base_href}">', 1)
@@ -305,9 +302,11 @@ def serve_preview_file(subpath):
             return Response(raw, mimetype=mime_type)
 
         # For HTML files: inject <base> tag so relative CSS/JS paths resolve correctly
+        # Set base to the full file path (not just directory) so that:
+        #   - Relative paths like "style.css" resolve to /preview/<dir>/style.css
+        #   - Anchor links like "#section" resolve to /preview/<dir>/index.html#section
         if ext in ('.html', '.htm'):
-            dir_path = os.path.dirname(subpath)
-            base_href = f'/preview/{dir_path}/' if dir_path else '/preview/'
+            base_href = f'/preview/{subpath}'
             if '<head>' in content:
                 content = content.replace('<head>', f'<head><base href="{base_href}">', 1)
             elif '<HEAD>' in content:
