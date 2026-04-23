@@ -1774,6 +1774,9 @@ def _format_browser_result(result):
         return f"Error: {result['error']}"
     # Remove 'ok' key for cleaner output
     info = {k: v for k, v in result.items() if k != 'ok'}
+    # Add truncation notice if present
+    if result.get('truncated'):
+        info['_note'] = f"Output truncated. Full length: {result.get('fullLength', '?')} chars. Use more specific selectors or expressions to see more."
     try:
         return json.dumps(info, indent=2, ensure_ascii=False)
     except Exception:

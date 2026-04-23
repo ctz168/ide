@@ -141,42 +141,81 @@ const BrowserInspector = (() => {
         const win = tryIframeWin();
         if (!win) return { error: '无法访问 iframe（跨域或未加载页面）' };
         try {
+            // Wrap expression to auto-return the last value.
+            // Strategy: try direct eval first. If undefined, re-run as a return-wrapped
+            // function so that const/let/var declarations still produce a return value.
             let result = win.eval(expression);
 
-            // If result is undefined, try to extract the last variable declaration's value.
-            // e.g. "const inner = document.getElementById('x')" → eval returns undefined,
-            // but the user/AI wants to see the value of `inner`.
-            if (result === undefined) {
-                // Match const/let/var declarations: captures the variable name
-                const declMatch = expression.match(/(?:const|let|var)\s+(\w+)\s*=/g);
-                if (declMatch) {
-                    // Get the last declared variable name
-                    const lastDecl = declMatch[declMatch.length - 1];
-                    const varName = lastDecl.match(/(?:const|let|var)\s+(\w+)/)[1];
-                    try {
-                        const varValue = win.eval(varName);
-                        if (varValue !== undefined) {
-                            result = varValue;
+            if (result === undefined && expression.trim()) {
+                // Try wrapping in a function body with return.
+                // This converts "const x = 1" into "(function(){ const x = 1; return x })()"
+                // We extract the last declared or assigned variable name.
+                try {
+                    // Match trailing variable declarations: const/let/var name = ...
+                    const declMatch = expression.match(/(?:const|let|var)\s+(\w+)\s*=/g);
+                    // Match trailing assignment: name = ... (without const/let/var)
+                    const assignMatch = expression.match(/(\w+)\s*=[^=]/g);
+
+                    let returnExpr = '';
+                    if (declMatch) {
+                        // Use the last declared variable name
+                        const lastDecl = declMatch[declMatch.length - 1];
+                        returnExpr = lastDecl.match(/(?:const|let|var)\s+(\w+)/)[1];
+                    } else if (assignMatch) {
+                        // Use the last assigned variable name
+                        const lastAssign = assignMatch[assignMatch.length - 1];
+                        returnExpr = lastAssign.match(/(\w+)/)[1];
+                    }
+
+                    if (returnExpr) {
+                        // Wrap in IIFE so const/let are scoped properly, then return the variable
+                        const wrapped = '(function(){ ' + expression + '; return ' + returnExpr + '; })()';
+                        const wrappedResult = win.eval(wrapped);
+                        if (wrappedResult !== undefined) {
+                            result = wrappedResult;
                         }
-                    } catch (e) { /* keep original undefined result */ }
-                }
+                    }
+                } catch (e) { /* fallback to original undefined result */ }
             }
 
-            // Try to serialize
+            // Serialize result
             if (result === undefined) return { ok: true, result: 'undefined' };
             if (result === null) return { ok: true, result: 'null' };
             if (typeof result === 'object') {
-                // For DOM elements, return a useful summary instead of JSON
+                // For DOM elements, return a detailed summary
                 if (result.nodeType) {
                     const tag = result.tagName || result.nodeName || '?';
                     const id = result.id ? '#' + result.id : '';
-                    const cls = result.className ? '.' + String(result.className).split(/\s+/).join('.') : '';
-                    const text = (result.textContent || '').trim().substring(0, 200);
-                    const html = (result.outerHTML || '').substring(0, 500);
-                    return { ok: true, result: `<${tag}${id}${cls}> text="${text}"\nHTML: ${html}` };
+                    const cls = (typeof result.className === 'string' && result.className)
+                        ? '.' + result.className.split(/\s+/).filter(Boolean).join('.') : '';
+                    const text = (result.textContent || '').trim().substring(0, 1000);
+                    const children = result.children ? result.children.length : 0;
+                    const html = (result.outerHTML || '').substring(0, 3000);
+                    return {
+                        ok: true,
+                        result: `<${tag}${id}${cls}> children=${children} text="${text}"\nHTML: ${html}`,
+                        truncated: (result.outerHTML || '').length > 3000,
+                        fullLength: (result.outerHTML || '').length,
+                    };
                 }
-                try { return { ok: true, result: JSON.stringify(result, null, 2).substring(0, 5000) }; }
-                catch (e) { return { ok: true, result: String(result).substring(0, 5000) }; }
+                // For other objects, try JSON with generous limit
+                try {
+                    const json = JSON.stringify(result, null, 2);
+                    return {
+                        ok: true,
+                        result: json.substring(0, 10000),
+                        truncated: json.length > 10000,
+                        fullLength: json.length,
+                    };
+                } catch (e) {
+                    const str = String(result);
+                    return {
+                        ok: true,
+                        result: str.substring(0, 10000),
+                        truncated: str.length > 10000,
+                        fullLength: str.length,
+                    };
+                }
             }
             return { ok: true, result: String(result) };
         } catch (e) {
