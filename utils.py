@@ -45,11 +45,36 @@ def log_write(line):
 
 
 # ==================== Config Management ====================
+def _read_json_file(filepath):
+    """Read a JSON file with encoding fallback: utf-8 → gbk → latin-1.
+    
+    On Windows, JSON config files may have been written in GBK encoding
+    by an older version of the server. This function tries UTF-8 first,
+    then falls back to GBK and latin-1.
+    """
+    for enc in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']:
+        try:
+            with open(filepath, 'r', encoding=enc) as f:
+                return json.load(f)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        except Exception:
+            break
+    # Last resort: read with utf-8 and replace errors
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
 def load_config():
     try:
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            result = _read_json_file(CONFIG_FILE)
+            if result is not None:
+                return result
     except Exception:
         pass
     return {
@@ -130,8 +155,9 @@ DEFAULT_LLM_MODELS = [
 def load_llm_config():
     """Load LLM config, migrating legacy single-model format to multi-model format."""
     if os.path.exists(LLM_CONFIG_FILE):
-        with open(LLM_CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config = json.load(f)
+        config = _read_json_file(LLM_CONFIG_FILE)
+        if config is None:
+            config = {}
         # Migrate legacy single-model config to multi-model format
         if 'models' not in config:
             legacy = {
@@ -201,8 +227,9 @@ def get_active_llm_config(config=None):
 
 def load_chat_history():
     if os.path.exists(CHAT_HISTORY_FILE):
-        with open(CHAT_HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        result = _read_json_file(CHAT_HISTORY_FILE)
+        if result is not None:
+            return result
     return []
 
 
@@ -219,8 +246,9 @@ def save_chat_history(history):
 def load_conversations():
     """Load all conversations. Returns list of {id, title, created_at, updated_at, messages}."""
     if os.path.exists(CONVERSATIONS_FILE):
-        with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        result = _read_json_file(CONVERSATIONS_FILE)
+        if result is not None:
+            return result
     return []
 
 
