@@ -418,13 +418,16 @@ const ProjectManager = (() => {
             // Step 2: Open the project (sets config, updates UI)
             await openProject(projectPath);
 
-            // Step 3: Create virtual environment with same name (synchronous on server)
+            // Step 3: Create virtual environment (default: .venv inside project dir)
+            // NOTE: Use .venv (the standard convention) instead of projectName to avoid
+            // a venv folder with the same name as the project, which confuses the AI model
+            // about which folder is the project root vs the virtual environment.
             safeToast('正在创建虚拟环境，请稍候...', 'info');
             try {
                 const venvResp = await fetch('/api/venv/create', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: projectName })
+                    body: JSON.stringify({ path: '.venv' })
                 });
                 if (venvResp.ok) {
                     const venvData = await venvResp.json();

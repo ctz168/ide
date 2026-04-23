@@ -1310,8 +1310,13 @@ def _tool_list_directory(args):
     if not os.path.isdir(path):
         return f'Error: Directory not found: {path}'
     items = []
+    # Common directories to hide from AI (virtual envs, cache, IDE configs)
+    _ai_hidden_dirs = {'.venv', 'venv', 'env', '__pycache__', 'node_modules', '.git', '.idea', '.vscode'}
     for entry in sorted(os.listdir(path)):
         if not show_hidden and entry.startswith('.'):
+            continue
+        # Also hide non-dot venv dirs that would confuse the AI
+        if not show_hidden and entry in _ai_hidden_dirs:
             continue
         full = os.path.join(path, entry)
         try:
@@ -1342,7 +1347,7 @@ def _tool_search_files(args):
     except re.error as e:
         return f'Error: Invalid regex pattern: {e}'
     results = []
-    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', '.svn', 'bower_components', '.next', 'dist', 'build'}
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', '.idea', '.vscode', '.svn', 'bower_components', '.next', 'dist', 'build'}
     search_start = time.time()
     SEARCH_TIMEOUT = 30  # seconds
     for root, dirs, files in os.walk(search_path):
@@ -1576,7 +1581,7 @@ def _tool_grep_code(args):
     except re.error as e:
         return f'Error: Invalid regex: {e}'
     results = []
-    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode'}
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', '.idea', '.vscode'}
     _grep_start = time.time()
     GREP_TIMEOUT = 30
     for root, dirs, files in os.walk(search_path):
@@ -1966,10 +1971,17 @@ def _tool_glob_files(args):
         matches = _glob.glob(full_pattern)
 
     # Filter to files only, resolve paths, deduplicate
+    # Also exclude virtual env directories to avoid confusing results
+    _skip_dirs = {os.sep + '.venv' + os.sep, os.sep + 'venv' + os.sep, os.sep + 'env' + os.sep,
+                  os.sep + '__pycache__' + os.sep, os.sep + 'node_modules' + os.sep,
+                  os.sep + '.git' + os.sep, os.sep + 'site-packages' + os.sep}
     seen = set()
     files = []
     for f in matches:
         if os.path.isfile(f):
+            # Skip files inside virtual env / cache directories
+            if any(sd in f for sd in _skip_dirs):
+                continue
             real = os.path.realpath(f)
             if real not in seen:
                 seen.add(real)
