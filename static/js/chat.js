@@ -143,10 +143,10 @@ const ChatManager = (() => {
         const completed = currentTodoData.filter(t => t.status === 'completed').length;
         const total = currentTodoData.length;
         const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-        let html = '<div class="todo-panel-header">';
+        let html = '<div class="todo-panel-header" id="todo-panel-header">';
         html += '<div class="todo-panel-header-row">';
         html += '<span class="todo-panel-title">📋 Task Plan</span>';
-        html += '<button class="todo-toggle-btn" id="todo-toggle-btn" onclick="window._toggleTodoPanel()">' + (todoPanelCollapsed ? '▸' : '▾') + '</button>';
+        html += '<button class="todo-toggle-btn" id="todo-toggle-btn">' + (todoPanelCollapsed ? '▸' : '▾') + '</button>';
         html += '</div>';
         html += '<span class="todo-panel-progress">' + completed + '/' + total + ' (' + pct + '%)</span>';
         html += '<div class="todo-panel-bar"><div class="todo-panel-bar-fill" style="width:' + pct + '%"></div></div>';
@@ -164,6 +164,25 @@ const ChatManager = (() => {
         });
         html += '</div>';
         todoPanelEl.innerHTML = html;
+
+        // Attach event listeners after innerHTML update (more reliable than inline onclick on mobile)
+        const header = document.getElementById('todo-panel-header');
+        if (header) {
+            header.addEventListener('click', function(e) {
+                // Don't toggle if clicking on progress bar or other non-header-row elements
+                if (e.target.closest('.todo-panel-header-row')) {
+                    window._toggleTodoPanel();
+                }
+            });
+        }
+        // Also attach directly to the toggle button as fallback
+        const toggleBtn = document.getElementById('todo-toggle-btn');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                window._toggleTodoPanel();
+            });
+        }
     }
 
     function hideTodoPanel() {
@@ -2646,6 +2665,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     // ── Inject Styles ──────────────────────────────────────────────
 
     let _settingsStylesInjected = false;
+    // IMPORTANT: This function injects ALL chat UI styles (not just settings),
+    // including todo panel, tool messages, reasoning blocks, markdown, etc.
+    // It MUST be called early (in init()) so styles are available before any UI is rendered.
     function injectSettingsStyles() {
         if (_settingsStylesInjected) return;
         _settingsStylesInjected = true;
@@ -3139,6 +3161,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
+                cursor: pointer;
             }
             .todo-toggle-btn {
                 background: none;
@@ -3182,11 +3205,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 max-height: 300px;
                 overflow-y: auto;
                 -webkit-overflow-scrolling: touch;
-                transition: max-height 0.2s ease, padding 0.2s ease;
+                transition: max-height 0.25s ease, padding 0.25s ease;
             }
             .todo-panel-body.collapsed {
-                max-height: 0;
-                padding: 0 10px;
+                max-height: 0 !important;
+                padding-top: 0 !important;
+                padding-bottom: 0 !important;
                 overflow: hidden;
             }
             .todo-item {
@@ -4245,6 +4269,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     // ── Initialize ─────────────────────────────────────────────────
 
     async function init() {
+        injectSettingsStyles();  // Ensure all chat UI styles (todo panel, messages, tools, etc.) are available
         wireEvents();
         await loadHistory();
         autoResizeInput();
