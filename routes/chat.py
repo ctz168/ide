@@ -75,6 +75,9 @@ _IDE_PORT = os.environ.get('PHONEIDE_PORT', '12345')
 
 RING_BUFFER_SIZE = 100
 
+# Debug store for last LLM payload (used when errors need raw payload inspection)
+_last_llm_payload_debug = {}
+
 DEFAULT_SYSTEM_PROMPT = f"""You are PhoneIDE AI Agent, a powerful coding assistant integrated in a mobile IDE.
 You have access to specialized tools for reading, writing, editing, searching, and managing code projects.
 
@@ -3863,6 +3866,14 @@ def _call_llm_api(messages, llm_config, stream=False):
     headers.setdefault('Content-Type', 'application/json; charset=utf-8')
 
     body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+
+    # Store last payload for debugging
+    _last_llm_payload_debug['body'] = body_bytes
+    _last_llm_payload_debug['payload'] = payload
+    _last_llm_payload_debug['size'] = len(body_bytes)
+    _last_llm_payload_debug['url'] = url
+    _last_llm_payload_debug['timestamp'] = time.time()
+
     req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
 
     with _urllib_opener.open(req, timeout=180) as resp:
@@ -3983,6 +3994,14 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
     body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     print(f'[LLM] Calling: {url}')
     print(f'[LLM] Payload size: {len(body_bytes)} bytes ({len(body_bytes)/1024:.1f} KB)')
+
+    # Store last payload for debugging (accessible when errors occur)
+    _last_llm_payload_debug['body'] = body_bytes
+    _last_llm_payload_debug['payload'] = payload
+    _last_llm_payload_debug['size'] = len(body_bytes)
+    _last_llm_payload_debug['url'] = url
+    _last_llm_payload_debug['timestamp'] = time.time()
+
     req = urllib.request.Request(url, body_bytes, headers=headers, method='POST')
     print(f'[LLM] Model: {model}, Temperature: {temperature}, MaxTokens: {max_tokens}, Reasoning: {reasoning}')
     if reasoning:
@@ -4868,8 +4887,8 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         retry = 0
         context_retries = 0
         MAX_CONTEXT_RETRIES = 20
-        # Tools degradation level: full -> compact -> minimal
-        # Auto-downgrades when server reports "Unterminated string" (payload too large)
+        # Tools level: 'full' (default) — used for debugging payload errors
+        # Payload format errors ("Unterminated string") are now shown raw with debug info
         current_tools_level = 'full'
         while retry < MAX_ITERATION_RETRIES:
             try:
@@ -4968,9 +4987,52 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             except urllib.error.HTTPError as e:
                 accumulated_text = saved_accumulated  # rollback on failure
                 body = e.read().decode() if hasattr(e, 'read') else ''
-                err_detail = f'URL: {current_llm_url}\nHTTP {e.code}: {body[:300]}'
                 
-                # Detect context length exceeded errors and aggressively compress context
+                # Build detailed error with payload debugging info
+                err_detail = f'URL: {current_llm_url}\nHTTP {e.code}: {body[:500]}'
+                
+                # For "Unterminated string" / payload format errors, dump raw payload for debugging
+                is_payload_error = any(kw in body.lower() for kw in ['unterminated', 'input_invalid'])
+                if is_payload_error and _last_llm_payload_debug:
+                    _debug = _last_llm_payload_debug
+                    _payload_body = _debug.get('body', b'')
+                    _payload_size = _debug.get('size', 0)
+                    # Parse error to find the character position
+                    import re as _err_re
+                    _char_match = _err_re.search(r'char (\d+)', body)
+                    _char_pos = int(_char_match.group(1)) if _char_match else None
+                    
+                    # Extract system prompt from payload
+                    _sys_content = ''
+                    _payload_obj = _debug.get('payload', {})
+                    for _msg in _payload_obj.get('messages', []):
+                        if _msg.get('role') == 'system':
+                            _sys_content = _msg.get('content', '')
+                            break
+                    
+                    # Extract snippet around the error position
+                    _snippet = ''
+                    if _char_pos is not None and _char_pos < len(_payload_body):
+                        _start = max(0, _char_pos - 100)
+                        _end = min(len(_payload_body), _char_pos + 100)
+                        _snippet = _payload_body[_start:_end].decode('utf-8', errors='replace')
+                        _snippet = f'\n--- Payload around char {_char_pos} (showing {_start}-{_end}) ---\n...{_snippet}...\n--- End snippet ---'
+                    
+                    # Build comprehensive debug output
+                    _debug_info = (
+                        f'\n\n===== PAYLOAD DEBUG =====\n'
+                        f'Payload size: {_payload_size} bytes ({_payload_size/1024:.1f} KB)\n'
+                        f'Error position: char {_char_pos}\n'
+                        f'Tools level: {current_tools_level}\n'
+                        f'System prompt length: {len(_sys_content)} chars\n'
+                        f'System prompt first 2000 chars:\n{_sys_content[:2000]}\n'
+                        f'{_snippet}'
+                        f'\n===== END DEBUG ====='
+                    )
+                    print(f'[LLM] PAYLOAD ERROR DEBUG:{_debug_info}')
+                    err_detail += _debug_info
+                
+                # Detect context length exceeded errors (NOT payload format errors)
                 is_context_error = (
                     e.code in (400, 413, 422) and
                     any(kw in body.lower() for kw in [
@@ -4978,26 +5040,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         'too many tokens', 'input too large', 'prompt is too long',
                         'request too large', 'exceeds the model', 'context_length',
                         'max_tokens', 'too long', '超出', '上下文',
-                        'unterminated',  # ModelScope/vLLM truncation error
-                        'input_invalid',  # ModelScope API input validation
-                    ])
+                    ]) and
+                    not is_payload_error  # payload errors should be shown raw, not auto-compressed
                 )
                 
                 if is_context_error:
-                    # First try: degrade tools level (full -> compact -> minimal)
-                    # This handles ModelScope "Unterminated string" payload-size errors
-                    is_payload_error = any(kw in body.lower() for kw in ['unterminated', 'input_invalid'])
-                    if is_payload_error and current_tools_level != 'minimal':
-                        old_level = current_tools_level
-                        if current_tools_level == 'full':
-                            current_tools_level = 'compact'
-                        elif current_tools_level == 'compact':
-                            current_tools_level = 'minimal'
-                        print(f'[LLM] Payload error detected, degrading tools: {old_level} -> {current_tools_level}')
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'API payload error, switching to {current_tools_level} tool descriptions and retrying...'})}\n\n"
-                        time.sleep(0.5)
-                        continue  # retry immediately with degraded tools
-                    
                     context_retries += 1
                     if context_retries >= MAX_CONTEXT_RETRIES:
                         yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts. Please start a new conversation.'})}\n\n"
@@ -5024,11 +5071,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 err_detail = f'URL: {current_llm_url}\nError: {str(e)}'
                 
                 # Also check for context errors in generic exceptions
+                # NOTE: "unterminated" is NOT treated as context error — it's a payload format error
                 err_lower = str(e).lower()
                 is_context_error = any(kw in err_lower for kw in [
                     'context', 'token', 'max_length', 'too many tokens',
-                    'prompt is too long', 'too long', 'unterminated',
-                ])
+                    'prompt is too long', 'too long',
+                ]) and 'unterminated' not in err_lower
                 
                 if is_context_error:
                     context_retries += 1
