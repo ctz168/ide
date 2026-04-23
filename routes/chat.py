@@ -4746,9 +4746,11 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
             for tc in tool_calls_raw:
                 func = tc.get('function', {})
                 tool_name = func.get('name', '')
+                raw_args = func.get('arguments', '{}')
                 try:
-                    tool_args = json.loads(func.get('arguments', '{}'))
+                    tool_args = json.loads(raw_args)
                 except json.JSONDecodeError:
+                    print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
                     tool_args = {}
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
@@ -5128,8 +5130,40 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             return
 
         # Warn if model hit max_tokens (finish_reason == 'length')
-        if finish_reason == 'length' and not _has_tool_calls(response_message):
-            yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached). Consider increasing Max Tokens in settings for longer responses.'})}\n\n"
+        if finish_reason == 'length':
+            if _has_tool_calls(response_message):
+                # Model had tool calls but was truncated — validate arguments
+                _raw_tc = response_message.get('tool_calls', [])
+                _valid_tc = []
+                _invalid_tc_names = []
+                for _tc in _raw_tc:
+                    _func = _tc.get('function', {})
+                    _tc_name = _func.get('name', '')
+                    _tc_args_str = _func.get('arguments', '')
+                    if not _tc_name.strip():
+                        continue
+                    try:
+                        json.loads(_tc_args_str)
+                        _valid_tc.append(_tc)
+                    except json.JSONDecodeError:
+                        _invalid_tc_names.append(_tc_name or '(unknown)')
+
+                if _invalid_tc_names:
+                    print(f'[LLM] Truncated tool_calls detected: {"_".join(_invalid_tc_names)} arguments incomplete (finish_reason=length)')
+                    # Discard truncated tool calls, keep valid ones
+                    response_message['tool_calls'] = _valid_tc
+                    # Inject a hint so the model continues with the truncated tool
+                    _continue_hint = f'Your previous response was truncated by max_tokens. You were trying to call: {", ".join(_invalid_tc_names)}. Please continue and call those tools again.'
+                    context.append({'role': 'user', 'content': _continue_hint})
+                    _truncated_names = ', '.join(_invalid_tc_names)
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'Response truncated (max_tokens), tool calls [{_truncated_names}] were incomplete. Retrying...'})}\n\n"
+                    # Don't count this as a completed iteration — retry
+                    accumulated_text = ''  # reset for next iteration
+                    continue
+                # All tool calls valid despite length truncation
+                yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached) but tool calls are intact. Consider increasing Max Tokens.'})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached). Consider increasing Max Tokens in settings for longer responses.'})}\n\n"
 
         content = response_message.get('content', '') or ''
         tool_calls_raw = response_message.get('tool_calls', [])
@@ -5179,6 +5213,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 _retry_hint = f'finish_reason={finish_reason}' + (f', reasoning={len(reasoning_text)} chars' if reasoning_text else '')
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'Model returned empty response ({_retry_hint}), auto-retrying ({empty_retries}/3)...'})}\n\n"
                 print(f'[LLM] Empty response detected (iteration {total_iterations}), retrying ({empty_retries}/3)')
+                # Inject a continuation prompt so the model has something to respond to
+                # Instead of blindly retrying the same context (which may cause the same empty response),
+                # add a user message nudging the model to continue its work.
+                _empty_nudge = 'It seems your previous response was empty. Please continue with your task — call the appropriate tools (e.g., write_file, edit_file) to proceed.'
+                context.append({'role': 'user', 'content': _empty_nudge})
+                accumulated_text = ''  # reset for next iteration
                 time.sleep(1)
                 continue  # retry the same iteration
             else:
@@ -5267,10 +5307,20 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
                 func = tc.get('function', {})
                 tool_name = func.get('name', '')
+                raw_args = func.get('arguments', '{}')
                 try:
-                    tool_args = json.loads(func.get('arguments', '{}'))
+                    tool_args = json.loads(raw_args)
                 except json.JSONDecodeError:
+                    print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
                     tool_args = {}
+                    # Try to extract path from raw args for error messages
+                    try:
+                        import re as _re_tc
+                        _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                        if _path_match:
+                            tool_args['path'] = _path_match.group(1)
+                    except Exception:
+                        pass
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
                 tool_calls_in_progress.append({'name': tool_name, 'args': tool_args})
