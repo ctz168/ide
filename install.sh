@@ -304,86 +304,46 @@ info "Detected server port: $IDE_PORT"
 IDE_URL="http://${LOCAL_IP}:${IDE_PORT}"
 IDE_LOCAL="http://localhost:${IDE_PORT}"
 
-# Start server in background (inherits PHONEIDE_PORT env if set)
-nohup python3 phoneide_server.py > /dev/null 2>&1 &
-SERVER_PID=$!
+# Start server in foreground (so Ctrl+C can stop it)
+# First, open browser in background after a short delay
+(sleep 2 && (
+    case "$PLATFORM" in
+        termux)
+            if command -v termux-open-url &>/dev/null; then
+                termux-open-url "$IDE_URL" 2>/dev/null
+            elif command -v xdg-open &>/dev/null; then
+                xdg-open "$IDE_URL" 2>/dev/null
+            fi
+            ;;
+        macos)
+            open "$IDE_URL" 2>/dev/null
+            ;;
+        *)
+            if command -v xdg-open &>/dev/null; then
+                xdg-open "$IDE_URL" 2>/dev/null
+            elif command -v sensible-browser &>/dev/null; then
+                sensible-browser "$IDE_URL" 2>/dev/null
+            elif command -v gnome-open &>/dev/null; then
+                gnome-open "$IDE_URL" 2>/dev/null
+            elif command -v python3 &>/dev/null; then
+                python3 -m webbrowser "$IDE_URL" 2>/dev/null
+            fi
+            ;;
+    esac
+)) &
+BROWSER_OPENER_PID=$!
 
-# Wait for server to be ready (max 8 seconds)
-READY=false
-for i in $(seq 1 16); do
-    sleep 0.5
-    if curl -sf "$IDE_LOCAL" >/dev/null 2>&1; then
-        READY=true
-        break
-    fi
-done
-
-if $READY; then
-    ok "Server is running on port $IDE_PORT (PID: $SERVER_PID)"
-else
-    # Server might still be starting, give it one more chance
-    sleep 2
-    if curl -sf "$IDE_LOCAL" >/dev/null 2>&1; then
-        ok "Server is running on port $IDE_PORT (PID: $SERVER_PID)"
-    else
-        warn "Server may still be starting up on port $IDE_PORT..."
-        warn "If it doesn't load, check: cd $INSTALL_DIR && python3 phoneide_server.py"
-    fi
-fi
-
-# Open browser automatically
-echo ""
-info "Opening browser..."
-
-BROWSER_OPENED=false
-case "$PLATFORM" in
-    termux)
-        if command -v termux-open-url &>/dev/null; then
-            termux-open-url "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        elif command -v xdg-open &>/dev/null; then
-            xdg-open "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        fi
-        ;;
-    macos)
-        open "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        ;;
-    *)
-        # Try common Linux browser openers
-        if command -v xdg-open &>/dev/null; then
-            xdg-open "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        elif command -v sensible-browser &>/dev/null; then
-            sensible-browser "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        elif command -v gnome-open &>/dev/null; then
-            gnome-open "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        elif command -v python3 &>/dev/null; then
-            python3 -m webbrowser "$IDE_URL" 2>/dev/null && BROWSER_OPENED=true
-        fi
-        ;;
-esac
-
-# ── Done ───────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}  PhoneIDE IDE is ready!${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════╝${NC}"
 echo ""
-if $BROWSER_OPENED; then
-    ok "Browser opened → ${CYAN}${IDE_URL}${NC}"
-else
-    echo -e "  Open in browser: ${CYAN}${IDE_URL}${NC}"
-fi
-echo ""
 echo -e "  Local:    ${CYAN}${IDE_LOCAL}${NC}"
 echo -e "  Network:  ${CYAN}${IDE_URL}${NC}"
-echo -e "  PID:      ${CYAN}${SERVER_PID}${NC}"
 echo -e "  Dir:      ${CYAN}${INSTALL_DIR}${NC}"
 echo ""
-echo -e "  Stop server:  ${YELLOW}kill ${SERVER_PID}${NC}"
-echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && python3 phoneide_server.py${NC}"
+echo -e "  ${YELLOW}Press Ctrl+C to stop the server${NC}"
 echo ""
 
-# Keepalive hint for Termux / headless
-if [ "$PLATFORM" = "termux" ]; then
-    echo -e "${YELLOW}  Tip: Press Ctrl+C won't stop the server (running in background)${NC}"
-    echo ""
-fi
+# Run server in foreground — Ctrl+C will stop it
+exec python3 phoneide_server.py

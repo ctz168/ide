@@ -22,7 +22,7 @@ irm https://raw.githubusercontent.com/ctz168/ide/main/install.ps1 | iex
 curl -fsSL https://raw.githubusercontent.com/ctz168/ide/main/install.sh | bash
 ```
 
-安装完成后浏览器会自动打开，直接使用即可。
+安装完成后浏览器会自动打开，按 Ctrl+C 可停止服务。
 
 > 支持平台：Windows 10/11、Termux、Ubuntu/Debian、Fedora、CentOS、macOS、Alpine、Arch、openSUSE
 >

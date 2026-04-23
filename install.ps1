@@ -304,81 +304,26 @@ try {
     }
 }
 
-# Start server in background
-Write-Info "Starting server..."
-$ServerProcess = Start-Process -FilePath $Python -ArgumentList "phoneide_server.py" `
-    -WorkingDirectory $InstallDir `
-    -WindowStyle Hidden `
-    -PassThru
-
-$ServerPID = $ServerProcess.Id
-Write-Info "Server PID: $ServerPID"
-
-# Wait for server to be ready (max 15 seconds)
-Write-Info "Waiting for server to start..."
-$Ready = $false
-for ($i = 1; $i -le 30; $i++) {
-    Start-Sleep -Milliseconds 500
-    try {
-        $response = Invoke-WebRequest -Uri $IDE_LOCAL -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-        if ($response.StatusCode -eq 200) {
-            $Ready = $true
-            break
-        }
-    } catch [System.Net.WebException] {
-        # Expected while server is starting
-    } catch {
-        # Other errors, keep waiting
-    }
-}
-
-if (-not $Ready) {
-    # One more check with longer wait
+# Open browser first (in background, with delay to let server start)
+$BrowserUrl = $IDE_LOCAL
+Start-Job -ScriptBlock {
     Start-Sleep -Seconds 3
-    try {
-        $response = Invoke-WebRequest -Uri $IDE_LOCAL -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-        if ($response.StatusCode -eq 200) {
-            $Ready = $true
-        }
-    } catch {
-        # Give up
-    }
-}
+    Start-Process $using:BrowserUrl
+} | Out-Null
 
-if ($Ready) {
-    Write-OK "Server is running on port $IDE_PORT (PID: $ServerPID)"
-} else {
-    Write-Warn "Server may still be starting on port $IDE_PORT..."
-    Write-Warn "If it doesn't load, try manually: cd $InstallDir && $Python phoneide_server.py"
-}
-
-# Open browser
-Write-Info "Opening browser..."
-$BrowserOpened = $false
-try {
-    Start-Process $IDE_LOCAL
-    $BrowserOpened = $true
-} catch {
-    Write-Warn "Could not auto-open browser - open manually: $IDE_LOCAL"
-}
-
-# ── Done ────────────────────────────────────────────────
+# ── Done message ──────────────────────────────────────
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  PhoneIDE IDE is ready!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-if ($BrowserOpened) {
-    Write-OK "Browser opened"
-} else {
-    Write-Host "  Open in browser: " -NoNewline -ForegroundColor White
-}
-Write-Host "  $IDE_URL" -ForegroundColor Cyan
+Write-Host "  Local:    $IDE_LOCAL" -ForegroundColor Cyan
+Write-Host "  Network:  $IDE_URL" -ForegroundColor Cyan
+Write-Host "  Dir:      $InstallDir" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Local:    $IDE_LOCAL" -ForegroundColor White
-Write-Host "  PID:      $ServerPID" -ForegroundColor White
-Write-Host "  Dir:      $InstallDir" -ForegroundColor White
+Write-Host "  Press Ctrl+C to stop the server" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  Stop server:  taskkill /F /PID $ServerPID" -ForegroundColor Yellow
-Write-Host "  Restart:      cd $InstallDir; $Python phoneide_server.py" -ForegroundColor Yellow
-Write-Host ""
+
+# Run server in foreground — Ctrl+C will stop it
+Set-Location $InstallDir
+& $Python phoneide_server.py
