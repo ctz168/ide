@@ -76,19 +76,38 @@ def index():
 
 @app.route('/<path:path>', methods=['GET'])
 def static_files(path):
-    resp = make_response(send_from_directory(app.static_folder, path))
-    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return resp
+    # Don't intercept routes handled by blueprints (API, preview, etc.)
+    # This prevents the catch-all static route from catching /preview/... URLs
+    # which should be handled by the files blueprint.
+    if path.startswith('api/') or path.startswith('preview/'):
+        # Let Flask's 404 handler deal with it — blueprint routes will match first
+        return jsonify({'error': 'Not found'}), 404
+    try:
+        resp = make_response(send_from_directory(app.static_folder, path))
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return resp
+    except Exception:
+        return jsonify({'error': 'File not found'}), 404
 
 # ==================== Main ====================
 if __name__ == '__main__':
+    # Fix Windows encoding issues: set stdout/stderr to UTF-8
+    # On Chinese Windows, the default encoding is GBK which cannot handle
+    # emoji characters (e.g. 🚀 U+1F680) that LLM models often output.
+    if sys.platform == 'win32':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass  # reconfigure not available in older Python
+
     # Ensure workspace exists
     os.makedirs(WORKSPACE, exist_ok=True)
 
     # Set up log file
     from utils import log_write
     _log_file_path = os.path.join(CONFIG_DIR, 'server.log')
-    _log_fh = open(_log_file_path, 'a')
+    _log_fh = open(_log_file_path, 'a', encoding='utf-8')
     _log_fh.write(f'\n--- PhoneIDE Server starting at {__import__("datetime").datetime.now().isoformat()} ---\n')
     _log_fh.flush()
 
@@ -96,15 +115,32 @@ if __name__ == '__main__':
     import io
 
     class _TeeStream:
-        """Tee output to both file and console."""
+        """Tee output to both file and console.
+        
+        On Windows, the console (sys.__stdout__) typically uses GBK encoding
+        which cannot handle emoji characters (U+1F680 etc.). This class catches
+        UnicodeEncodeError and replaces unencodable chars with '?'.
+        """
         def __init__(self, *targets):
             self.targets = targets
             self._lock = __import__('threading').Lock()
+        def _safe_write(self, target, data):
+            """Write data to target, handling UnicodeEncodeError on Windows."""
+            try:
+                target.write(data)
+            except UnicodeEncodeError:
+                # Replace unencodable chars (emoji etc.) with '?' for GBK consoles
+                try:
+                    target.write(data.encode(target.encoding or 'utf-8', errors='replace').decode(target.encoding or 'utf-8', errors='replace'))
+                except Exception:
+                    target.write(data.encode('ascii', errors='replace').decode('ascii'))
+            except Exception:
+                pass
         def write(self, data):
             with self._lock:
                 for t in self.targets:
+                    self._safe_write(t, data)
                     try:
-                        t.write(data)
                         t.flush()
                     except Exception:
                         pass

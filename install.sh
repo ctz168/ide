@@ -374,4 +374,6 @@ echo -e "  ${YELLOW}Press Ctrl+C to stop the server${NC}"
 echo ""
 
 # Run server in foreground — Ctrl+C will stop it
+# Set PYTHONIOENCODING=utf-8 to prevent encoding errors on some systems
+export PYTHONIOENCODING=utf-8
 exec python3 phoneide_server.py

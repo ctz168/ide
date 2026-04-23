@@ -137,7 +137,7 @@ def execute_code():
     else:
         # Write temp file in the effective base (project dir or workspace)
         tmp_file = os.path.join(base, '.phoneide_tmp.py')
-        with open(tmp_file, 'w') as f:
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             f.write(code)
         cmd = f'{compiler} {shlex_quote(tmp_file)} {args}'
 

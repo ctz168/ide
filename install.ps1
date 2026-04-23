@@ -325,5 +325,7 @@ Write-Host "  Press Ctrl+C to stop the server" -ForegroundColor Yellow
 Write-Host ""
 
 # Run server in foreground — Ctrl+C will stop it
+# Set PYTHONIOENCODING=utf-8 to prevent GBK encoding errors on Chinese Windows
+$env:PYTHONIOENCODING = "utf-8"
 Set-Location $InstallDir
 & $Python phoneide_server.py

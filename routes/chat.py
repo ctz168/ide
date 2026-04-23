@@ -984,13 +984,14 @@ def _tool_read_file(args):
 def _sanitize_json_strings(raw_json):
     """Fix common JSON escaping issues that cause json.loads to fail.
     
-    The most common issue: the model puts literal newlines, tabs, and carriage
-    returns inside JSON string values instead of their escaped forms (\\n, \\t, \\r).
-    JSON spec does NOT allow literal control characters in strings.
+    Handles two common problems:
+    1. Model puts literal newlines/tabs inside JSON string values (JSON spec violation)
+    2. Model puts unescaped quotes inside JSON string values (e.g. CSS font-family: "Arial")
     
-    This function walks through the JSON text and replaces literal control chars
-    inside strings with their escaped equivalents, while being careful not to
-    modify characters that are already properly escaped.
+    Strategy: Walk through the JSON text tracking string state. When we encounter
+    a " that would close a string, look ahead — if the next non-whitespace char
+    is NOT a JSON structural character (, } ] :), then this " is inside content
+    and should be escaped as \\".
     
     Returns: sanitized JSON text
     """
@@ -1013,11 +1014,44 @@ def _sanitize_json_strings(raw_json):
             continue
         
         if ch == '"':
-            # Check if this quote is escaped (preceded by odd number of backslashes)
-            # Simple check: just look at the immediately preceding char
-            # (since we've already passed through escaped sequences above)
-            in_string = not in_string
-            result.append(ch)
+            if not in_string:
+                # Opening a string
+                in_string = True
+                result.append(ch)
+                i += 1
+                continue
+            
+            # We're inside a string and found a ".
+            # Check if this is really the end of the string by looking ahead.
+            # After a closing " in JSON, the next meaningful char must be one of:
+            #   , (separating key-value pairs)
+            #   } or ] (closing object/array)
+            #   : (key-value separator — but only for the key, not value)
+            #   whitespace (before the above)
+            # If the next non-whitespace char is something else (like a letter,
+            # digit, etc.), this " is inside the content and needs escaping.
+            j = i + 1
+            while j < length and raw_json[j] in ' \t\n\r':
+                j += 1
+            
+            next_meaningful = raw_json[j] if j < length else ''
+            
+            if next_meaningful in ',}]\n\r' or next_meaningful == '':
+                # This looks like a real JSON string closing quote
+                in_string = False
+                result.append(ch)
+            elif next_meaningful == ':':
+                # Could be end of a key string (") followed by colon
+                # Check: are we at the right nesting level?
+                # In tool args, the top-level keys are "path", "content", etc.
+                # A closing " before : means this was a key name.
+                in_string = False
+                result.append(ch)
+            else:
+                # The " is followed by content (not JSON structure) — it's an
+                # unescaped quote inside the string value. Escape it.
+                result.append('\\"')
+            
             i += 1
             continue
         
@@ -1079,8 +1113,9 @@ def _recover_broken_json_args(raw_args, tool_name):
     
     import re as _re
     
-    # ── Strategy 1: Sanitize literal control characters and re-parse ──
-    # Most common cause: model outputs real newlines/tabs inside JSON strings
+    # ── Strategy 1: Sanitize (fix unescaped quotes + control chars) and re-parse ──
+    # The improved _sanitize_json_strings now also handles unescaped " in content
+    # by looking ahead to check if a " is a JSON structural delimiter or content.
     try:
         sanitized = _sanitize_json_strings(raw_args)
         # Try adding missing closing braces/brackets
@@ -1093,90 +1128,68 @@ def _recover_broken_json_args(raw_args, tool_name):
         result = json.loads(sanitized)
         if isinstance(result, dict):
             if 'path' in result or 'content' in result:
-                print(f'[LLM] Recovered broken JSON by sanitizing control chars + fixing braces (tool: {tool_name}, content_len: {len(str(result.get("content", "")))})')
+                print(f'[LLM] Recovered broken JSON by sanitizing (tool: {tool_name}, content_len: {len(str(result.get("content", "")))})')
                 return result
     except (json.JSONDecodeError, Exception) as e:
         print(f'[LLM] Strategy 1 (sanitize+reparse) failed: {e}')
-    
-    # ── Strategy 1b: Try closing the content string and re-parse ──
-    # If the JSON is truncated (max_tokens), add closing "}" to complete it
-    try:
-        # Find where content string value starts
-        content_match = _re.search(r'"content"\s*:\s*"', raw_args)
-        if content_match:
-            content_begin = content_match.end()
-            remaining = raw_args[content_begin:]
-            # Find the last occurrence of a pattern that looks like the end of a JSON string
-            # Try different closing patterns from the end
-            for closing in ['"}', '"\n}', '"\r\n}', '" }', '"\n}\n']:
-                idx = remaining.rfind(closing)
-                if idx > 0:
-                    candidate_json = raw_args[:content_begin + idx] + '"}'
-                    # Sanitize control characters
-                    candidate_json = _sanitize_json_strings(candidate_json)
-                    try:
-                        result = json.loads(candidate_json)
-                        if isinstance(result, dict) and 'content' in result:
-                            print(f'[LLM] Recovered broken JSON by closing content string (tool: {tool_name}, content_len: {len(result["content"])})')
-                            return result
-                    except (json.JSONDecodeError, Exception):
-                        pass
-            
-            # Also try: just add closing "}" at the very end
-            for suffix in ['"}', '"}', '"}']:
-                candidate_json = _sanitize_json_strings(raw_args) + suffix[len(raw_args.rstrip()):]
-                # Actually, just append the closing
-                candidate_json = _sanitize_json_strings(raw_args.rstrip().rstrip('}').rstrip().rstrip('"'))
-                candidate_json = raw_args[:content_begin] + '"' + _sanitize_json_strings(remaining.rstrip().rstrip('}').rstrip().rstrip('"')) + '"}'
-                try:
-                    result = json.loads(candidate_json)
-                    if isinstance(result, dict) and 'content' in result:
-                        print(f'[LLM] Recovered broken JSON by appending closing (tool: {tool_name}, content_len: {len(result["content"])})')
-                        return result
-                except (json.JSONDecodeError, Exception):
-                    break  # Don't retry with different suffixes, the approach is fundamentally wrong if it fails
-    except Exception as e:
-        print(f'[LLM] Strategy 1b (close content string) failed: {e}')
     
     # ── Strategy 2: Extract path using regex ──
     _path_match = _re.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
     if _path_match:
         recovered['path'] = _path_match.group(1)
     
-    # ── Strategy 3: For write_file, extract content field robustly ──
+    # ── Strategy 3: For write_file, extract content field directly ──
+    # Instead of trying to fix the JSON, extract content by finding the
+    # "content": " marker and taking everything until the last " before }.
+    # This avoids all the fragile quote-tracking and JSON re-parsing issues.
     if tool_name == 'write_file':
         _content_start = _re.search(r'"content"\s*:\s*"', raw_args)
         if _content_start:
             content_begin = _content_start.end()
             remaining = raw_args[content_begin:]
-            
-            # Try to find the closing quote of the content string
-            # Look for the LAST occurrence of '"}' at or near the end
             content_text = None
             
-            # Method A: Find the last '"}' — this is the JSON closing pattern
-            last_close = -1
-            for m in _re.finditer(r'"\s*\}\s*$', remaining):
-                last_close = m.start()
-            
-            if last_close > 0:
-                raw_content = remaining[:last_close]
+            # Method A: Find the last " that is followed by } (with optional whitespace)
+            # at the end of the string. This is the JSON closing pattern.
+            # Use re.DOTALL so . matches newlines too.
+            end_match = _re.search(r'"\s*\}\s*$', remaining, _re.DOTALL)
+            if end_match:
+                raw_content = remaining[:end_match.start()]
                 content_text = _json_unescape_string(raw_content)
+                print(f'[LLM] Strategy 3 Method A: extracted content (len={len(content_text) if content_text else 0})')
             
-            # Method B: If no '"}' found (truncated response), take everything
-            # and strip trailing incomplete JSON
-            if content_text is None:
-                # Strip trailing partial JSON artifacts
-                raw_content = remaining.rstrip()
-                # Remove trailing partial structures like: ", "}, etc.
-                while raw_content and raw_content[-1] in '}",':
-                    # Only strip if it looks like a JSON artifact, not CSS content
-                    if raw_content.endswith('"}') or raw_content.endswith('",'):
-                        raw_content = raw_content[:-1].rstrip()
-                    else:
-                        break
-                if len(raw_content) > 10:
+            # Method B: Try finding last "} pattern (without $ anchor, in case
+            # there's trailing whitespace or other chars after the closing })
+            if not content_text:
+                # Find the LAST occurrence of " followed by }
+                last_quote_brace = remaining.rfind('"}')
+                if last_quote_brace > 0:
+                    raw_content = remaining[:last_quote_brace]
                     content_text = _json_unescape_string(raw_content)
+                    print(f'[LLM] Strategy 3 Method B: extracted content (len={len(content_text) if content_text else 0})')
+            
+            # Method C: Truncated response (max_tokens hit) — take everything
+            # and strip trailing JSON artifacts
+            if not content_text:
+                raw_content = remaining.rstrip()
+                # Strip trailing partial JSON: }, ", , at the very end
+                # But be careful not to strip CSS content that ends with }
+                stripped = raw_content
+                # Only strip if the trailing chars look like JSON, not CSS
+                # A CSS rule ends with } followed by whitespace — the JSON would
+                # have "} after that, so strip the trailing JSON markers
+                if stripped.endswith('"}'):
+                    stripped = stripped[:-2]
+                elif stripped.endswith('",'):
+                    stripped = stripped[:-2]
+                elif stripped.endswith('}'):
+                    # Could be CSS or JSON — check if there's a matching { earlier
+                    # If the stripped content still has unbalanced {, it's CSS content
+                    # so keep the trailing }
+                    pass  # Don't strip lone } — it might be CSS
+                if len(stripped) > 10:
+                    content_text = _json_unescape_string(stripped)
+                    print(f'[LLM] Strategy 3 Method C (truncated): extracted content (len={len(content_text) if content_text else 0})')
             
             if content_text and len(content_text) > 0:
                 recovered['content'] = content_text
@@ -2783,7 +2796,7 @@ def _tool_run_tests(args):
                 test_cmd = None
                 if os.path.isfile(pkg_json):
                     try:
-                        with open(pkg_json, 'r') as f:
+                        with open(pkg_json, 'r', encoding='utf-8') as f:
                             pkg = json.load(f)
                         deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
                         if 'vitest' in deps:

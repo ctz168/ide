@@ -121,7 +121,7 @@ def git_init():
     # Step 4: check write permission
     test_file = os.path.join(cwd, '.git_write_test')
     try:
-        with open(test_file, 'w') as f:
+        with open(test_file, 'w', encoding='utf-8') as f:
             f.write('test')
         os.remove(test_file)
     except Exception as e:

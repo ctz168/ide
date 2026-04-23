@@ -48,7 +48,7 @@ def log_write(line):
 def load_config():
     try:
         if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
     except Exception:
         pass
@@ -67,7 +67,7 @@ def load_config():
 
 def save_config(config):
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
@@ -130,7 +130,7 @@ DEFAULT_LLM_MODELS = [
 def load_llm_config():
     """Load LLM config, migrating legacy single-model format to multi-model format."""
     if os.path.exists(LLM_CONFIG_FILE):
-        with open(LLM_CONFIG_FILE, 'r') as f:
+        with open(LLM_CONFIG_FILE, 'r', encoding='utf-8') as f:
             config = json.load(f)
         # Migrate legacy single-model config to multi-model format
         if 'models' not in config:
@@ -172,7 +172,7 @@ def load_llm_config():
 
 def save_llm_config(config):
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(LLM_CONFIG_FILE, 'w') as f:
+    with open(LLM_CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
@@ -201,7 +201,7 @@ def get_active_llm_config(config=None):
 
 def load_chat_history():
     if os.path.exists(CHAT_HISTORY_FILE):
-        with open(CHAT_HISTORY_FILE, 'r') as f:
+        with open(CHAT_HISTORY_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return []
 
@@ -210,7 +210,7 @@ def save_chat_history(history):
     # Keep last 200 messages
     history = history[-200:]
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CHAT_HISTORY_FILE, 'w') as f:
+    with open(CHAT_HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 
@@ -219,7 +219,7 @@ def save_chat_history(history):
 def load_conversations():
     """Load all conversations. Returns list of {id, title, created_at, updated_at, messages}."""
     if os.path.exists(CONVERSATIONS_FILE):
-        with open(CONVERSATIONS_FILE, 'r') as f:
+        with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     return []
 
@@ -227,7 +227,7 @@ def load_conversations():
 def save_conversations(conversations):
     """Save all conversations."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONVERSATIONS_FILE, 'w') as f:
+    with open(CONVERSATIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(conversations, f, indent=2, ensure_ascii=False)
 
 

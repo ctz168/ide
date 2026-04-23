@@ -100,7 +100,7 @@ def server_restart():
 
     # Write a marker file so the new process knows it's a restart
     marker = os.path.join(CONFIG_DIR, 'restart_marker.json')
-    with open(marker, 'w') as f:
+    with open(marker, 'w', encoding='utf-8') as f:
         json.dumps({'pid': os.getpid(), 'time': datetime.now().isoformat()}, f)
 
     log_write('[SERVER] Restart requested, spawning new process...')
@@ -116,7 +116,7 @@ def server_restart():
         subprocess.Popen(
             [sys.executable, server_script],
             env=env,
-            stdout=open(os.path.join(CONFIG_DIR, 'server.log'), 'a'),
+            stdout=open(os.path.join(CONFIG_DIR, 'server.log'), 'a', encoding='utf-8'),
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
@@ -144,7 +144,7 @@ def server_logs():
         return jsonify({'lines': [], 'source': 'memory', 'total': len(_log_buffer)})
 
     try:
-        with open(log_file, 'r', errors='ignore') as f:
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
             all_lines = f.readlines()
         last_n = all_lines[-count:]
         return jsonify({
@@ -185,7 +185,7 @@ def server_logs_stream():
                 new_size = os.path.getsize(log_file)
                 if new_size > file_size:
                     try:
-                        with open(log_file, 'r', errors='ignore') as f:
+                        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
                             f.seek(file_size)
                             new_content = f.read()
                         for line in new_content.split('\n'):

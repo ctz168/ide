@@ -65,7 +65,7 @@ def _get_current_version():
     vtxt = os.path.join(SERVER_DIR, 'version.txt')
     if os.path.exists(vtxt):
         try:
-            with open(vtxt, 'r') as f:
+            with open(vtxt, 'r', encoding='utf-8') as f:
                 v = f.read().strip()
                 if v:
                     return v
@@ -93,7 +93,7 @@ def _get_local_commit():
     ctxt = os.path.join(SERVER_DIR, 'commit.txt')
     if os.path.exists(ctxt):
         try:
-            with open(ctxt, 'r') as f:
+            with open(ctxt, 'r', encoding='utf-8') as f:
                 sha = f.read().strip()[:40]
                 if sha and len(sha) >= 7:
                     return sha
