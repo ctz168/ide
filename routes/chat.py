@@ -4055,6 +4055,7 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
     with _urllib_opener.open(req, timeout=300) as resp:
         byte_buffer = b''
         accumulated_finish_reason = None
+        raw_sse_lines = []  # Capture raw SSE lines for debugging empty responses
         while True:
             chunk = resp.read(4096)
             if not chunk:
@@ -4070,9 +4071,17 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
                     continue
                 data_str = line[6:]
                 if data_str == '[DONE]':
+                    # Store raw SSE data for debugging before returning
+                    _last_llm_payload_debug['raw_sse_count'] = len(raw_sse_lines)
+                    _last_llm_payload_debug['finish_reason'] = accumulated_finish_reason
+                    _last_llm_payload_debug['raw_sse_tail'] = raw_sse_lines[-5:] if len(raw_sse_lines) > 5 else raw_sse_lines
                     return
                 try:
                     data = json.loads(data_str)
+                    # Store raw data for debugging (keep last 10 chunks)
+                    raw_sse_lines.append(data_str[:500])
+                    if len(raw_sse_lines) > 10:
+                        raw_sse_lines = raw_sse_lines[-10:]
                     choices = data.get('choices', [])
                     if choices:
                         delta = choices[0].get('delta', {})
@@ -4104,6 +4113,10 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
                         yield delta
                 except (json.JSONDecodeError, KeyError):
                     pass
+        # Store raw SSE data for debugging (stream ended without [DONE])
+        _last_llm_payload_debug['raw_sse_count'] = len(raw_sse_lines)
+        _last_llm_payload_debug['finish_reason'] = accumulated_finish_reason
+        _last_llm_payload_debug['raw_sse_tail'] = raw_sse_lines[-5:] if len(raw_sse_lines) > 5 else raw_sse_lines
 
 # ==================== Context Window Management ====================
 def _estimate_tokens(text):
@@ -5162,17 +5175,36 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         # Handle completely empty response (no content, no tool calls)
         if not content.strip() and not tool_calls_raw:
+            # Build debug info from raw API response for diagnosis
+            _empty_debug = []
+            _empty_debug.append(f'finish_reason: {finish_reason}')
+            if reasoning_text:
+                _empty_debug.append(f'reasoning_text length: {len(reasoning_text)} chars')
+                _empty_debug.append(f'reasoning_text (last 500): {reasoning_text[-500:]}')
+            _debug = _last_llm_payload_debug
+            _empty_debug.append(f'payload_size: {_debug.get("size", "?")} bytes')
+            _empty_debug.append(f'payload_url: {_debug.get("url", "?")}')
+            _empty_debug.append(f'sse_chunks_received: {_debug.get("raw_sse_count", "?")}')
+            _empty_debug.append(f'sse_finish_reason: {_debug.get("finish_reason", "?")}')
+            _raw_tail = _debug.get('raw_sse_tail', [])
+            if _raw_tail:
+                _empty_debug.append(f'last_sse_chunks: {json.dumps(_raw_tail, ensure_ascii=False)[:1000]}')
+            # Print full debug to server log
+            print(f'[LLM] EMPTY RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _empty_debug))
+
             # Try auto-retry for empty responses (up to 3 times)
             empty_retries = getattr(run_agent_loop_stream, '_empty_retry', 0) + 1
             run_agent_loop_stream._empty_retry = empty_retries
             if empty_retries <= 3:
-                yield f"data: {json.dumps({'type': 'thinking', 'content': f'Model returned empty response, auto-retrying ({empty_retries}/3)...'})}\n\n"
+                _retry_hint = f'finish_reason={finish_reason}' + (f', reasoning={len(reasoning_text)} chars' if reasoning_text else '')
+                yield f"data: {json.dumps({'type': 'thinking', 'content': f'Model returned empty response ({_retry_hint}), auto-retrying ({empty_retries}/3)...'})}\n\n"
                 print(f'[LLM] Empty response detected (iteration {total_iterations}), retrying ({empty_retries}/3)')
                 time.sleep(1)
                 continue  # retry the same iteration
             else:
                 run_agent_loop_stream._empty_retry = 0
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Model returned empty response 3 times in a row. This may be caused by: 1) max_tokens too low for reasoning models, 2) API issue, 3) Model overloaded. Please try again or adjust settings.'})}\n\n"
+                _err_detail = 'Model returned empty response 3 times in a row.\n\nRaw debug info:\n' + '\n'.join(f'  {l}' for l in _empty_debug)
+                yield f"data: {json.dumps({'type': 'error', 'content': _err_detail})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                 return
         # Reset empty retry counter on successful response
@@ -5185,7 +5217,18 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         if not tool_calls_raw:
             # Don't save empty assistant message to history
             if not final_content.strip():
-                yield f"data: {json.dumps({'type': 'error', 'content': 'Model returned an empty final response.'})}\n\n"
+                _final_debug = []
+                _final_debug.append(f'finish_reason: {finish_reason}')
+                if reasoning_text:
+                    _final_debug.append(f'reasoning_text length: {len(reasoning_text)} chars')
+                    _final_debug.append(f'reasoning_text (last 500): {reasoning_text[-500:]}')
+                _debug = _last_llm_payload_debug
+                _final_debug.append(f'payload_size: {_debug.get("size", "?")} bytes')
+                _final_debug.append(f'sse_chunks_received: {_debug.get("raw_sse_count", "?")}')
+                _final_debug.append(f'sse_finish_reason: {_debug.get("finish_reason", "?")}')
+                print(f'[LLM] EMPTY FINAL RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _final_debug))
+                _err_msg = 'Model returned an empty final response.\n\nRaw debug info:\n' + '\n'.join(f'  {l}' for l in _final_debug)
+                yield f"data: {json.dumps({'type': 'error', 'content': _err_msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                 return
             loop_completed_normally = True
@@ -5701,12 +5744,19 @@ def test_llm_config():
 
         # Warn if model returned empty content (may happen with reasoning models if max_tokens too low)
         if not reply_content:
+            _empty_raw_debug = {
+                'finish_reason': choices[0].get('finish_reason', '?') if choices else 'no_choices',
+                'model': model_used,
+                'tokens': tokens,
+                'raw_response_first_1000': resp_body[:1000],
+            }
             return jsonify({
                 'ok': True,
                 'model': model_used,
                 'tokens': tokens,
                 'reply': '',
-                'warning': 'Model returned empty content. If using a reasoning model, the max_tokens setting may be too low.'
+                'warning': 'Model returned empty content. If using a reasoning model, the max_tokens setting may be too low.',
+                'debug': _empty_raw_debug,
             })
 
         return jsonify({'ok': True, 'model': model_used, 'tokens': tokens, 'reply': reply_content[:200]})
