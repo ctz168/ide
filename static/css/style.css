@@ -1852,6 +1852,109 @@ html, body {
     min-height: 16px;
 }
 
+/* ── Pending Queue Display ── */
+#chat-pending-queue {
+    display: none;
+    margin-bottom: 4px;
+    background: rgba(255, 149, 0, 0.08);
+    border: 1px solid rgba(255, 149, 0, 0.25);
+    border-radius: var(--radius);
+    overflow: hidden;
+    max-height: 180px;
+}
+
+.pending-queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 10px;
+    background: rgba(255, 149, 0, 0.12);
+    border-bottom: 1px solid rgba(255, 149, 0, 0.15);
+}
+
+.pending-queue-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #ff9500;
+}
+
+.pending-queue-clear {
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid rgba(255, 149, 0, 0.3);
+    background: transparent;
+    color: #ff9500;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.pending-queue-clear:hover {
+    background: rgba(255, 149, 0, 0.15);
+}
+
+.pending-queue-list {
+    max-height: 140px;
+    overflow-y: auto;
+}
+
+.pending-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    border-bottom: 1px solid rgba(255, 149, 0, 0.08);
+}
+
+.pending-queue-item:last-child {
+    border-bottom: none;
+}
+
+.pending-queue-num {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 149, 0, 0.2);
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 700;
+    color: #ff9500;
+}
+
+.pending-queue-text {
+    flex: 1;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pending-queue-del {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0;
+    line-height: 1;
+}
+
+.pending-queue-del:hover {
+    background: rgba(255, 59, 48, 0.15);
+    color: #ff3b30;
+}
+
 #chat-input {
     width: 100%;
     padding: 10px;

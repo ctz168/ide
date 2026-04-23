@@ -1256,7 +1256,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         pendingMessages.push(entry);
         savePendingQueue();
         updatePendingBadge();
-        showToast(`已加入排队 (第${pendingMessages.length}条)`, 'info');
+        const preview = text.trim().length > 30 ? text.trim().substring(0, 30) + '...' : text.trim();
+        showToast(`已加入排队第${pendingMessages.length}条: ${preview}`, 'info');
     }
 
     /**
@@ -1289,7 +1290,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
-     * Update the pending queue badge/indicator in the UI.
+     * Update the pending queue display above the input box.
+     * Shows each queued message with its content, order number, and delete button.
      */
     function updatePendingBadge() {
         // Update badge on the send button
@@ -1302,37 +1304,54 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             }
         }
 
-        // Update or create pending badge in the input area
-        let badge = document.getElementById('chat-pending-badge');
+        // Update or create the pending queue container above the textarea
+        let container = document.getElementById('chat-pending-queue');
         if (pendingMessages.length > 0) {
-            if (!badge) {
-                badge = document.createElement('div');
-                badge.id = 'chat-pending-badge';
-                badge.style.cssText = `
-                    display: flex; align-items: center; gap: 6px;
-                    padding: 4px 10px; margin: 0;
-                    background: rgba(255, 149, 0, 0.15);
-                    border: 1px solid rgba(255, 149, 0, 0.3);
-                    border-radius: 6px; font-size: 12px;
-                    color: #ff9500; cursor: pointer;
-                `;
-                const statusArea = document.getElementById('chat-execute-status');
-                if (statusArea && statusArea.parentNode) {
-                    statusArea.parentNode.insertBefore(badge, statusArea.nextSibling);
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'chat-pending-queue';
+                // Insert after chat-execute-status, before chat-input
+                const inputEl = document.getElementById('chat-input');
+                if (inputEl && inputEl.parentNode) {
+                    inputEl.parentNode.insertBefore(container, inputEl);
                 }
-                // Click to clear queue
-                badge.addEventListener('click', () => {
-                    if (confirm(`清除 ${pendingMessages.length} 条排队消息？`)) {
-                        pendingMessages = [];
+            }
+
+            // Build queue list HTML
+            let html = '<div class="pending-queue-header">';
+            html += `<span class="pending-queue-title">⏳ 排队消息 (${pendingMessages.length})</span>`;
+            html += `<button class="pending-queue-clear" onclick="ChatModule.clearPendingQueue()">全部清除</button>`;
+            html += '</div>';
+            html += '<div class="pending-queue-list">';
+            pendingMessages.forEach((entry, idx) => {
+                const preview = entry.text.length > 60 ? entry.text.substring(0, 60) + '...' : entry.text;
+                const escapedText = preview.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                const fullText = entry.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                html += `<div class="pending-queue-item" title="${fullText}">`;
+                html += `<span class="pending-queue-num">${idx + 1}</span>`;
+                html += `<span class="pending-queue-text">${escapedText}</span>`;
+                html += `<button class="pending-queue-del" data-idx="${idx}" title="删除此条">✕</button>`;
+                html += '</div>';
+            });
+            html += '</div>';
+
+            container.innerHTML = html;
+            container.style.display = 'block';
+
+            // Bind delete buttons
+            container.querySelectorAll('.pending-queue-del').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const idx = parseInt(btn.dataset.idx, 10);
+                    if (!isNaN(idx) && idx >= 0 && idx < pendingMessages.length) {
+                        pendingMessages.splice(idx, 1);
                         savePendingQueue();
                         updatePendingBadge();
                     }
                 });
-            }
-            badge.innerHTML = `⏳ ${pendingMessages.length}条消息排队中 · 点击清除`;
-            badge.style.display = 'flex';
-        } else if (badge) {
-            badge.style.display = 'none';
+            });
+        } else if (container) {
+            container.style.display = 'none';
         }
     }
 
@@ -1355,7 +1374,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
 
         // Add a separator showing this was a queued message
-        addMessage('system', `📤 发送排队消息...`);
+        const preview = entry.text.length > 40 ? entry.text.substring(0, 40) + '...' : entry.text;
+        addMessage('system', `📤 发送排队消息: ${preview}`);
 
         // Send it
         await sendMessage(entry.text);
