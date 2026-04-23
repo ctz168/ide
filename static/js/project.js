@@ -418,10 +418,10 @@ const ProjectManager = (() => {
             // Step 2: Open the project (sets config, updates UI)
             await openProject(projectPath);
 
-            // Step 3: Create virtual environment (default: .venv inside project dir)
-            // NOTE: Use .venv (the standard convention) instead of projectName to avoid
-            // a venv folder with the same name as the project, which confuses the AI model
-            // about which folder is the project root vs the virtual environment.
+            // Step 3: Create virtual environment (.venv inside project dir)
+            // Use .venv (standard convention) — never use projectName as venv name,
+            // because a venv folder named the same as the project confuses the AI model
+            // about which directory is the project root vs the virtual environment.
             safeToast('正在创建虚拟环境，请稍候...', 'info');
             try {
                 const venvResp = await fetch('/api/venv/create', {
@@ -431,15 +431,14 @@ const ProjectManager = (() => {
                 });
                 if (venvResp.ok) {
                     const venvData = await venvResp.json();
-                    const venvName = venvData.venv_path ? venvData.venv_path.split(/[/\\]/).pop() : projectName;
                     if (venvData.already_exists) {
-                        safeToast(`虚拟环境已存在: ${venvName}`, 'info');
+                        safeToast('虚拟环境已存在: .venv', 'info');
                     } else {
-                        safeToast(`虚拟环境已创建: ${venvName}`, 'success');
+                        safeToast('虚拟环境已创建: .venv', 'success');
                     }
-                    // venv/create now runs synchronously and saves venv_path in config,
+                    // venv/create runs synchronously and saves venv_path in config,
                     // so the venv is already "activated" — just update UI
-                    updateVenvUI(venvData.venv_path || projectName);
+                    updateVenvUI(venvData.venv_path || '.venv');
                     safeToast('虚拟环境已激活', 'success');
                 } else {
                     const venvErr = await venvResp.json().catch(() => ({}));
