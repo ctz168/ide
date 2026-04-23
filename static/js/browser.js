@@ -112,12 +112,26 @@ const BrowserInspector = (() => {
     function initBridgeListener() {
         window.addEventListener('message', function (e) {
             if (!e.data || e.data.source !== 'pide-bridge') return;
-            iframeLogs.push({
+            const logEntry = {
                 type: e.data.type || 'log',
                 text: e.data.text || '',
                 time: new Date().toLocaleTimeString(),
-            });
+            };
+            iframeLogs.push(logEntry);
             if (iframeLogs.length > 500) iframeLogs.splice(0, iframeLogs.length - 500);
+
+            // Auto-refresh panels if visible
+            const logsPanel = document.getElementById('iframe-logs-panel');
+            if (logsPanel && logsPanel.style.display !== 'none') {
+                renderIframeLogs();
+            }
+            const consolePanel = document.getElementById('iframe-console-panel');
+            if (consolePanel && consolePanel.style.display !== 'none') {
+                // Only refresh console panel for error types
+                if (logEntry.type === 'error' || logEntry.type === 'uncaught' || logEntry.type === 'promise') {
+                    renderConsoleErrors();
+                }
+            }
         });
     }
 
@@ -479,6 +493,88 @@ const BrowserInspector = (() => {
         container.scrollTop = container.scrollHeight;
     }
 
+    // ── Render console errors panel (error/uncaught/promise only) ──
+
+    function renderConsoleErrors() {
+        const container = document.getElementById('iframe-console-errors');
+        const countEl = document.getElementById('iframe-console-count');
+        if (!container) return;
+
+        // Filter only errors
+        const errors = iframeLogs.filter(function (log) {
+            return log.type === 'error' || log.type === 'uncaught' || log.type === 'promise';
+        });
+
+        // Update count badge
+        if (countEl) {
+            countEl.textContent = errors.length > 0 ? errors.length + ' 个错误' : '';
+        }
+
+        container.innerHTML = '';
+        if (errors.length === 0) {
+            container.innerHTML = '<div style="color:var(--text-muted);padding:8px;font-size:11px;text-align:center;">无 JS 错误 🎉</div>';
+            return;
+        }
+
+        for (let i = 0; i < errors.length; i++) {
+            const log = errors[i];
+            const div = document.createElement('div');
+            div.style.cssText = 'padding:3px 8px;font-size:11px;border-bottom:1px solid var(--border);font-family:var(--font-mono);';
+
+            let label = log.type;
+            if (log.type === 'uncaught') label = 'uncaught';
+            if (log.type === 'promise') label = 'promise';
+
+            div.innerHTML =
+                '<span style="color:var(--text-muted);font-size:9px;margin-right:4px;">' + escapeHTML(log.time) + '</span>' +
+                '<span style="color:var(--red);font-size:10px;font-weight:bold;margin-right:4px;">' + escapeHTML(label) + '</span>' +
+                '<span style="color:var(--text-secondary);word-break:break-all;">' + escapeHTML(log.text).substring(0, 500) + '</span>';
+            container.appendChild(div);
+        }
+        container.scrollTop = container.scrollHeight;
+    }
+
+    // ── Send console errors to AI assistant ──
+
+    function sendErrorsToAI() {
+        const errors = iframeLogs.filter(function (log) {
+            return log.type === 'error' || log.type === 'uncaught' || log.type === 'promise';
+        });
+
+        if (errors.length === 0) {
+            if (window.showToast) window.showToast('当前没有 JS 错误', 'info');
+            return;
+        }
+
+        // Build error report
+        const url = document.getElementById('browser-url-input');
+        const urlStr = url ? (url.dataset.originalUrl || url.value.trim()) : '';
+        let report = '🐛 **预览页面 JS 错误报告**\n\n';
+        if (urlStr) {
+            report += '页面地址: ' + urlStr + '\n\n';
+        }
+        report += '共 ' + errors.length + ' 个错误:\n\n';
+        for (let i = 0; i < errors.length; i++) {
+            const e = errors[i];
+            report += (i + 1) + '. [' + e.type + '] ' + e.time + ' — ' + e.text + '\n';
+        }
+        report += '\n请帮我分析并修复这些 JS 错误。';
+
+        // Send to AI chat
+        if (window.ChatManager && window.ChatManager.sendMessage) {
+            window.ChatManager.sendMessage(report);
+            if (window.showToast) window.showToast('已发送 ' + errors.length + ' 个错误给 AI 助手', 'success', 1500);
+        } else {
+            // Fallback: paste into chat input
+            const input = document.getElementById('chat-input');
+            if (input) {
+                input.value = report;
+                input.focus();
+                if (window.showToast) window.showToast('已粘贴到输入框，请手动发送', 'info');
+            }
+        }
+    }
+
     // ── Init ──
 
     function init() {
@@ -575,6 +671,40 @@ const BrowserInspector = (() => {
             clearLogsBtn.addEventListener('click', function () {
                 iframeLogs = [];
                 renderIframeLogs();
+                renderConsoleErrors();
+            });
+        }
+
+        // Console errors button
+        const consoleBtn = document.getElementById('browser-console-btn');
+        const consolePanel = document.getElementById('iframe-console-panel');
+        if (consoleBtn && consolePanel) {
+            consoleBtn.addEventListener('click', function () {
+                const visible = consolePanel.style.display !== 'none';
+                consolePanel.style.display = visible ? 'none' : 'flex';
+                if (!visible) renderConsoleErrors();
+                consoleBtn.textContent = visible ? '🐛 Console' : '🐛 关闭';
+            });
+        }
+
+        // Clear console errors
+        const clearConsoleBtn = document.getElementById('iframe-console-clear');
+        if (clearConsoleBtn) {
+            clearConsoleBtn.addEventListener('click', function () {
+                // Remove error-type logs from iframeLogs
+                iframeLogs = iframeLogs.filter(function (log) {
+                    return log.type !== 'error' && log.type !== 'uncaught' && log.type !== 'promise';
+                });
+                renderConsoleErrors();
+                renderIframeLogs();
+            });
+        }
+
+        // Send console errors to AI assistant
+        const sendAiBtn = document.getElementById('iframe-console-send-ai');
+        if (sendAiBtn) {
+            sendAiBtn.addEventListener('click', function () {
+                sendErrorsToAI();
             });
         }
     }
@@ -601,6 +731,8 @@ const BrowserInspector = (() => {
         openExternal,
         getPageInfo,
         renderIframeLogs,
+        renderConsoleErrors,
+        sendErrorsToAI,
         get bridgeInjected() { return bridgeInjected; },
         get iframeLogs() { return iframeLogs; },
         get iframeReady() {
