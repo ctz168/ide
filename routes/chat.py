@@ -981,6 +981,117 @@ def _tool_read_file(args):
     except Exception as e:
         return f'Error reading file: {str(e)}'
 
+def _recover_broken_json_args(raw_args, tool_name):
+    """Try to recover path and content from broken JSON tool_call arguments.
+    
+    When the LLM generates write_file/edit_file with content containing unescaped
+    special characters (quotes, newlines, etc. in CSS/HTML/JS), the JSON parse fails.
+    This function attempts multiple strategies to extract the key fields.
+    
+    Returns: dict with recovered args, or {} if recovery fails
+    """
+    recovered = {}
+    
+    if not raw_args or not isinstance(raw_args, str):
+        return recovered
+    
+    import re as _re
+    
+    # Strategy 1: Try to fix common JSON escaping issues and re-parse
+    # The model often forgets to escape: backslashes, quotes inside strings, newlines
+    try:
+        fixed = raw_args
+        # Try adding missing closing braces/brackets
+        open_braces = fixed.count('{') - fixed.count('}')
+        open_brackets = fixed.count('[') - fixed.count(']')
+        if open_braces > 0:
+            fixed += '}' * open_braces
+        if open_brackets > 0:
+            fixed += ']' * open_brackets
+        # Try parsing the fixed version
+        result = json.loads(fixed)
+        if isinstance(result, dict):
+            # Validate that the recovered result has the essential keys
+            if tool_name in ('write_file', 'edit_file'):
+                if 'path' in result or 'content' in result:
+                    print(f'[LLM] Recovered broken JSON args by fixing braces (tool: {tool_name})')
+                    return result
+            else:
+                return result
+    except (json.JSONDecodeError, Exception):
+        pass
+    
+    # Strategy 2: Extract path using regex (path usually has simple value, no special chars)
+    _path_match = _re.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+    if _path_match:
+        recovered['path'] = _path_match.group(1)
+    
+    # Strategy 3: For write_file, extract content field robustly
+    # Content is typically the LAST field and the LARGEST — it often contains
+    # unescaped quotes that break JSON. We find where "content": " starts,
+    # then grab everything until the last possible closing quote+brace.
+    if tool_name == 'write_file':
+        _content_start = _re.search(r'"content"\s*:\s*"', raw_args)
+        if _content_start:
+            # Content starts right after the opening quote
+            content_begin = _content_start.end()
+            # Try to find the end: look for the last occurrence of '"}' or '"\n}'
+            # which would be the closing of the content field + JSON object
+            # But since content itself may contain "}, we need a smarter approach
+            
+            # Approach: try progressively shorter substrings that end with "}
+            # Start from the end and work backwards
+            remaining = raw_args[content_begin:]
+            
+            # First try: find the LAST valid closing pattern
+            # Look for a quote followed by optional whitespace and closing braces
+            last_close = -1
+            for m in _re.finditer(r'"\s*\}\s*$', remaining):
+                last_close = m.start()
+            
+            if last_close > 0:
+                candidate = remaining[:last_close]
+                # Try to unescape JSON string sequences
+                try:
+                    # This is a partial JSON string — try unescaping it
+                    unescaped = candidate.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"')
+                    recovered['content'] = unescaped
+                    recovered['_recovered_from_broken_json'] = True
+                    print(f'[LLM] Recovered content from broken JSON (tool: {tool_name}, content_len: {len(unescaped)})')
+                except Exception:
+                    pass
+            
+            # If the above didn't work, try a simpler approach:
+            # just take everything between "content": " and the end,
+            # strip trailing quotes/braces, and unescape
+            if 'content' not in recovered:
+                try:
+                    # Remove trailing JSON closing characters
+                    content_raw = remaining.rstrip().rstrip('}').rstrip().rstrip('"')
+                    unescaped = content_raw.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"')
+                    if len(unescaped) > 10:  # Only use if we got meaningful content
+                        recovered['content'] = unescaped
+                        recovered['_recovered_from_broken_json'] = True
+                        print(f'[LLM] Recovered content from broken JSON (fallback, tool: {tool_name}, content_len: {len(unescaped)})')
+                except Exception:
+                    pass
+    
+    # Strategy 4: For edit_file, extract replacements if possible
+    if tool_name == 'edit_file':
+        # Try to extract old_text and new_text from replacements
+        _old_match = _re.search(r'"old_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_args)
+        _new_match = _re.search(r'"new_text"\s*:\s*"((?:[^"\\]|\\.)*)"', raw_args)
+        if _old_match and _new_match:
+            recovered['replacements'] = [{
+                'old_text': _old_match.group(1).replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"'),
+                'new_text': _new_match.group(1).replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\').replace('\\"', '"'),
+            }]
+            recovered['_recovered_from_broken_json'] = True
+            print(f'[LLM] Recovered edit_file replacements from broken JSON')
+    
+    return recovered
+
+
 def _tool_write_file(args):
     # Robust path handling: support relative paths by resolving from project dir
     raw_path = args.get('path', '')
@@ -990,11 +1101,20 @@ def _tool_write_file(args):
     path = _validate_path(raw_path)
 
     # Handle missing/None content gracefully
+    # Note: content can be None if JSON parse failed upstream — check _skip_broken_args first
+    if args.get('_skip_broken_args'):
+        return f'Error: write_file arguments were truncated (path: {path}). The response was cut off before the file content could be fully generated. Please retry with a smaller file or increase max_tokens.'
+
     content = args.get('content')
     if content is None:
-        return f'Error: content is required for write_file (path: {path})'
+        print(f'[TOOL] write_file ERROR: content is None for path={path}, args keys={list(args.keys())}')
+        return f'Error: content is required for write_file (path: {path}). The file content was not provided — this may be caused by response truncation. Try increasing max_tokens or writing a smaller file.'
     if not isinstance(content, str):
         content = str(content)
+
+    # Log if content was recovered from broken JSON
+    if args.get('_recovered_from_broken_json'):
+        print(f'[TOOL] write_file: using recovered content from broken JSON (path={path}, content_len={len(content)})')
 
     create_dirs = args.get('create_dirs', True)
     try:
@@ -1144,6 +1264,11 @@ def _tool_edit_file(args):
         return 'Error: path is required for edit_file'
     raw_path = _resolve_path(raw_path)
     path = _validate_path(raw_path)
+
+    # Handle truncated args from JSON parse failure
+    if args.get('_skip_broken_args'):
+        return f'Error: edit_file arguments were truncated (path: {path}). The response was cut off. Please retry with a smaller edit or increase max_tokens.'
+
     replacements = args.get('replacements')
     fuzzy_match = args.get('fuzzy_match', False)
     line_hint = args.get('line_hint')
@@ -4805,12 +4930,48 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                 raw_args = func.get('arguments', '{}')
                 try:
                     tool_args = json.loads(raw_args)
+                    _json_parse_ok = True
                 except json.JSONDecodeError:
                     print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
-                    tool_args = {}
+                    _json_parse_ok = False
+                    # Try robust recovery for write_file/edit_file
+                    if tool_name in ('write_file', 'edit_file'):
+                        tool_args = _recover_broken_json_args(raw_args, tool_name)
+                        if tool_args.get('content') or tool_args.get('replacements'):
+                            # Successfully recovered key args — proceed with execution
+                            print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                        else:
+                            # Could not recover — skip and report error
+                            _skip_path = tool_args.get('path', '(unknown)')
+                            tool_args = {'_skip_broken_args': True, 'path': _skip_path}
+                    else:
+                        tool_args = {}
+                        # For other tools, try simple path extraction
+                        try:
+                            import re as _re_tc
+                            _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                            if _path_match:
+                                tool_args['path'] = _path_match.group(1)
+                        except Exception:
+                            pass
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
                 all_tool_calls.append({'name': tool_name, 'args': tool_args})
+
+                # Skip execution if args are irrecoverably broken for write/edit tools
+                if tool_args.get('_skip_broken_args'):
+                    _skip_path = tool_args.get('path', '(unknown)')
+                    result_str = f'Error: {tool_name} arguments were truncated by max_tokens (path: {_skip_path}). The model\'s response was cut off before the file content could be fully generated. Please try again with a smaller file or increase max_tokens.'
+                    _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
+                    _emit({
+                        'type': 'tool_result',
+                        'tool': tool_name,
+                        'ok': False,
+                        'result': result_str,
+                        'elapsed': 0,
+                    })
+                    _batch_results.append((tool_name, tool_args, False, result_str))
+                    continue
 
                 _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
 
@@ -5366,20 +5527,52 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 raw_args = func.get('arguments', '{}')
                 try:
                     tool_args = json.loads(raw_args)
+                    _json_parse_ok = True
                 except json.JSONDecodeError:
                     print(f'[LLM] WARNING: tool_call arguments JSON parse failed for {tool_name}: {raw_args[:200]}...')
-                    tool_args = {}
-                    # Try to extract path from raw args for error messages
-                    try:
-                        import re as _re_tc
-                        _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
-                        if _path_match:
-                            tool_args['path'] = _path_match.group(1)
-                    except Exception:
-                        pass
+                    _json_parse_ok = False
+                    # Try robust recovery for write_file/edit_file
+                    if tool_name in ('write_file', 'edit_file'):
+                        tool_args = _recover_broken_json_args(raw_args, tool_name)
+                        if tool_args.get('content') or tool_args.get('replacements'):
+                            # Successfully recovered key args — proceed with execution
+                            print(f'[LLM] Recovered broken JSON args for {tool_name}, proceeding with execution')
+                        else:
+                            # Could not recover — skip and report error
+                            _skip_path = tool_args.get('path', '(unknown)')
+                            tool_args = {'_skip_broken_args': True, 'path': _skip_path}
+                    else:
+                        tool_args = {}
+                        # For other tools, try simple path extraction
+                        try:
+                            import re as _re_tc
+                            _path_match = _re_tc.search(r'"path"\s*:\s*"([^"]+)"', raw_args)
+                            if _path_match:
+                                tool_args['path'] = _path_match.group(1)
+                        except Exception:
+                            pass
 
                 tool_call_id = tc.get('id', f'call_{tool_name}')
                 tool_calls_in_progress.append({'name': tool_name, 'args': tool_args})
+
+                # Skip execution if args are irrecoverably broken for write/edit tools
+                if tool_args.get('_skip_broken_args'):
+                    _skip_path = tool_args.get('path', '(unknown)')
+                    result_str = f'Error: {tool_name} arguments were truncated by max_tokens (path: {_skip_path}). The model\'s response was cut off before the file content could be fully generated. Please try again with a smaller file or increase max_tokens.'
+                    yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': False, 'result': result_str, 'elapsed': 0, 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+                    # Add tool result to context so model knows it failed (assistant_msg already added above)
+                    tool_msg = {
+                        'role': 'tool',
+                        'tool_call_id': tool_call_id,
+                        'name': tool_name,
+                        'tool': tool_name,
+                        'content': result_str,
+                    }
+                    context.append(tool_msg)
+                    history.append(tool_msg)
+                    _batch_results.append((tool_name, tool_args, False, result_str))
+                    continue
 
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
 
