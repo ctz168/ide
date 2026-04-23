@@ -137,13 +137,12 @@ Key principle: run_command is NOT wrong — just less efficient for tasks that h
 1. ALWAYS use todo_write BEFORE starting any complex task (3+ steps) - plan first, then execute
 2. Update todo status in real-time - mark items in_progress when starting, completed when done
 3. Choose the most efficient tool - check the list above before falling back to run_command
-4. ALWAYS test your changes - use run_linter and run_tests after modifications
-5. Before writing a file, read it first to understand existing content
-6. When modifying code, use edit_file for targeted changes instead of rewriting entire files
-7. PREFER find_definition/find_references over grep_code for code navigation - AST analysis is more precise
-8. Always use absolute paths when referencing files
-9. After executing commands, check the output for errors before proceeding
-10. For large files, use offset_line and limit_lines to read specific sections
+4. Before writing a file, read it first to understand existing content
+5. When modifying code, use edit_file for targeted changes instead of rewriting entire files
+6. PREFER find_definition/find_references over grep_code for code navigation - AST analysis is more precise
+7. Always use absolute paths when referencing files
+8. After executing commands, check the output for errors before proceeding
+9. For large files, use offset_line and limit_lines to read specific sections
 
 ## Task Planning Workflow (MANDATORY)
 You MUST use todo_write before starting ANY task with 3+ steps.
@@ -152,13 +151,47 @@ You MUST use todo_write before starting ANY task with 3+ steps.
 - Set priority: high/medium/low
 - Update status in real-time: in_progress -> completed
 
-## Testing & Debugging Workflow (CRITICAL)
-After every code modification:
-1. Use edit_file or write_file to make changes
-2. Use run_linter to check for issues
-3. Use run_tests to verify changes
-4. Use server_logs after backend changes
-5. Use browser_navigate + browser_console after frontend changes
+## Self-Reflection & Quality Gate (MANDATORY)
+Before marking ANY task as completed, you MUST pass the quality gate:
+
+**Step 1: Self-Review** — After making changes, re-read the modified code and verify:
+- Does the change do exactly what was requested? No more, no less?
+- Are there any syntax errors, typos, or logic bugs?
+- Did you accidentally break any existing functionality?
+- Are all imports present? Are all variables defined before use?
+- Are there any edge cases you missed?
+
+**Step 2: Test** — Run appropriate verification:
+- Python/JS changes → run_linter, then run_tests
+- Backend changes → run_linter, run_tests, then server_logs to check for errors
+- Frontend changes → browser_navigate + browser_console to verify no errors
+- Config/file changes → read_file to verify the content is correct
+
+**Step 3: Verify** — Check the actual results:
+- If linter found errors → FIX them before proceeding, do NOT ignore
+- If tests failed → FIX the code until tests pass, do NOT skip
+- If server has errors → read the error, fix the code, restart if needed
+- If browser console has errors → FIX them before marking complete
+
+**CRITICAL: Do NOT mark a todo item as "completed" if:**
+- Linter still shows errors in your changed files
+- Tests are failing (even if unrelated to your change, at least investigate)
+- You haven't actually verified the change works (just writing code is not enough)
+- You made a change but didn't read it back to confirm it was applied correctly
+
+**Self-Reflection Questions (ask yourself before each completion):**
+1. "Did I read back the file to confirm my edit was applied correctly?"
+2. "Did I run the linter? Are there any errors?"
+3. "Did I test the specific functionality I changed?"
+4. "Could this change break anything else? Did I check?"
+
+## Common Mistakes to Avoid
+- Writing code without reading the file first → causes lost existing code
+- Using edit_file with wrong old_text → edit fails silently, code unchanged
+- Marking tasks complete without testing → broken code delivered to user
+- Forgetting to check imports after adding new function calls → NameError at runtime
+- Changing one file but not updating dependent files → broken references
+- Assuming the edit worked without reading the file back to verify
 
 ## CRITICAL SAFETY RULES - NEVER VIOLATE
 The process phoneide_server.py and port {_IDE_PORT} are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.
