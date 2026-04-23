@@ -880,6 +880,29 @@ def _get_project_dir():
     except Exception:
         return os.path.realpath(WORKSPACE)
 
+def _resolve_path(raw_path):
+    """Resolve a possibly-relative path to an absolute path within the project.
+    
+    If raw_path is already absolute, return as-is.
+    If relative, resolve from the current project directory (or workspace root).
+    This is a pre-processing step before _validate_path().
+    """
+    if not raw_path:
+        return raw_path
+    if os.path.isabs(raw_path):
+        return raw_path
+    try:
+        config = load_config()
+        _ws = config.get('workspace', WORKSPACE)
+        _prj = config.get('project', None)
+        if _prj:
+            _base = os.path.join(_ws, _prj)
+            if os.path.isdir(_base):
+                return os.path.join(_base, raw_path)
+        return os.path.join(_ws, raw_path)
+    except Exception:
+        return raw_path
+
 def _validate_path(path):
     """Ensure path stays within WORKSPACE or configured project directory.
     Returns resolved absolute path or raises ValueError."""
@@ -959,8 +982,20 @@ def _tool_read_file(args):
         return f'Error reading file: {str(e)}'
 
 def _tool_write_file(args):
-    path = _validate_path(args['path'])
-    content = args['content']
+    # Robust path handling: support relative paths by resolving from project dir
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required for write_file'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    # Handle missing/None content gracefully
+    content = args.get('content')
+    if content is None:
+        return f'Error: content is required for write_file (path: {path})'
+    if not isinstance(content, str):
+        content = str(content)
+
     create_dirs = args.get('create_dirs', True)
     try:
         if create_dirs:
@@ -1000,8 +1035,12 @@ def _tool_write_file(args):
         if lint_result:
             return base_msg + '\n\n' + lint_result
         return base_msg
+    except ValueError as e:
+        return f'Security error writing file {path}: {e}'
+    except OSError as e:
+        return f'OS error writing file {path}: {e} (errno: {e.errno})'
     except Exception as e:
-        return f'Error writing file {path}: {e}'
+        return f'Error writing file {path}: {type(e).__name__}: {e}'
 
 def _normalize_whitespace(text):
     """Normalize whitespace for fuzzy matching: strip trailing spaces per line, normalize line endings."""
@@ -1099,7 +1138,12 @@ def _get_context_around_line(content, line_number, context_lines=5):
     return '\n'.join(result_lines)
 
 def _tool_edit_file(args):
-    path = _validate_path(args['path'])
+    # Robust path handling: support relative paths by resolving from project dir
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required for edit_file'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
     replacements = args.get('replacements')
     fuzzy_match = args.get('fuzzy_match', False)
     line_hint = args.get('line_hint')
