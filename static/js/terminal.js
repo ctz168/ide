@@ -1804,13 +1804,27 @@ const TerminalManager = (() => {
     }
 
     /**
-     * Install a Python package — streaming output so each package appears as installed
+     * Install a package — auto-detect project type and use appropriate method:
+     * - Node.js projects: npm install <package>
+     * - Python projects: pip install <package>
      */
     async function installPackage(packageName) {
+        // Detect project type
+        let projectType = 'unknown';
+        try {
+            const resp = await fetch('/api/run/detect');
+            if (resp.ok) {
+                const data = await resp.json();
+                projectType = data.type || 'unknown';
+            }
+        } catch (_e) {}
+
         if (!packageName) {
+            const placeholder = projectType === 'node' ? 'express' : 'requests';
+            const label = projectType === 'node' ? '输入 npm 包名:' : '输入 pip 包名:';
             if (window.showPromptDialog) {
                 packageName = await new Promise(resolve => {
-                    window.showPromptDialog('安装包', '输入包名:', '', resolve);
+                    window.showPromptDialog('安装包', label, placeholder, resolve);
                 });
             } else {
                 packageName = prompt('Enter package name:');
@@ -1819,6 +1833,40 @@ const TerminalManager = (() => {
         if (!packageName) return;
 
         showPanel();
+
+        // ── Node.js Project: npm install ──
+        if (projectType === 'node') {
+            const prompt = platformInfo.shell_prompt || '$';
+            appendOutput(`${prompt} npm install ${packageName}`, 'system');
+            _showVenvProgress('正在安装 ' + packageName, 0, 1);
+            try {
+                const resp = await fetch('/api/run/shell', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: `npm install ${packageName}` })
+                });
+                if (!resp.ok) throw new Error(`Failed: ${resp.statusText}`);
+                const data = await resp.json();
+                if (data.proc_id) {
+                    currentProcId = data.proc_id;
+                    pollSince = 0;
+                    setRunningState(true);
+                    onProcessComplete = () => {
+                        _hideVenvProgress();
+                        showToast(`npm 包 ${packageName} 安装完成`, 'success');
+                    };
+                    streamOutput(data.proc_id);
+                }
+                return data;
+            } catch (err) {
+                appendOutput(`Error: ${err.message}`, 'error');
+                showToast(`安装失败: ${err.message}`, 'error');
+                _hideVenvProgress();
+                return { error: err.message };
+            }
+        }
+
+        // ── Python Project: pip install ──
         appendOutput(`$ pip install ${packageName}...`, 'status');
 
         // Show progress area
@@ -1858,10 +1906,120 @@ const TerminalManager = (() => {
     }
 
     /**
-     * Import requirements.txt — streaming pip install with progress tracking
+     * Import requirements — auto-detect project type and use appropriate method:
+     * - Node.js projects: npm install (reads package.json)
+     * - Python projects: pip install -r requirements.txt
      * Each installed dependency appears in real-time, plus progress bar
      */
     async function importRequirements() {
+        // Detect project type
+        let projectType = 'unknown';
+        if (window.ProjectManager) {
+            try {
+                const resp = await fetch('/api/run/detect');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    projectType = data.type || 'unknown';
+                }
+            } catch (_e) {}
+        }
+
+        // ── Node.js Project: use npm install ──
+        if (projectType === 'node') {
+            return await _npmInstallForProject();
+        }
+
+        // ── Python Project: use pip install -r requirements.txt ──
+        return await _pipInstallRequirements();
+    }
+
+    /**
+     * Run npm install for a Node.js project (the equivalent of importing requirements)
+     */
+    async function _npmInstallForProject() {
+        // Confirm dialog
+        if (window.showConfirmDialog) {
+            const confirmed = await new Promise(resolve => {
+                window.showConfirmDialog(
+                    '安装依赖包',
+                    '将根据 package.json 安装所有 Node.js 依赖包（npm install），安装过程将在控制台显示。\n\n是否继续？',
+                    resolve
+                );
+            });
+            if (!confirmed) return;
+        }
+
+        // Get the current project root directory
+        let projectRoot = '';
+        if (window.ProjectManager) {
+            const proj = window.ProjectManager.getCurrentProject();
+            if (proj && proj.project) {
+                projectRoot = proj.project.replace(/^\//, '');
+            }
+        }
+        if (!projectRoot) {
+            showToast('请先打开一个项目', 'error');
+            return;
+        }
+
+        // Close left sidebar to reveal console
+        const sidebarLeft = document.getElementById('sidebar-left');
+        if (sidebarLeft && sidebarLeft.classList.contains('open')) {
+            const closeBtn = document.getElementById('btn-menu');
+            if (closeBtn) closeBtn.click();
+        }
+
+        // Expand console panel
+        showPanel();
+        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT));
+
+        startCmdBlock('npm install');
+
+        appendOutput(`[info] 项目目录: ${projectRoot}`, 'info');
+        appendOutput('正在根据 package.json 安装 Node.js 依赖包...', 'info');
+        appendOutput('─────────────────────────────────────────', 'status');
+        const prompt = platformInfo.shell_prompt || '$';
+        appendOutput(`${prompt} npm install`, 'system');
+        appendOutput(`[info] Time: ${new Date().toLocaleString()}`, 'info');
+
+        // Show progress area
+        _showVenvProgress('正在安装 Node.js 依赖包...', 0, 0);
+
+        try {
+            const resp = await fetch('/api/run/npm-install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed: ${resp.statusText}`);
+            }
+
+            const data = await resp.json();
+            if (data.proc_id) {
+                currentProcId = data.proc_id;
+                pollSince = 0;
+                setRunningState(true);
+
+                onProcessComplete = () => {
+                    _hideVenvProgress();
+                    showToast('Node.js 依赖安装完成', 'success');
+                };
+
+                streamOutput(data.proc_id);
+            }
+        } catch (err) {
+            appendOutput(`Error: ${err.message}`, 'error');
+            showToast(`安装失败: ${err.message}`, 'error');
+            _hideVenvProgress();
+        }
+    }
+
+    /**
+     * Run pip install -r requirements.txt for a Python project
+     */
+    async function _pipInstallRequirements() {
         // Confirm dialog
         if (window.showConfirmDialog) {
             const confirmed = await new Promise(resolve => {
@@ -2132,6 +2290,7 @@ const TerminalManager = (() => {
         createVenv,
         installPackage,
         importRequirements,
+        npmInstall: _npmInstallForProject,
         reconnectToProcess,
         recoverRunningProcess,
         startCmdBlock,
@@ -2142,7 +2301,8 @@ const TerminalManager = (() => {
         get isRunning() { return isRunning; },
         get compilers() { return compilers; },
         get panelHeight() { return panelHeight; },
-        set panelHeight(v) { setPanelHeight(v); }
+        set panelHeight(v) { setPanelHeight(v); },
+        get platformInfo() { return platformInfo; }
     };
 })();
 

@@ -6,7 +6,7 @@ import os
 import json
 import subprocess
 from flask import Blueprint, jsonify, request
-from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote, IS_WINDOWS, get_default_compiler
+from utils import handle_error, load_config, save_config, WORKSPACE, shlex_quote, IS_WINDOWS, get_default_compiler, run_process
 
 bp = Blueprint('venv', __name__)
 
@@ -37,6 +37,27 @@ def _get_effective_base(config=None):
         if os.path.isdir(project_dir):
             return project_dir
     return base
+
+
+def _detect_project_type(project_dir):
+    """Detect project type by checking for marker files.
+    Returns 'node' for Node.js projects, 'python' for Python, or 'unknown'.
+    """
+    if not project_dir or not os.path.isdir(project_dir):
+        return 'unknown'
+
+    # Check for Node.js project first (package.json is a strong signal)
+    if os.path.isfile(os.path.join(project_dir, 'package.json')):
+        return 'node'
+
+    # Check for Python project
+    for fname in os.listdir(project_dir):
+        if fname.endswith('.py'):
+            return 'python'
+        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'):
+            return 'python'
+
+    return 'unknown'
 
 
 def _is_venv_dir(path):
@@ -168,6 +189,47 @@ def create_venv():
     # When a project is open, create venv inside the project directory
     effective_base = _get_effective_base(config)
 
+    # ── Detect project type ──
+    # For Node.js projects, "create environment" means running npm install
+    project_type = _detect_project_type(effective_base)
+
+    if project_type == 'node':
+        # Node.js project: run npm install (creates node_modules)
+        pkg_path = os.path.join(effective_base, 'package.json')
+        if not os.path.isfile(pkg_path):
+            return jsonify({'ok': False, 'error': 'package.json 不存在，无法初始化 Node.js 环境'}), 400
+
+        # Determine package manager
+        if os.path.isfile(os.path.join(effective_base, 'yarn.lock')):
+            cmd = 'yarn install'
+        elif os.path.isfile(os.path.join(effective_base, 'pnpm-lock.yaml')):
+            cmd = 'pnpm install'
+        else:
+            cmd = 'npm install'
+
+        # Run npm install synchronously
+        try:
+            result = subprocess.run(
+                cmd, shell=True, cwd=effective_base,
+                capture_output=True, text=True, timeout=300,
+            )
+            node_modules = os.path.join(effective_base, 'node_modules')
+            if os.path.isdir(node_modules):
+                # For Node.js projects, store node_modules path as venv_path
+                # so the system knows the environment is set up
+                config['venv_path'] = node_modules
+                config['project_type'] = 'node'
+                save_config(config)
+                return jsonify({'ok': True, 'venv_path': node_modules, 'project_type': 'node'})
+            else:
+                stderr = (result.stderr or '').strip()
+                return jsonify({'ok': False, 'error': f'npm install 执行完成但 node_modules 未创建: {stderr}'}), 500
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': False, 'error': 'npm install 超时（300秒）'}), 500
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'npm install 异常: {e}'}), 500
+
+    # ── Python project: create Python virtual environment ──
     if not path:
         path = '.venv'
 
@@ -180,6 +242,7 @@ def create_venv():
     # Check if venv already exists at target
     if _is_venv_dir(target):
         config['venv_path'] = target
+        config['project_type'] = 'python'
         save_config(config)
         return jsonify({'ok': True, 'venv_path': target, 'already_exists': True})
 
@@ -201,6 +264,7 @@ def create_venv():
             return jsonify({'ok': False, 'error': '虚拟环境创建完成但验证失败'}), 500
 
         config['venv_path'] = target
+        config['project_type'] = 'python'
         save_config(config)
         return jsonify({'ok': True, 'venv_path': target})
     except subprocess.TimeoutExpired:
@@ -221,6 +285,22 @@ def list_venvs():
     # Scan for venvs (fast + slow path, error-tolerant)
     found_venvs = _scan_venv_dirs(scan_base)
 
+    # For Node.js projects, also check for node_modules as the "environment"
+    project_type = _detect_project_type(scan_base)
+    if project_type == 'node':
+        node_modules_path = os.path.join(scan_base, 'node_modules')
+        if os.path.isdir(node_modules_path):
+            # Check if node_modules is not already in the list
+            nm_real = os.path.realpath(node_modules_path)
+            already_listed = any(_paths_same(v.get('full_path', ''), nm_real) for v in found_venvs)
+            if not already_listed:
+                found_venvs.append({
+                    'path': 'node_modules',
+                    'full_path': nm_real,
+                    'name': 'node_modules',
+                    'is_node': True,
+                })
+
     # Mark active venv (case-insensitive on Windows)
     current_venv = config.get('venv_path', '')
     for v in found_venvs:
@@ -231,7 +311,9 @@ def list_venvs():
     cleared_stale = False
     if current_venv:
         stale = False
-        if not _is_venv_dir(current_venv):
+        # For Node.js projects, node_modules is a valid venv_path
+        is_node_env = current_venv.endswith('node_modules') and os.path.isdir(current_venv)
+        if not _is_venv_dir(current_venv) and not is_node_env:
             stale = True
         elif project:
             project_dir = os.path.realpath(os.path.join(base, project))
@@ -254,6 +336,7 @@ def list_venvs():
         'current': current_venv,
         'cleared_stale': cleared_stale,
         'has_project': bool(project),
+        'project_type': project_type,
     })
 
 
@@ -282,10 +365,18 @@ def activate_venv():
         if not _paths_same(target, project_dir) and not target.startswith(project_dir + os.sep):
             return jsonify({'error': '只能激活当前项目目录内的虚拟环境'}), 400
 
+    # Support both Python venv and Node.js node_modules
+    is_node_env = target.endswith('node_modules') and os.path.isdir(target)
     if _is_venv_dir(target):
         config['venv_path'] = target
+        config['project_type'] = 'python'
         save_config(config)
         return jsonify({'ok': True, 'venv_path': target})
+    elif is_node_env:
+        config['venv_path'] = target
+        config['project_type'] = 'node'
+        save_config(config)
+        return jsonify({'ok': True, 'venv_path': target, 'project_type': 'node'})
     return jsonify({'error': 'Invalid venv directory'}), 400
 
 
@@ -294,58 +385,104 @@ def activate_venv():
 def list_packages():
     config = load_config()
     venv_path = config.get('venv_path', '')
-    if venv_path and os.path.exists(venv_path):
-        # Try multiple strategies to find pip in the venv
-        pip_candidates = []
-        if IS_WINDOWS:
-            pip_candidates = [
-                os.path.join(venv_path, 'Scripts', 'pip.exe'),
-                os.path.join(venv_path, 'Scripts', 'pip3.exe'),
-                os.path.join(venv_path, 'Scripts', 'python.exe') + ' -m pip',
-            ]
-        else:
-            pip_candidates = [
-                os.path.join(venv_path, 'bin', 'pip'),
-                os.path.join(venv_path, 'bin', 'pip3'),
-                os.path.join(venv_path, 'bin', 'python') + ' -m pip',
-                os.path.join(venv_path, 'bin', 'python3') + ' -m pip',
-            ]
+    if not venv_path or not os.path.exists(venv_path):
+        return jsonify({'packages': []})
 
-        for pip_cmd in pip_candidates:
-            # For "python -m pip" style, the file check doesn't apply
-            is_m_pip = ' -m pip' in pip_cmd
-            if not is_m_pip and not os.path.exists(pip_cmd):
-                continue
-            try:
-                result = subprocess.run(
-                    f'{pip_cmd} list --format=json', shell=True,
-                    capture_output=True, text=True, timeout=30,
-                    encoding='utf-8', errors='replace'
-                )
-                if result.returncode == 0:
-                    try:
-                        packages = json.loads(result.stdout)
-                        return jsonify({'packages': packages})
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-            except Exception:
-                continue
-
-        # Last resort: try system python with venv's site-packages
+    # ── Node.js project: list packages from package.json / npm list ──
+    is_node_env = venv_path.endswith('node_modules') and os.path.isdir(venv_path)
+    if is_node_env:
         try:
-            venv_python = os.path.join(venv_path, 'bin', 'python3') if not IS_WINDOWS else os.path.join(venv_path, 'Scripts', 'python.exe')
-            if os.path.exists(venv_python):
-                result = subprocess.run(
-                    [venv_python, '-m', 'pip', 'list', '--format=json'],
-                    capture_output=True, text=True, timeout=30,
-                    encoding='utf-8', errors='replace'
-                )
-                if result.returncode == 0:
-                    try:
-                        packages = json.loads(result.stdout)
-                        return jsonify({'packages': packages})
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+            # Use npm list --json to get installed packages
+            project_dir = os.path.dirname(venv_path)
+            result = subprocess.run(
+                'npm list --json --depth=0',
+                shell=True, cwd=project_dir,
+                capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace'
+            )
+            if result.stdout:
+                try:
+                    npm_data = json.loads(result.stdout)
+                    deps = npm_data.get('dependencies', {})
+                    packages = []
+                    for name, info in deps.items():
+                        packages.append({
+                            'name': name,
+                            'version': info.get('version', 'unknown'),
+                        })
+                    return jsonify({'packages': packages, 'project_type': 'node'})
+                except (json.JSONDecodeError, ValueError):
+                    pass
         except Exception:
             pass
+
+        # Fallback: read package.json directly
+        try:
+            pkg_path = os.path.join(os.path.dirname(venv_path), 'package.json')
+            if os.path.isfile(pkg_path):
+                with open(pkg_path, 'r', encoding='utf-8') as f:
+                    pkg = json.load(f)
+                packages = []
+                for dep_key in ('dependencies', 'devDependencies'):
+                    for name, version in pkg.get(dep_key, {}).items():
+                        packages.append({'name': name, 'version': version})
+                return jsonify({'packages': packages, 'project_type': 'node'})
+        except Exception:
+            pass
+        return jsonify({'packages': [], 'project_type': 'node'})
+
+    # ── Python project: list packages via pip ──
+    # Try multiple strategies to find pip in the venv
+    pip_candidates = []
+    if IS_WINDOWS:
+        pip_candidates = [
+            os.path.join(venv_path, 'Scripts', 'pip.exe'),
+            os.path.join(venv_path, 'Scripts', 'pip3.exe'),
+            os.path.join(venv_path, 'Scripts', 'python.exe') + ' -m pip',
+        ]
+    else:
+        pip_candidates = [
+            os.path.join(venv_path, 'bin', 'pip'),
+            os.path.join(venv_path, 'bin', 'pip3'),
+            os.path.join(venv_path, 'bin', 'python') + ' -m pip',
+            os.path.join(venv_path, 'bin', 'python3') + ' -m pip',
+        ]
+
+    for pip_cmd in pip_candidates:
+        # For "python -m pip" style, the file check doesn't apply
+        is_m_pip = ' -m pip' in pip_cmd
+        if not is_m_pip and not os.path.exists(pip_cmd):
+            continue
+        try:
+            result = subprocess.run(
+                f'{pip_cmd} list --format=json', shell=True,
+                capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace'
+            )
+            if result.returncode == 0:
+                try:
+                    packages = json.loads(result.stdout)
+                    return jsonify({'packages': packages, 'project_type': 'python'})
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        except Exception:
+            continue
+
+    # Last resort: try system python with venv's site-packages
+    try:
+        venv_python = os.path.join(venv_path, 'bin', 'python3') if not IS_WINDOWS else os.path.join(venv_path, 'Scripts', 'python.exe')
+        if os.path.exists(venv_python):
+            result = subprocess.run(
+                [venv_python, '-m', 'pip', 'list', '--format=json'],
+                capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace'
+            )
+            if result.returncode == 0:
+                try:
+                    packages = json.loads(result.stdout)
+                    return jsonify({'packages': packages, 'project_type': 'python'})
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    except Exception:
+        pass
     return jsonify({'packages': []})

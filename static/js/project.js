@@ -380,6 +380,10 @@ const ProjectManager = (() => {
         // Show input dialog for project name
         const values = await window.showInputDialog('✨ 新建项目', [
             { name: 'name', label: '项目名称', type: 'text', placeholder: 'my-project' },
+            { name: 'type', label: '项目类型', type: 'select', options: [
+                { value: 'python', label: 'Python' },
+                { value: 'node', label: 'Node.js' },
+            ], default: 'python' },
         ]);
 
         if (!values || !values.name) return;
@@ -418,34 +422,88 @@ const ProjectManager = (() => {
             // Step 2: Open the project (sets config, updates UI)
             await openProject(projectPath);
 
-            // Step 3: Create virtual environment (.venv inside project dir)
-            // Use .venv (standard convention) — never use projectName as venv name,
-            // because a venv folder named the same as the project confuses the AI model
-            // about which directory is the project root vs the virtual environment.
-            safeToast('正在创建虚拟环境，请稍候...', 'info');
-            try {
-                const venvResp = await fetch('/api/venv/create', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: '.venv' })
-                });
-                if (venvResp.ok) {
-                    const venvData = await venvResp.json();
-                    if (venvData.already_exists) {
-                        safeToast('虚拟环境已存在: .venv', 'info');
-                    } else {
-                        safeToast('虚拟环境已创建: .venv', 'success');
+            // Step 3: Set up environment based on project type
+            const projectType = values.type || 'python';
+            if (projectType === 'node') {
+                // For Node.js projects: create package.json and run npm install
+                safeToast('正在初始化 Node.js 项目...', 'info');
+                try {
+                    // Create a minimal package.json
+                    const pkgJson = {
+                        name: projectName,
+                        version: '1.0.0',
+                        description: '',
+                        main: 'index.js',
+                        scripts: {
+                            start: 'node index.js'
+                        },
+                        dependencies: {}
+                    };
+                    const pkgResp = await fetch('/api/files/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            path: projectPath + '/package.json',
+                            content: JSON.stringify(pkgJson, null, 2)
+                        })
+                    });
+                    if (pkgResp.ok) {
+                        safeToast('package.json 已创建', 'success');
                     }
-                    // venv/create runs synchronously and saves venv_path in config,
-                    // so the venv is already "activated" — just update UI
-                    updateVenvUI(venvData.venv_path || '.venv');
-                    safeToast('虚拟环境已激活', 'success');
-                } else {
-                    const venvErr = await venvResp.json().catch(() => ({}));
-                    safeToast('虚拟环境创建失败: ' + (venvErr.error || '未知错误'), 'warning');
+
+                    // Create a minimal index.js
+                    const indexResp = await fetch('/api/files/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            path: projectPath + '/index.js',
+                            content: '// Hello Node.js!\nconsole.log("Hello from Node.js!");\n'
+                        })
+                    });
+
+                    // Run npm install to create node_modules
+                    const npmResp = await fetch('/api/run/npm-install', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({})
+                    });
+                    if (npmResp.ok) {
+                        safeToast('Node.js 依赖已安装', 'success');
+                    }
+                    updateVenvUI('node_modules');
+                } catch (nodeErr) {
+                    safeToast('Node.js 初始化失败: ' + nodeErr.message, 'warning');
                 }
-            } catch (venvErr) {
-                safeToast('虚拟环境创建失败: ' + venvErr.message, 'warning');
+            } else {
+                // For Python projects: create virtual environment (.venv)
+                // Use .venv (standard convention) — never use projectName as venv name,
+                // because a venv folder named the same as the project confuses the AI model
+                // about which directory is the project root vs the virtual environment.
+                safeToast('正在创建虚拟环境，请稍候...', 'info');
+                try {
+                    const venvResp = await fetch('/api/venv/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: '.venv' })
+                    });
+                    if (venvResp.ok) {
+                        const venvData = await venvResp.json();
+                        if (venvData.already_exists) {
+                            safeToast('虚拟环境已存在: .venv', 'info');
+                        } else {
+                            safeToast('虚拟环境已创建: .venv', 'success');
+                        }
+                        // venv/create runs synchronously and saves venv_path in config,
+                        // so the venv is already "activated" — just update UI
+                        updateVenvUI(venvData.venv_path || '.venv');
+                        safeToast('虚拟环境已激活', 'success');
+                    } else {
+                        const venvErr = await venvResp.json().catch(() => ({}));
+                        safeToast('虚拟环境创建失败: ' + (venvErr.error || '未知错误'), 'warning');
+                    }
+                } catch (venvErr) {
+                    safeToast('虚拟环境创建失败: ' + venvErr.message, 'warning');
+                }
             }
 
             // Step 4: Refresh directory listing
@@ -914,6 +972,7 @@ const ProjectManager = (() => {
     /**
      * Auto-detect and activate virtual environment for the current project.
      * Checks for common venv directories (.venv, venv, env) in the project root.
+     * For Node.js projects, also checks for node_modules.
      */
     async function autoActivateVenv() {
         try {
@@ -922,6 +981,7 @@ const ProjectManager = (() => {
             const data = await resp.json();
             const venvs = data.venvs || [];
             const current = data.current || '';
+            const projectType = data.project_type || 'unknown';
 
             // If already activated, just update UI
             if (current) {
@@ -929,7 +989,7 @@ const ProjectManager = (() => {
                 return;
             }
 
-            // Auto-activate the first found venv
+            // Auto-activate the first found venv/node_modules
             if (venvs.length > 0) {
                 const venv = venvs[0];
                 const activateResp = await fetch('/api/venv/activate', {
@@ -938,7 +998,11 @@ const ProjectManager = (() => {
                     body: JSON.stringify({ path: venv.path })
                 });
                 if (activateResp.ok) {
-                    safeToast(`已自动加载虚拟环境: ${venv.name}`, 'success');
+                    if (venv.is_node || projectType === 'node') {
+                        safeToast(`已自动加载 Node.js 环境: ${venv.name}`, 'success');
+                    } else {
+                        safeToast(`已自动加载虚拟环境: ${venv.name}`, 'success');
+                    }
                     updateVenvUI(venv.full_path || venv.path);
                 }
             }

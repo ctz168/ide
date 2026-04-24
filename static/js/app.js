@@ -688,7 +688,7 @@ const AppManager = (() => {
 
         TerminalManager.showPanel();
         try {
-            const prompt = platformInfo.shell_prompt || '$';
+            const prompt = (window.TerminalManager && TerminalManager.platformInfo && TerminalManager.platformInfo.shell_prompt) || '$';
             TerminalManager.appendOutput(`─────────────────────────────────────────`, 'status');
             TerminalManager.appendOutput(`${prompt} npm ${scriptName}`, 'system');
             TerminalManager.appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
@@ -1565,15 +1565,33 @@ const AppManager = (() => {
             venvBtn.addEventListener('click', () => {
                 if (window.TerminalManager && TerminalManager.loadVenvInfo) {
                     TerminalManager.loadVenvInfo().then(() => {
-                        showToast('虚拟环境信息已刷新', 'info', 1500);
+                        showToast('环境信息已刷新', 'info', 1500);
                     });
                 }
             });
         }
         if (createVenvBtn) {
-            createVenvBtn.addEventListener('click', () => {
-                if (window.TerminalManager && TerminalManager.createVenv) {
-                    TerminalManager.createVenv();
+            createVenvBtn.addEventListener('click', async () => {
+                // Detect project type to decide action
+                let projectType = 'unknown';
+                try {
+                    const resp = await fetch('/api/run/detect');
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        projectType = data.type || 'unknown';
+                    }
+                } catch (_e) {}
+
+                if (projectType === 'node') {
+                    // For Node.js projects, run npm install instead of creating Python venv
+                    if (window.TerminalManager && TerminalManager.npmInstall) {
+                        await TerminalManager.npmInstall();
+                    }
+                } else {
+                    // For Python projects, create venv as usual
+                    if (window.TerminalManager && TerminalManager.createVenv) {
+                        TerminalManager.createVenv();
+                    }
                 }
             });
         }
@@ -1584,7 +1602,7 @@ const AppManager = (() => {
                 }
             });
         }
-        // Import requirements button
+        // Import requirements button — auto-detect project type
         const importReqBtn = document.getElementById('import-req-btn');
         if (importReqBtn) {
             importReqBtn.addEventListener('click', () => {
@@ -1592,6 +1610,46 @@ const AppManager = (() => {
                     TerminalManager.importRequirements();
                 }
             });
+        }
+
+        // Update button labels based on project type
+        _updateVenvButtonsForProjectType();
+        // Listen for project changes
+        document.addEventListener('project:opened', _updateVenvButtonsForProjectType);
+        document.addEventListener('project:closed', _updateVenvButtonsForProjectType);
+    }
+
+    /**
+     * Update venv panel button labels based on current project type
+     */
+    async function _updateVenvButtonsForProjectType() {
+        let projectType = 'unknown';
+        try {
+            const resp = await fetch('/api/run/detect');
+            if (resp.ok) {
+                const data = await resp.json();
+                projectType = data.type || 'unknown';
+            }
+        } catch (_e) {}
+
+        const createVenvBtn = document.getElementById('create-venv-btn');
+        const importReqBtn = document.getElementById('import-req-btn');
+        const venvInfo = document.getElementById('venv-info');
+
+        if (projectType === 'node') {
+            if (createVenvBtn) createVenvBtn.textContent = '安装依赖 (npm install)';
+            if (importReqBtn) importReqBtn.textContent = '📥 安装依赖包';
+            if (venvInfo) {
+                const venvLabel = venvInfo.querySelector('span:first-child');
+                if (venvLabel) venvLabel.textContent = 'Node.js 环境: ';
+            }
+        } else {
+            if (createVenvBtn) createVenvBtn.textContent = '创建虚拟环境';
+            if (importReqBtn) importReqBtn.textContent = '📥 导入requirements';
+            if (venvInfo) {
+                const venvLabel = venvInfo.querySelector('span:first-child');
+                if (venvLabel) venvLabel.textContent = '虚拟环境: ';
+            }
         }
     }
 

@@ -139,6 +139,47 @@ def detect_project():
     return jsonify(result)
 
 
+@bp.route('/api/run/npm-install', methods=['POST'])
+@handle_error
+def run_npm_install():
+    """Run npm install (or yarn/pnpm equivalent) in the project directory.
+    This is the Node.js equivalent of 'pip install -r requirements.txt'.
+    Body: { production: false }  — if true, uses --production flag
+    """
+    data = request.json or {}
+    production = data.get('production', False)
+
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # Verify package.json exists
+    pkg_path = os.path.join(base, 'package.json')
+    if not os.path.isfile(pkg_path):
+        return jsonify({'error': 'package.json not found in project directory'}), 400
+
+    # Use yarn/pnpm if lock file exists
+    if os.path.isfile(os.path.join(base, 'yarn.lock')):
+        cmd = 'yarn install'
+        if production:
+            cmd += ' --production'
+    elif os.path.isfile(os.path.join(base, 'pnpm-lock.yaml')):
+        cmd = 'pnpm install'
+        if production:
+            cmd += ' --prod'
+    else:
+        cmd = 'npm install'
+        if production:
+            cmd += ' --production'
+
+    proc_id = run_process(cmd, cwd=base)
+    return jsonify({'ok': True, 'proc_id': proc_id, 'cwd': base, 'cmd': cmd})
+
+
 @bp.route('/api/run/npm-script', methods=['POST'])
 @handle_error
 def run_npm_script():

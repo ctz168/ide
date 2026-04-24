@@ -403,7 +403,11 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
         try:
             env = os.environ.copy()
             config = load_config()
-            if config.get('venv_path') and os.path.exists(config['venv_path']):
+            # Only inject Python venv for non-npm commands.
+            # npm/node commands should NOT have Python venv paths prepended,
+            # as they can interfere with Node.js execution.
+            is_npm_cmd = cmd.strip().startswith(('npm ', 'yarn ', 'pnpm ', 'npx ', 'node '))
+            if not is_npm_cmd and config.get('venv_path') and os.path.exists(config['venv_path']):
                 if IS_WINDOWS:
                     venv_bin = os.path.join(config['venv_path'], 'Scripts')
                 else:
@@ -411,6 +415,18 @@ def run_process(cmd, cwd=None, timeout=300, proc_id=None):
                 if os.path.exists(venv_bin):
                     env['PATH'] = venv_bin + (os.pathsep + env.get('PATH', '') if env.get('PATH') else '')
                     env['VIRTUAL_ENV'] = config['venv_path']
+
+            # For npm/node commands, ensure node_modules/.bin is in PATH
+            if is_npm_cmd:
+                effective_cwd = cwd or config.get('workspace', WORKSPACE)
+                project = config.get('project', None)
+                if project:
+                    project_dir = os.path.join(config.get('workspace', WORKSPACE), project)
+                    if os.path.isdir(project_dir):
+                        effective_cwd = project_dir
+                node_bin = os.path.join(effective_cwd, 'node_modules', '.bin')
+                if os.path.isdir(node_bin):
+                    env['PATH'] = node_bin + (os.pathsep + env.get('PATH', '') if env.get('PATH') else '')
 
             running_processes[proc_id]['running'] = True
             running_processes[proc_id]['start_time'] = time.time()
