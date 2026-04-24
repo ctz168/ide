@@ -2116,6 +2116,7 @@ const TerminalManager = (() => {
     return {
         execute,
         executeCode,
+        executeShellCommand,
         stop,
         togglePanel,
         clearOutput,
@@ -2126,6 +2127,7 @@ const TerminalManager = (() => {
         getSelectedCompiler,
         showPanel,
         hidePanel,
+        setRunningState,
         loadVenvInfo,
         createVenv,
         installPackage,

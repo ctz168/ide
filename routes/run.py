@@ -20,6 +20,194 @@ bp = Blueprint('run', __name__)
 _IDE_PORT = int(os.environ.get('PHONEIDE_PORT', 12345))
 
 
+# ── Project Type Detection & Run Configuration ────────────────
+
+def _detect_project_type(project_dir):
+    """Detect project type by checking for marker files.
+    Returns dict with: type, label, scripts (for node), entry_files, etc.
+    """
+    result = {
+        'type': 'unknown',
+        'label': '未知',
+        'scripts': {},       # npm scripts (for node projects)
+        'entry_files': [],   # suggested entry files
+        'compiler': 'python3',
+    }
+
+    if not project_dir or not os.path.isdir(project_dir):
+        return result
+
+    # Check for Node.js project
+    pkg_json_path = os.path.join(project_dir, 'package.json')
+    if os.path.isfile(pkg_json_path):
+        result['type'] = 'node'
+        result['label'] = 'Node.js'
+        result['compiler'] = 'node'
+        try:
+            with open(pkg_json_path, 'r', encoding='utf-8') as f:
+                pkg = json.load(f)
+            scripts = pkg.get('scripts', {})
+            result['scripts'] = scripts
+            # Suggest entry files
+            main = pkg.get('main', 'index.js')
+            if main:
+                result['entry_files'].append(main)
+            # Check common entry points
+            for candidate in ['index.js', 'index.ts', 'app.js', 'server.js', 'main.js', 'src/index.js', 'src/index.ts', 'src/app.js', 'src/main.js']:
+                full = os.path.join(project_dir, candidate)
+                if os.path.isfile(full) and candidate not in result['entry_files']:
+                    result['entry_files'].append(candidate)
+            return result
+        except Exception:
+            result['scripts'] = {}
+            return result
+
+    # Check for Python project
+    has_py = False
+    py_entry = []
+    for fname in os.listdir(project_dir):
+        if fname.endswith('.py'):
+            has_py = True
+            py_entry.append(fname)
+        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'):
+            has_py = True
+
+    if has_py:
+        result['type'] = 'python'
+        result['label'] = 'Python'
+        result['compiler'] = 'python3'
+        result['entry_files'] = py_entry
+        return result
+
+    # Check for Go project
+    if os.path.isfile(os.path.join(project_dir, 'go.mod')):
+        result['type'] = 'go'
+        result['label'] = 'Go'
+        result['compiler'] = 'go run'
+        return result
+
+    # Check for Rust project
+    if os.path.isfile(os.path.join(project_dir, 'Cargo.toml')):
+        result['type'] = 'rust'
+        result['label'] = 'Rust'
+        result['compiler'] = 'cargo run'
+        return result
+
+    # Check for Java project
+    if os.path.isfile(os.path.join(project_dir, 'pom.xml')) or os.path.isfile(os.path.join(project_dir, 'build.gradle')):
+        result['type'] = 'java'
+        result['label'] = 'Java'
+        result['compiler'] = 'java'
+        return result
+
+    # Check for C/C++ project
+    if os.path.isfile(os.path.join(project_dir, 'Makefile')) or os.path.isfile(os.path.join(project_dir, 'CMakeLists.txt')):
+        result['type'] = 'c_cpp'
+        result['label'] = 'C/C++'
+        result['compiler'] = 'make'
+        return result
+
+    # Check for shell scripts
+    sh_files = [f for f in os.listdir(project_dir) if f.endswith('.sh')]
+    if sh_files:
+        result['type'] = 'shell'
+        result['label'] = 'Shell'
+        result['compiler'] = 'bash'
+        result['entry_files'] = sh_files
+        return result
+
+    return result
+
+
+@bp.route('/api/run/detect', methods=['GET'])
+@handle_error
+def detect_project():
+    """Detect the current project type and return run configuration.
+    Returns: type, label, scripts (for node), entry_files, compiler, etc.
+    """
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+
+    if project:
+        project_dir = os.path.join(base, project)
+    else:
+        project_dir = base
+
+    result = _detect_project_type(project_dir)
+    result['project_dir'] = project_dir
+    return jsonify(result)
+
+
+@bp.route('/api/run/npm-script', methods=['POST'])
+@handle_error
+def run_npm_script():
+    """Execute an npm script from package.json.
+    Body: { script: 'start' | 'dev' | ..., args: '' }
+    """
+    data = request.json or {}
+    script_name = data.get('script', '').strip()
+    args = data.get('args', '').strip()
+
+    if not script_name:
+        return jsonify({'error': 'No script name provided'}), 400
+
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+    if project:
+        project_dir = os.path.join(base, project)
+        if os.path.isdir(project_dir):
+            base = project_dir
+
+    # Verify the script exists in package.json
+    pkg_path = os.path.join(base, 'package.json')
+    if os.path.isfile(pkg_path):
+        try:
+            with open(pkg_path, 'r', encoding='utf-8') as f:
+                pkg = json.load(f)
+            scripts = pkg.get('scripts', {})
+            if script_name not in scripts:
+                return jsonify({'error': f'Script "{script_name}" not found in package.json'}), 400
+        except Exception:
+            pass  # proceed anyway
+
+    # Use npm or yarn based on lock file
+    if os.path.isfile(os.path.join(base, 'yarn.lock')):
+        cmd = f'yarn {shlex_quote(script_name)}'
+    elif os.path.isfile(os.path.join(base, 'pnpm-lock.yaml')):
+        cmd = f'pnpm {shlex_quote(script_name)}'
+    else:
+        cmd = f'npm {shlex_quote(script_name)}'
+
+    if args:
+        cmd += f' {args}'
+
+    # Detect ports from package.json scripts content
+    killed_ports = []
+    detected_ports = set()
+    try:
+        with open(pkg_path, 'r', encoding='utf-8') as f:
+            pkg = json.load(f)
+        script_content = pkg.get('scripts', {}).get(script_name, '')
+        detected_ports = _extract_ports_from_code(script_content)
+    except Exception:
+        pass
+
+    if detected_ports:
+        killed_ports = _kill_port_occupants(detected_ports)
+        if killed_ports:
+            time.sleep(0.3)
+
+    proc_id = run_process(cmd, cwd=base)
+    result = {'ok': True, 'proc_id': proc_id, 'cwd': base, 'cmd': cmd}
+    if detected_ports:
+        result['detected_ports'] = sorted(detected_ports)
+    if killed_ports:
+        result['killed_ports'] = killed_ports
+    return jsonify(result)
+
+
 def _extract_ports_from_code(code_text):
     """Extract port numbers from Python code.
     Detects patterns like:

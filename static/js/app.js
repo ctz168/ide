@@ -474,6 +474,288 @@ const AppManager = (() => {
     };
     window.RunConfig = RunConfig;
 
+    // ── Smart Run: auto-detect project type and run accordingly ──
+
+    /**
+     * Cached project detection result to avoid repeated API calls
+     */
+    let _cachedProjectDetect = null;
+    let _cachedProjectDetectTime = 0;
+    const PROJECT_DETECT_CACHE_TTL = 5000; // 5 seconds
+
+    /**
+     * Detect current project type (with caching)
+     */
+    async function detectProjectType() {
+        const now = Date.now();
+        if (_cachedProjectDetect && (now - _cachedProjectDetectTime) < PROJECT_DETECT_CACHE_TTL) {
+            return _cachedProjectDetect;
+        }
+        try {
+            const resp = await fetch('/api/run/detect');
+            if (resp.ok) {
+                const data = await resp.json();
+                _cachedProjectDetect = data;
+                _cachedProjectDetectTime = now;
+                return data;
+            }
+        } catch (err) {
+            console.warn('[AppManager] Project detect failed:', err);
+        }
+        // Fallback: assume python
+        return { type: 'unknown', label: '未知', scripts: {}, entry_files: [], compiler: 'python3' };
+    }
+
+    /**
+     * Invalidate the cached project detection (call when project changes)
+     */
+    function invalidateProjectDetectCache() {
+        _cachedProjectDetect = null;
+        _cachedProjectDetectTime = 0;
+    }
+
+    /**
+     * Show npm script selection dialog for Node.js projects
+     * Returns: selected script name, or null if cancelled
+     */
+    function showNpmScriptDialog(scripts) {
+        return new Promise((resolve) => {
+            const overlay = document.getElementById('dialog-overlay');
+            const dialogTitle = document.getElementById('dialog-title');
+            const dialogBody = document.getElementById('dialog-body');
+            const dialogButtons = document.getElementById('dialog-buttons');
+
+            dialogTitle.textContent = '🟢 选择 npm script';
+            const scriptNames = Object.keys(scripts);
+            let html = '<p style="color:var(--text-secondary);font-size:12px;margin-bottom:8px;">检测到 Node.js 项目，请选择要运行的 script：</p>';
+
+            // Priority scripts (common ones first)
+            const priorityOrder = ['dev', 'start', 'serve', 'build', 'test', 'lint', 'preview'];
+            const prioritized = [];
+            const remaining = [];
+
+            for (const name of scriptNames) {
+                if (priorityOrder.includes(name)) {
+                    prioritized.push(name);
+                } else {
+                    remaining.push(name);
+                }
+            }
+            prioritized.sort((a, b) => priorityOrder.indexOf(a) - priorityOrder.indexOf(b));
+            const orderedScripts = [...prioritized, ...remaining];
+
+            for (const name of orderedScripts) {
+                const content = scripts[name];
+                const displayContent = content.length > 60 ? content.substring(0, 60) + '...' : content;
+                const isPriority = priorityOrder.includes(name);
+                html += `<button class="choice-option npm-script-option" data-value="${escapeAttr(name)}" style="display:block;width:100%;padding:10px 12px;margin:4px 0;border:1px solid ${isPriority ? 'var(--accent)' : 'var(--border)'};background:var(--bg-surface);color:var(--text-primary);border-radius:var(--radius-sm);font-size:13px;text-align:left;cursor:pointer;font-family:var(--font-mono);${isPriority ? 'font-weight:600;' : ''}" title="${escapeAttr(content)}">
+                    <div style="display:flex;align-items:center;justify-content:space-between;">
+                        <span>${isPriority ? '⭐ ' : ''}${escapeHTML(name)}</span>
+                        <span style="font-size:10px;color:var(--text-muted);font-weight:normal;">${escapeHTML(displayContent)}</span>
+                    </div>
+                </button>`;
+            }
+
+            dialogBody.innerHTML = html;
+            dialogButtons.innerHTML = '';
+
+            // Cancel button
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '取消';
+            cancelBtn.className = 'btn-cancel';
+            const cancelChoice = () => { overlay.classList.add('hidden'); resolve(null); };
+            if (window.bindTouchButton) {
+                bindTouchButton(cancelBtn, cancelChoice);
+            } else {
+                cancelBtn.onclick = cancelChoice;
+            }
+            dialogButtons.appendChild(cancelBtn);
+
+            // "Select file instead" button
+            const fileBtn = document.createElement('button');
+            fileBtn.textContent = '📄 选择文件';
+            fileBtn.className = 'btn-confirm';
+            fileBtn.style.background = 'var(--bg-hover)';
+            fileBtn.style.color = 'var(--text-secondary)';
+            const fileChoice = () => { overlay.classList.add('hidden'); resolve('__file__'); };
+            if (window.bindTouchButton) {
+                bindTouchButton(fileBtn, fileChoice);
+            } else {
+                fileBtn.onclick = fileChoice;
+            }
+            dialogButtons.appendChild(fileBtn);
+
+            overlay.classList.remove('hidden');
+
+            // Bind script clicks
+            dialogBody.querySelectorAll('.npm-script-option').forEach(btn => {
+                const handleChoice = () => {
+                    const chosen = btn.dataset.value;
+                    overlay.classList.add('hidden');
+                    resolve(chosen);
+                };
+                if (window.bindTouchButton) {
+                    bindTouchButton(btn, handleChoice);
+                } else {
+                    btn.addEventListener('click', handleChoice);
+                }
+                btn.addEventListener('touchstart', () => { btn.style.background = 'var(--bg-hover)'; }, { passive: true });
+                btn.addEventListener('touchend', () => { btn.style.background = 'var(--bg-surface)'; }, { passive: true });
+            });
+
+            overlay.onclick = (e) => {
+                if (e.target === overlay) { overlay.classList.add('hidden'); resolve(null); }
+            };
+        });
+    }
+    window.showNpmScriptDialog = showNpmScriptDialog;
+
+    /**
+     * Smart Run: auto-detect project type and choose the right way to run.
+     * - Node.js projects: show npm script picker
+     * - Python projects: run with python3 (existing behavior)
+     * - Other projects: show file picker
+     */
+    async function smartRun() {
+        if (!window.TerminalManager) return;
+
+        // Auto-stop existing process before starting a new one
+        if (TerminalManager.isRunning) {
+            TerminalManager.appendOutput('[system] Stopping existing process before re-run...', 'system');
+            await TerminalManager.stop();
+            await new Promise(r => setTimeout(r, 500));
+        }
+
+        // Detect project type
+        const detect = await detectProjectType();
+        const compiler = document.getElementById('compiler-select');
+        const compilerVal = compiler ? compiler.value : detect.compiler || 'python3';
+
+        // ── Node.js Project ──
+        if (detect.type === 'node' && detect.scripts && Object.keys(detect.scripts).length > 0) {
+            const scriptNames = Object.keys(detect.scripts);
+
+            // Check if user has a persisted npm script preference
+            const savedNpmScript = RunConfig._load()[RunConfig._getWorkspaceKey() + ':npm_script'] || '';
+
+            // If only one script or a saved preference exists, auto-run it
+            if (scriptNames.length === 1) {
+                await _executeNpmScript(scriptNames[0]);
+                return;
+            }
+
+            // If saved script still exists, run it directly
+            if (savedNpmScript && detect.scripts[savedNpmScript]) {
+                await _executeNpmScript(savedNpmScript);
+                return;
+            }
+
+            // Show script picker
+            const chosen = await showNpmScriptDialog(detect.scripts);
+            if (!chosen) return; // cancelled
+            if (chosen === '__file__') {
+                // User wants file-based execution instead
+                await _runFile(compilerVal);
+                return;
+            }
+            // Save preference and execute
+            const key = RunConfig._getWorkspaceKey() + ':npm_script';
+            RunConfig._load()[key] = chosen;
+            RunConfig._save();
+            await _executeNpmScript(chosen);
+            return;
+        }
+
+        // ── Python / Other Projects ──
+        // Update compiler select based on detection
+        if (detect.compiler && compiler) {
+            // Check if the detected compiler is in the options list
+            const options = Array.from(compiler.options).map(o => o.value);
+            if (options.includes(detect.compiler)) {
+                compiler.value = detect.compiler;
+            }
+        }
+
+        await _runFile(compilerVal || detect.compiler || 'python3');
+    }
+    window.smartRun = smartRun;
+
+    /**
+     * Execute an npm script via backend API
+     */
+    async function _executeNpmScript(scriptName) {
+        if (!window.TerminalManager) return;
+
+        TerminalManager.showPanel();
+        try {
+            const prompt = platformInfo.shell_prompt || '$';
+            TerminalManager.appendOutput(`─────────────────────────────────────────`, 'status');
+            TerminalManager.appendOutput(`${prompt} npm ${scriptName}`, 'system');
+            TerminalManager.appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
+
+            const resp = await fetch('/api/run/npm-script', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ script: scriptName })
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Execution failed: ${resp.statusText}`);
+            }
+
+            const data = await resp.json();
+
+            // Show auto-killed port info
+            if (data.detected_ports && data.detected_ports.length > 0) {
+                TerminalManager.appendOutput(`[auto] 检测到端口: ${data.detected_ports.join(', ')}`, 'info');
+            }
+            if (data.killed_ports && data.killed_ports.length > 0) {
+                const killInfo = data.killed_ports.map(k => `端口 ${k.port} (PID: ${k.pid || k.managed_proc})`).join(', ');
+                TerminalManager.appendOutput(`[auto] 已自动释放占用端口: ${killInfo}`, 'warn');
+            }
+
+            const currentProcId = data.proc_id || data.process_id || data.id || null;
+
+            if (currentProcId) {
+                TerminalManager.appendOutput(`[info] PID: ${currentProcId} | Streaming output...`, 'info');
+                TerminalManager.setRunningState(true);
+                TerminalManager.streamOutput(currentProcId);
+            }
+
+            showToast(`正在运行: npm ${scriptName}`, 'success');
+        } catch (err) {
+            TerminalManager.appendOutput(`[error] npm script 执行失败: ${err.message}`, 'error');
+            showToast(`执行失败: ${err.message}`, 'error');
+        }
+    }
+
+    /**
+     * Traditional file-based run (original behavior)
+     */
+    async function _runFile(compilerVal) {
+        if (!window.TerminalManager) return;
+
+        // Priority: 1) persisted run file, 2) currently open editor file
+        let filePath = RunConfig.getRunFile() ||
+                       (window.EditorManager ? EditorManager.getCurrentFile() : '');
+
+        if (filePath) {
+            RunConfig.setRunFile(filePath);
+            TerminalManager.execute(filePath, compilerVal);
+        } else {
+            try {
+                const chosen = await showFilePickerDialog('选择运行文件');
+                if (chosen) {
+                    RunConfig.setRunFile(chosen);
+                    TerminalManager.execute(chosen, compilerVal);
+                }
+            } catch (err) {
+                showToast('获取文件列表失败', 'error');
+            }
+        }
+    }
+
     // ── Run Button Context Menu ─────────────────────────────────
     function showRunFileMenu(evt) {
         // Remove any existing menu first
@@ -485,11 +767,44 @@ const AppManager = (() => {
         const currentRunFile = RunConfig.getRunFile();
         const currentEditorFile = window.EditorManager ? EditorManager.getCurrentFile() : '';
 
-        // Header: show current run file
+        // Check saved npm script preference
+        const savedNpmScript = RunConfig._load()[RunConfig._getWorkspaceKey() + ':npm_script'] || '';
+
+        // Header: show current run configuration
         const header = document.createElement('div');
         header.style.cssText = 'padding:8px 12px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-        header.textContent = currentRunFile ? `当前运行: ${currentRunFile.split('/').pop()}` : '当前运行: 未设置';
+        if (savedNpmScript) {
+            header.textContent = `当前运行: npm ${savedNpmScript}`;
+        } else if (currentRunFile) {
+            header.textContent = `当前运行: ${currentRunFile.split('/').pop()}`;
+        } else {
+            header.textContent = '当前运行: 未设置';
+        }
         menu.appendChild(header);
+
+        // Option: Change npm script (for Node.js projects)
+        const npmScriptBtn = document.createElement('button');
+        npmScriptBtn.textContent = '🟢 选择 npm script...';
+        npmScriptBtn.addEventListener('click', async () => {
+            menu.remove();
+            try {
+                const detect = await detectProjectType();
+                if (detect.scripts && Object.keys(detect.scripts).length > 0) {
+                    const chosen = await showNpmScriptDialog(detect.scripts);
+                    if (chosen && chosen !== '__file__') {
+                        const key = RunConfig._getWorkspaceKey() + ':npm_script';
+                        RunConfig._load()[key] = chosen;
+                        RunConfig._save();
+                        showToast(`默认 npm script 已切换为: ${chosen}`, 'success');
+                    }
+                } else {
+                    showToast('未检测到 package.json scripts', 'warning');
+                }
+            } catch (err) {
+                showToast('获取项目信息失败', 'error');
+            }
+        });
+        menu.appendChild(npmScriptBtn);
 
         // Option 1: Use current editor file
         if (currentEditorFile && currentEditorFile !== currentRunFile) {
@@ -498,6 +813,10 @@ const AppManager = (() => {
             btn1.title = currentEditorFile;
             btn1.addEventListener('click', () => {
                 RunConfig.setRunFile(currentEditorFile);
+                // Clear npm script preference when switching to file mode
+                const key = RunConfig._getWorkspaceKey() + ':npm_script';
+                delete RunConfig._load()[key];
+                RunConfig._save();
                 menu.remove();
                 showToast(`运行文件已切换为: ${currentEditorFile.split('/').pop()}`, 'success');
             });
@@ -513,6 +832,10 @@ const AppManager = (() => {
                 const chosen = await showFilePickerDialog('选择运行文件');
                 if (chosen) {
                     RunConfig.setRunFile(chosen);
+                    // Clear npm script preference when switching to file mode
+                    const key = RunConfig._getWorkspaceKey() + ':npm_script';
+                    delete RunConfig._load()[key];
+                    RunConfig._save();
                     showToast(`运行文件已切换为: ${chosen.split('/').pop()}`, 'success');
                 }
             } catch (err) {
@@ -521,15 +844,18 @@ const AppManager = (() => {
         });
         menu.appendChild(btn2);
 
-        // Option 3: Clear run file
-        if (currentRunFile) {
+        // Option 3: Clear run configuration
+        if (currentRunFile || savedNpmScript) {
             const btn3 = document.createElement('button');
             btn3.className = 'danger';
-            btn3.textContent = '✕ 清除运行文件';
+            btn3.textContent = '✕ 清除运行配置';
             btn3.addEventListener('click', () => {
                 RunConfig.clearRunFile();
+                const key = RunConfig._getWorkspaceKey() + ':npm_script';
+                delete RunConfig._load()[key];
+                RunConfig._save();
                 menu.remove();
-                showToast('运行文件已清除，下次将使用当前编辑器文件', 'info');
+                showToast('运行配置已清除，下次将自动检测', 'info');
             });
             menu.appendChild(btn3);
         }
@@ -1143,29 +1469,7 @@ const AppManager = (() => {
             // Skip if this click was synthesized after a long-press
             if (_runBtnLongPressed) return;
             if (!window.TerminalManager) return;
-            const compiler = document.getElementById('compiler-select');
-            const compilerVal = compiler ? compiler.value : 'python3';
-
-            // Priority: 1) persisted run file, 2) currently open editor file
-            let filePath = RunConfig.getRunFile() ||
-                           (window.EditorManager ? EditorManager.getCurrentFile() : '');
-
-            if (filePath) {
-                // Persist and execute
-                RunConfig.setRunFile(filePath);
-                TerminalManager.execute(filePath, compilerVal);
-            } else {
-                // No file bound yet — show file picker dialog
-                try {
-                    const chosen = await showFilePickerDialog('选择运行文件');
-                    if (chosen) {
-                        RunConfig.setRunFile(chosen);
-                        TerminalManager.execute(chosen, compilerVal);
-                    }
-                } catch (err) {
-                    showToast('获取文件列表失败', 'error');
-                }
-            }
+            await smartRun();
         });
         // Stop — stops both AI task and terminal process
         document.getElementById('btn-stop').addEventListener('click', async () => {
@@ -1910,6 +2214,20 @@ const AppManager = (() => {
         });
     }
 
+    // ── Project Event Handlers ──
+    function initProjectEvents() {
+        // Invalidate project detection cache when project changes
+        document.addEventListener('project:opened', () => {
+            invalidateProjectDetectCache();
+        });
+        document.addEventListener('project:closed', () => {
+            invalidateProjectDetectCache();
+        });
+        document.addEventListener('workspace:changed', () => {
+            invalidateProjectDetectCache();
+        });
+    }
+
     // ── Initialize Everything ──
     async function init() {
         if (initialized) return;
@@ -1931,6 +2249,7 @@ const AppManager = (() => {
         initMobileFixes();
         initTheme();
         initServerManagement();
+        initProjectEvents();
         await loadTheme();
 
         // Init modules (order matters)
