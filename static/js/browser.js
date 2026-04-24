@@ -17,6 +17,7 @@ const BrowserInspector = (() => {
     let bridgeInjected = false;
     let iframeLogs = [];  // console logs captured from iframe
     let pollInterval = 600;  // ms between polls
+    let urlInput = null;  // reference to URL input element (set during initUI)
 
     // ── Helpers ──
     function escapeHTML(str) {
@@ -683,7 +684,7 @@ const BrowserInspector = (() => {
         // Navigate / Go button
         const goBtn = document.getElementById('browser-go-btn');
         const externalBtn = document.getElementById('browser-external-btn');
-        const urlInput = document.getElementById('browser-url-input');
+        urlInput = document.getElementById('browser-url-input');
         if (goBtn && urlInput) {
             goBtn.addEventListener('click', function () {
                 const url = urlInput.value.trim();

@@ -1836,7 +1836,7 @@ const AppManager = (() => {
         const origKeyHandler = document.onkeydown;
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                if (logViewerOpen) toggleLogViewer();
+                { const panel = document.getElementById('log-viewer-panel'); if (panel) panel.remove(); }
                 const updateDialog = document.getElementById('update-dialog-overlay');
                 if (updateDialog && !updateDialog.classList.contains('hidden')) {
                     updateDialog.classList.add('hidden');
@@ -2444,7 +2444,7 @@ const AppManager = (() => {
 
     return {
         init, showToast, showDialog, showPromptDialog, showConfirmDialog, showInputDialog,
-        restartServer, toggleLogViewer, checkUpdates, applyUpdate, pollServerStatus
+        restartServer, checkUpdates, applyUpdate, pollServerStatus
     };
 })();
 
