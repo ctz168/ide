@@ -689,8 +689,10 @@ const AppManager = (() => {
         TerminalManager.showPanel();
         try {
             const prompt = (window.TerminalManager && TerminalManager.platformInfo && TerminalManager.platformInfo.shell_prompt) || '$';
+            const _NPM_LIFECYCLE = ['start', 'test', 'restart', 'stop'];
+            const npmCmd = _NPM_LIFECYCLE.includes(scriptName) ? `npm ${scriptName}` : `npm run ${scriptName}`;
             TerminalManager.appendOutput(`─────────────────────────────────────────`, 'status');
-            TerminalManager.appendOutput(`${prompt} npm ${scriptName}`, 'system');
+            TerminalManager.appendOutput(`${prompt} ${npmCmd}`, 'system');
             TerminalManager.appendOutput(`[info] PID: pending... | Time: ${new Date().toLocaleString()}`, 'info');
 
             const resp = await fetch('/api/run/npm-script', {

@@ -213,13 +213,22 @@ def run_npm_script():
         except Exception:
             pass  # proceed anyway
 
-    # Use npm or yarn based on lock file
+    # Build the command — only npm start/test/restart/stop can omit 'run';
+    # all other scripts need 'npm run <name>'.  yarn never needs 'run'.
+    # pnpm always needs 'run' for non-lifecycle scripts.
+    _NPM_LIFECYCLE = {'start', 'test', 'restart', 'stop'}
     if os.path.isfile(os.path.join(base, 'yarn.lock')):
         cmd = f'yarn {shlex_quote(script_name)}'
     elif os.path.isfile(os.path.join(base, 'pnpm-lock.yaml')):
-        cmd = f'pnpm {shlex_quote(script_name)}'
+        if script_name in _NPM_LIFECYCLE:
+            cmd = f'pnpm {shlex_quote(script_name)}'
+        else:
+            cmd = f'pnpm run {shlex_quote(script_name)}'
     else:
-        cmd = f'npm {shlex_quote(script_name)}'
+        if script_name in _NPM_LIFECYCLE:
+            cmd = f'npm {shlex_quote(script_name)}'
+        else:
+            cmd = f'npm run {shlex_quote(script_name)}'
 
     if args:
         cmd += f' {args}'
