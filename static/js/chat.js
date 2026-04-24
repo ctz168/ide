@@ -1050,6 +1050,26 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
+     * Replace the entire stream buffer content (used when leaked tool call text is detected and removed)
+     */
+    function replaceStreamContent(newContent) {
+        if (!currentStreamEl) return;
+
+        streamBuffer = newContent || '';
+
+        const contentEl = currentStreamEl.querySelector('.chat-content');
+        if (contentEl) {
+            if (streamBuffer) {
+                contentEl.innerHTML = renderMarkdownLite(streamBuffer);
+                bindCopyButtons(contentEl);
+            } else {
+                contentEl.innerHTML = '';
+            }
+            scrollToBottom();
+        }
+    }
+
+    /**
      * Start or append to the reasoning/thinking block.
      * Creates a collapsible "💭 Thinking..." section in the chat.
      */
@@ -1629,6 +1649,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     } else if (eventType === 'reasoning_end') {
                         finalizeReasoning();
                         setExecuteStatus('Generating...');
+                    } else if (eventType === 'content_replace') {
+                        // Backend detected leaked tool call text in content — replace stream buffer
+                        replaceStreamContent(parsed.content || '');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
                         finalizeReasoning();
@@ -2031,6 +2054,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         // Model finished reasoning, now producing answer
                         finalizeReasoning();
                         setExecuteStatus('Generating...');
+                    } else if (eventType === 'content_replace') {
+                        // Backend detected leaked tool call text in content — replace stream buffer
+                        replaceStreamContent(parsed.content || '');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
                         finalizeReasoning();
@@ -2387,6 +2413,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     } else if (eventType === 'reasoning_end') {
                         finalizeReasoning();
                         setExecuteStatus('Generating...');
+                    } else if (eventType === 'content_replace') {
+                        // Backend detected leaked tool call text in content — replace stream buffer
+                        replaceStreamContent(parsed.content || '');
                     } else if (eventType === 'cancelled') {
                         hideTyping();
                         finalizeReasoning();

@@ -6039,6 +6039,93 @@ _TOOL_NAMES = frozenset(
     for f in AGENT_TOOLS
 )
 
+def _extract_json_balanced(text, start):
+    """Extract a balanced JSON object starting at position `start` in text.
+    Returns the JSON string (from start to the matching closing brace) or empty string.
+    Handles nested braces, brackets, and escaped quotes within strings.
+    """
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if c == '\\' and in_string:
+            escape_next = True
+            continue
+        if c == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    # Unbalanced — return everything from start
+    return text[start:]
+
+
+def _try_parse_single_tool_call_json(json_str):
+    """Try to parse a JSON string as a single tool call.
+    Supports multiple formats:
+      - {"name": "...", "arguments": {...}}
+      - {"function": {"name": "...", "arguments": "..."}}
+      - {"type": "function", "function": {"name": "...", "arguments": "..."}}
+    Returns tool_call dict (OpenAI format) or None.
+    """
+    try:
+        obj = json.loads(json_str)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    if not isinstance(obj, dict):
+        return None
+
+    name = ''
+    arguments = {}
+
+    # Format 1: {"name": "...", "arguments": {...}}
+    if 'name' in obj:
+        name = obj.get('name', '')
+        arguments = obj.get('arguments', {})
+    # Format 2: {"function": {"name": "...", "arguments": "..."}}
+    elif 'function' in obj and isinstance(obj['function'], dict):
+        name = obj['function'].get('name', '')
+        arguments = obj['function'].get('arguments', {})
+    # Format 3: {"type": "function", "function": {...}} (OpenAI response format)
+    elif obj.get('type') == 'function' and 'function' in obj:
+        name = obj['function'].get('name', '')
+        arguments = obj['function'].get('arguments', {})
+    else:
+        return None
+
+    if not name or name not in _TOOL_NAMES:
+        return None
+
+    # Ensure arguments is a dict
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except (json.JSONDecodeError, TypeError):
+            arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    return {
+        'id': f'call_parsed_{name}',
+        'type': 'function',
+        'function': {
+            'name': name,
+            'arguments': json.dumps(arguments, ensure_ascii=False),
+        },
+    }
+
+
 def _try_parse_tool_calls_from_content(content):
     """Try to parse tool calls from LLM text content.
 
@@ -6046,99 +6133,145 @@ def _try_parse_tool_calls_from_content(content):
     JSON text in the content field instead of using the proper tool_calls field.
     This function detects and converts them to the standard tool_calls format.
 
+    Supported patterns:
+    - Pattern 1: Standalone JSON {"name": "...", "arguments": {...}}
+    - Pattern 2: JSON array of tool calls [{"name": ...}, ...]
+    - Pattern 3: Code-fenced tool calls: ```json/tool_call\n...\n```
+    - Pattern 4: XML-style tags: <tool_call/>...</tool_call/>
+    - Pattern 5: function_call format: {"name": "...", "arguments": "..."}
+    - Pattern 6: OpenAI format: {"type": "function", "function": {...}}
+
     Returns list of tool_call dicts (OpenAI format) or None if not detected.
     """
     if not content or not content.strip():
         return None
 
-    import re
+    import re as _re
     parsed_calls = []
 
-    # Pattern 1: Standalone JSON objects with "name" and "arguments"
-    # Matches: {"name": "run_command", "arguments": {"command": "...", ...}}
-    standalone_pattern = re.compile(
-        r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*',
-        re.DOTALL
-    )
-    matches = list(standalone_pattern.finditer(content))
-    if matches:
-        # Try to extract complete JSON objects for each match
-        for match in matches:
-            start = match.start()
-            # Find the matching closing brace
-            depth = 0
-            end = start
-            for i in range(start, len(content)):
-                if content[i] == '{':
-                    depth += 1
-                elif content[i] == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end = i + 1
-                        break
-            json_str = content[start:end]
-            try:
-                obj = json.loads(json_str)
-                name = obj.get('name', '')
-                arguments = obj.get('arguments', {})
-                if name and name in _TOOL_NAMES:
-                    parsed_calls.append({
-                        'id': f'call_parsed_{name}',
-                        'type': 'function',
-                        'function': {
-                            'name': name,
-                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
-                        },
-                    })
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
+    # Pattern 1: Standalone JSON objects with "name" and "arguments" or "function"
+    # Matches: {"name": "run_command", "arguments": {"command": "..."}}
+    # Also: {"function": {"name": "...", "arguments": "..."}}
+    # Also: {"type": "function", "function": {"name": "...", "arguments": "..."}}
+    standalone_patterns = [
+        _re.compile(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*', _re.DOTALL),
+        _re.compile(r'\{\s*"function"\s*:\s*\{\s*"name"\s*:\s*"', _re.DOTALL),
+        _re.compile(r'\{\s*"type"\s*:\s*"function"\s*,\s*"function"\s*:\s*\{', _re.DOTALL),
+    ]
+    for sp in standalone_patterns:
+        if parsed_calls:
+            break  # already found results from a previous pattern variant
+        matches = list(sp.finditer(content))
+        if matches:
+            for match in matches:
+                json_str = _extract_json_balanced(content, match.start())
+                if json_str:
+                    tc = _try_parse_single_tool_call_json(json_str)
+                    if tc:
+                        parsed_calls.append(tc)
 
-    # Pattern 2: Code-fenced tool calls: ```json\n{"name":...}\n```
+    # Pattern 2: JSON array of tool calls [{"name":...}, ...] or [{"function":...}]
     if not parsed_calls:
-        fenced_pattern = re.compile(
-            r'```(?:json|tool_calls?)\s*\n(\{[^`]*\})\s*\n```',
-            re.DOTALL
+        array_pattern = _re.compile(r'\[\s*\{', _re.DOTALL)
+        for m in array_pattern.finditer(content):
+            json_str = _extract_json_balanced(content, m.start())
+            if json_str:
+                try:
+                    arr = json.loads(json_str)
+                    if isinstance(arr, list):
+                        for item in arr:
+                            item_str = json.dumps(item, ensure_ascii=False)
+                            tc = _try_parse_single_tool_call_json(item_str)
+                            if tc:
+                                parsed_calls.append(tc)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+
+    # Pattern 3: Code-fenced tool calls: ```json\n{"name":...}\n``` or ```tool_call\n...\n```
+    if not parsed_calls:
+        fenced_pattern = _re.compile(
+            r'```(?:json|tool_calls?|function_call?)\s*\n([\s\S]*?)\n\s*```',
+            _re.DOTALL
         )
         for m in fenced_pattern.finditer(content):
-            try:
-                obj = json.loads(m.group(1))
-                name = obj.get('name', '')
-                arguments = obj.get('arguments', {})
-                if name and name in _TOOL_NAMES:
-                    parsed_calls.append({
-                        'id': f'call_parsed_{name}',
-                        'type': 'function',
-                        'function': {
-                            'name': name,
-                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
-                        },
-                    })
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
+            inner = m.group(1).strip()
+            # Try as array first
+            if inner.startswith('['):
+                try:
+                    arr = json.loads(inner)
+                    if isinstance(arr, list):
+                        for item in arr:
+                            item_str = json.dumps(item, ensure_ascii=False)
+                            tc = _try_parse_single_tool_call_json(item_str)
+                            if tc:
+                                parsed_calls.append(tc)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            # Try as single object
+            if not parsed_calls:
+                tc = _try_parse_single_tool_call_json(inner)
+                if tc:
+                    parsed_calls.append(tc)
+            # Try line-by-line extraction (some models put one JSON per line)
+            if not parsed_calls:
+                for line in inner.split('\n'):
+                    line = line.strip().rstrip(',')
+                    if line.startswith('{'):
+                        tc = _try_parse_single_tool_call_json(line)
+                        if tc:
+                            parsed_calls.append(tc)
 
-    # Pattern 3: Markdown code block with tool_call (without json/lang marker)
+    # Pattern 4: XML-style tags: <tool_call/> ... </tool_call/> or <function_call> ... </function_call>
     if not parsed_calls:
-        # {"name": "...", "arguments": {...}} on its own line
-        line_pattern = re.compile(
-            r'^\s*\{"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*\{.*\}\s*\}\s*$',
-            re.MULTILINE | re.DOTALL
+        xml_patterns = [
+            _re.compile(r'<tool_call[^>]*>([\s\S]*?)</tool_call\s*>', _re.DOTALL | _re.IGNORECASE),
+            _re.compile(r'<function_call[^>]*>([\s\S]*?)</function_call\s*>', _re.DOTALL | _re.IGNORECASE),
+            _re.compile(r'<tool_calls?[^>]*>([\s\S]*?)</tool_calls?\s*>', _re.DOTALL | _re.IGNORECASE),
+            _re.compile(r'<function_calls?[^>]*>([\s\S]*?)</function_calls?\s*>', _re.DOTALL | _re.IGNORECASE),
+        ]
+        for xp in xml_patterns:
+            for m in xp.finditer(content):
+                inner = m.group(1).strip()
+                # Try as JSON object
+                tc = _try_parse_single_tool_call_json(inner)
+                if tc:
+                    parsed_calls.append(tc)
+                    continue
+                # Try as JSON array
+                if inner.startswith('['):
+                    try:
+                        arr = json.loads(inner)
+                        if isinstance(arr, list):
+                            for item in arr:
+                                item_str = json.dumps(item, ensure_ascii=False)
+                                tc = _try_parse_single_tool_call_json(item_str)
+                                if tc:
+                                    parsed_calls.append(tc)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+                # Try line-by-line
+                if not parsed_calls:
+                    for line in inner.split('\n'):
+                        line = line.strip().rstrip(',')
+                        if line.startswith('{'):
+                            tc = _try_parse_single_tool_call_json(line)
+                            if tc:
+                                parsed_calls.append(tc)
+
+    # Pattern 5: Multiple tool calls separated by newlines in content
+    # e.g. {"name": "read_file", "arguments": {"path": "a.py"}}
+    #      {"name": "read_file", "arguments": {"path": "b.py"}}
+    if not parsed_calls:
+        line_obj_pattern = _re.compile(
+            r'^\s*\{[^}]*"name"\s*:\s*"\w+"[^}]*\}\s*$',
+            _re.MULTILINE | _re.DOTALL
         )
-        for m in line_pattern.finditer(content):
-            try:
-                obj = json.loads(m.group(0).strip())
-                name = obj.get('name', '')
-                arguments = obj.get('arguments', {})
-                if name and name in _TOOL_NAMES:
-                    parsed_calls.append({
-                        'id': f'call_parsed_{name}',
-                        'type': 'function',
-                        'function': {
-                            'name': name,
-                            'arguments': json.dumps(arguments, ensure_ascii=False) if isinstance(arguments, dict) else str(arguments),
-                        },
-                    })
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
+        for m in line_obj_pattern.finditer(content):
+            json_str = _extract_json_balanced(content, m.start())
+            if json_str:
+                tc = _try_parse_single_tool_call_json(json_str)
+                if tc:
+                    parsed_calls.append(tc)
 
     if parsed_calls:
         print(f'[AGENT] Parsed {len(parsed_calls)} tool call(s) from content text (model doesn\'t use tool_calls field)')
@@ -6412,6 +6545,35 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
     current_tool_calls = []
     current_tool_call_idx = {}
     current_args_buffer = {}
+    # Suspicious content buffer for real-time tool call leak detection
+    # When content looks like it might be a tool call JSON, we hold it briefly
+    # to check. If confirmed as tool call, suppress it. If not, flush to user.
+    _suspect_buffer = ''
+    _SUSPECT_BUFFER_MAX = 2000  # max chars to buffer before flushing
+    _SUSPECT_FLUSH_TIMEOUT = 0.8  # seconds before flushing suspicious buffer
+    _suspect_last_chunk_time = 0.0
+    _SUSPECT_TOOL_CALL_PATTERNS = [
+        re.compile(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:', re.DOTALL),
+        re.compile(r'\{\s*"function"\s*:\s*\{\s*"name"\s*:', re.DOTALL),
+        re.compile(r'\{\s*"type"\s*:\s*"function"\s*,\s*"function"\s*:', re.DOTALL),
+        re.compile(r'```\s*(?:json|tool_calls?|function_call?)\s*\n'),
+        re.compile(r'<tool_calls?[^>]*>', re.IGNORECASE),
+        re.compile(r'<function_calls?[^>]*>', re.IGNORECASE),
+    ]
+
+    def _flush_suspect_buffer(buf):
+        """Flush the suspect buffer — yields SSE text events for the buffered content."""
+        if buf:
+            yield f"data: {json.dumps({'type': 'text', 'content': buf}, ensure_ascii=False)}\n\n"
+
+    def _check_suspect_buffer_is_tool_call(buf):
+        """Check if the suspect buffer contains a tool call that should be suppressed.
+        Returns True if the buffer content should be suppressed (is a tool call leak).
+        """
+        if not buf or not buf.strip():
+            return False
+        parsed = _try_parse_tool_calls_from_content(buf)
+        return parsed is not None and len(parsed) > 0
 
     for iteration in range(MAX_AGENT_ITERATIONS):
         total_iterations = iteration + 1
@@ -6441,6 +6603,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 delta_content = ''
                 delta_tool_calls = []
                 saved_accumulated = accumulated_text  # save for rollback on failure
+                # Reset suspect buffer for each LLM call
+                _suspect_buffer = ''
+                _suspect_last_chunk_time = 0.0
                 # Pre-compute LLM URL for error reporting
                 try:
                     current_llm_url, _ = _get_llm_endpoint(llm_config, llm_config.get('model', 'gpt-4o-mini'))
@@ -6476,10 +6641,47 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
                         reasoning_ended = True
 
-                    # Handle text content
+                    # Handle text content with suspicious buffer for tool call leak detection
                     if content_chunk:
                         delta_content += content_chunk
                         accumulated_text += content_chunk
+                        now = time.time()
+
+                        # If we have a suspect buffer, append to it and check
+                        if _suspect_buffer:
+                            _suspect_buffer += content_chunk
+                            _suspect_last_chunk_time = now
+                            # Check if buffer now contains a complete tool call
+                            if _check_suspect_buffer_is_tool_call(_suspect_buffer):
+                                # It's a tool call leak — suppress it (don't emit)
+                                _suspect_buffer = ''
+                                continue
+                            # Check if buffer has grown too large or timed out without being a tool call
+                            if len(_suspect_buffer) > _SUSPECT_BUFFER_MAX or (now - _suspect_last_chunk_time > _SUSPECT_FLUSH_TIMEOUT):
+                                # Not a tool call — flush buffer to user
+                                for _evt in _flush_suspect_buffer(_suspect_buffer):
+                                    yield _evt
+                                _suspect_buffer = ''
+                                continue
+                            # Still buffering — don't emit yet
+                            continue
+
+                        # Check if this chunk starts something suspicious
+                        _looks_like_tool_call = False
+                        _combined_with_prev = delta_content  # check the full accumulated content so far
+                        for _pat in _SUSPECT_TOOL_CALL_PATTERNS:
+                            if _pat.search(content_chunk) or (_combined_with_prev and _pat.search(_combined_with_prev[-500:])):
+                                _looks_like_tool_call = True
+                                break
+
+                        if _looks_like_tool_call:
+                            # Start buffering — might be a tool call leak
+                            _suspect_buffer = content_chunk
+                            _suspect_last_chunk_time = now
+                            # Don't emit yet — wait to see if more chunks confirm it's a tool call
+                            continue
+
+                        # Normal content — emit immediately
                         yield f"data: {json.dumps({'type': 'text', 'content': content_chunk})}\n\n"
 
                     # Handle tool_calls (assembled from streaming deltas)
@@ -6578,6 +6780,20 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 # If reasoning was accumulated but reasoning_end not yet signaled
                 if reasoning_text and not reasoning_ended:
                     yield f"data: {json.dumps({'type': 'reasoning_end'})}\n\n"
+
+                # Flush any remaining suspect buffer content
+                if _suspect_buffer:
+                    if _check_suspect_buffer_is_tool_call(_suspect_buffer):
+                        # It's a tool call leak — suppress, and remove from accumulated_text
+                        accumulated_text = accumulated_text[:-len(_suspect_buffer)] if accumulated_text.endswith(_suspect_buffer) else accumulated_text.replace(_suspect_buffer, '', 1)
+                        # Send content_replace to update frontend
+                        accumulated_text = accumulated_text.strip()
+                        yield f"data: {json.dumps({'type': 'content_replace', 'content': accumulated_text}, ensure_ascii=False)}\n\n"
+                    else:
+                        # Not a tool call — flush to user
+                        for _evt in _flush_suspect_buffer(_suspect_buffer):
+                            yield _evt
+                    _suspect_buffer = ''
 
                 # Build the complete response message
                 response_message = {
@@ -6765,15 +6981,31 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 tool_calls_raw = _parsed_from_content
                 content = ''
                 # Remove the leaked tool call text from accumulated display
-                for _tc in _parsed_from_content:
-                    _tc_json = json.dumps(_tc, ensure_ascii=False)
-                    accumulated_text = accumulated_text.replace(_tc_json, '').strip()
-                # Clean up common wrapper patterns
                 import re as _re
-                accumulated_text = _re.sub(r'```json\s*\n?\s*```', '', accumulated_text).strip()
-                accumulated_text = _re.sub(r'```tool_calls?\s*\n?\s*```', '', accumulated_text).strip()
+                for _tc in _parsed_from_content:
+                    # Try to remove the full JSON representation
+                    _tc_json = json.dumps(_tc, ensure_ascii=False)
+                    accumulated_text = accumulated_text.replace(_tc_json, '')
+                    # Also try removing just the name/arguments portion (model may format differently)
+                    _fn = _tc.get('function', {})
+                    _tc_name = _fn.get('name', '')
+                    _tc_args = _fn.get('arguments', '')
+                    if _tc_name:
+                        # Remove various possible raw formats
+                        _simple = json.dumps({'name': _tc_name, 'arguments': json.loads(_tc_args) if _tc_args else {}}, ensure_ascii=False)
+                        accumulated_text = accumulated_text.replace(_simple, '')
+                # Clean up common wrapper patterns: empty code blocks, XML tags, etc.
+                accumulated_text = _re.sub(r'```\s*(?:json|tool_calls?|function_call?)\s*\n?\s*```', '', accumulated_text)
+                accumulated_text = _re.sub(r'<tool_calls?[^>]*>[\s\S]*?</tool_calls?\s*>', '', accumulated_text)
+                accumulated_text = _re.sub(r'<function_calls?[^>]*>[\s\S]*?</function_calls?\s*>', '', accumulated_text)
+                accumulated_text = _re.sub(r'<tool_call[^>]*>[\s\S]*?</tool_call\s*>', '', accumulated_text)
+                accumulated_text = _re.sub(r'<function_call[^>]*>[\s\S]*?</function_call\s*>', '', accumulated_text)
+                # Clean up leading/trailing whitespace and blank lines
+                accumulated_text = _re.sub(r'\n{3,}', '\n\n', accumulated_text).strip()
                 if not accumulated_text.strip():
                     accumulated_text = ''
+                # Send content_replace event to frontend so it can update the already-rendered text
+                yield f"data: {json.dumps({'type': 'content_replace', 'content': accumulated_text}, ensure_ascii=False)}\n\n"
 
         # Handle completely empty response (no content, no tool calls)
         if not content.strip() and not tool_calls_raw:
