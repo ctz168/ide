@@ -50,7 +50,7 @@ $env:PHONEIDE_PORT="8080"; irm ... | iex
 ```powershell
 # 1. 安装 Python 3.8+（去 https://www.python.org/downloads/ 下载，安装时勾选 Add to PATH）
 # 2. 打开 PowerShell
-pip install flask flask-cors
+pip install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git
 cd ide
 python phoneide_server.py
@@ -60,7 +60,7 @@ python phoneide_server.py
 **Termux：**
 ```bash
 pkg install python python-pip
-pip install flask flask-cors
+pip install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git && cd ide
 python3 phoneide_server.py
 ```
@@ -68,7 +68,7 @@ python3 phoneide_server.py
 **Ubuntu / Debian / WSL：**
 ```bash
 sudo apt install python3 python3-pip python3-venv
-pip3 install --break-system-packages flask flask-cors
+pip3 install --break-system-packages flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git && cd ide
 python3 phoneide_server.py
 ```
@@ -76,7 +76,7 @@ python3 phoneide_server.py
 **macOS：**
 ```bash
 brew install python
-pip3 install flask flask-cors
+pip3 install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git && cd ide
 python3 phoneide_server.py
 ```
@@ -84,7 +84,7 @@ python3 phoneide_server.py
 **Fedora / CentOS：**
 ```bash
 sudo dnf install python3 python3-pip
-pip3 install flask flask-cors
+pip3 install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git && cd ide
 python3 phoneide_server.py
 ```
@@ -92,7 +92,7 @@ python3 phoneide_server.py
 **Alpine：**
 ```bash
 sudo apk add python3 py3-pip
-pip3 install --break-system-packages flask flask-cors
+pip3 install --break-system-packages flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab
 git clone https://github.com/ctz168/ide.git && cd ide
 python3 phoneide_server.py
 ```
@@ -101,7 +101,7 @@ python3 phoneide_server.py
 
 ```bash
 docker run -d -p 1239:1239 -v ~/phoneide_workspace:/workspace python:3.12-slim bash -c \
-  "pip install flask flask-cors && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 phoneide_server.py"
+  "pip install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab && git clone --depth 1 https://github.com/ctz168/ide.git /ide && cd /ide && PHONEIDE_WORKSPACE=/workspace python3 phoneide_server.py"
 ```
 
 启动后浏览器打开 `http://localhost:12345` 即可使用。
@@ -329,7 +329,8 @@ git pull
 | 项目 | 最低要求 |
 |------|----------|
 | Python | 3.8+ |
-| 依赖包 | flask >= 3.0.0, flask-cors >= 4.0.0 |
+| 核心依赖 | flask >= 3.0.0, flask-cors >= 4.0.0 |
+| Office/PDF 依赖 | python-docx >= 1.0.0, python-pptx >= 1.0.0, openpyxl >= 3.1.0, PyPDF2 >= 3.0.0, reportlab >= 4.0.0 |
 | Git | 用于克隆仓库（安装脚本会自动安装） |
 | 操作系统 | Windows 10/11, macOS, Linux (Termux/Ubuntu/Debian/Fedora/CentOS/Alpine/Arch) |
 | 浏览器 | Chrome / Firefox / Safari / Edge（近两年版本） |

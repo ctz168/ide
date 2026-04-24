@@ -189,26 +189,27 @@ if ! $PYTHON -m pip --version &>/dev/null 2>&1; then
     warn "pip not available — trying alternative install..."
 fi
 
-# Install flask + flask-cors
+# Install flask + flask-cors + office/pdf dependencies
 # Use --break-system-packages on Debian/Ubuntu 12+ and proot where externally managed env blocks pip
+PIP_PACKAGES="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
 FLASK_OK=false
 if [ "$PLATFORM" = "debian" ] || [ "$PLATFORM" = "proot" ] || [ "$PLATFORM" = "alpine" ]; then
-    $PYTHON -m pip install --break-system-packages flask flask-cors 2>&1 && FLASK_OK=true
+    $PYTHON -m pip install --break-system-packages $PIP_PACKAGES 2>&1 && FLASK_OK=true
     if ! $FLASK_OK; then
-        $PYTHON -m pip install flask flask-cors 2>&1 && FLASK_OK=true
+        $PYTHON -m pip install $PIP_PACKAGES 2>&1 && FLASK_OK=true
     fi
     if ! $FLASK_OK; then
-        $PYTHON -m pip install --user flask flask-cors 2>&1 && FLASK_OK=true
+        $PYTHON -m pip install --user $PIP_PACKAGES 2>&1 && FLASK_OK=true
     fi
 else
-    $PYTHON -m pip install flask flask-cors 2>&1 && FLASK_OK=true
+    $PYTHON -m pip install $PIP_PACKAGES 2>&1 && FLASK_OK=true
     if ! $FLASK_OK; then
-        $PYTHON -m pip install --user flask flask-cors 2>&1 && FLASK_OK=true
+        $PYTHON -m pip install --user $PIP_PACKAGES 2>&1 && FLASK_OK=true
     fi
 fi
 
 if $FLASK_OK; then
-    ok "flask + flask-cors"
+    ok "flask + flask-cors + office/pdf dependencies"
 else
     warn "pip install may have failed — will verify in Step 4"
 fi
@@ -298,21 +299,22 @@ echo -e "${BLUE}[4/5]${NC} Verifying in target environment..."
 
 # Re-check flask import with the actual python3 that will run the server
 VERIFY_FAILED=false
+VERIFY_PKGS="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
 if ! python3 -c "import flask" 2>/dev/null; then
     info "flask not found in current python3 — installing..."
     if command -v pip3 &>/dev/null; then
-        pip3 install --break-system-packages flask flask-cors 2>&1 || \
-        pip3 install flask flask-cors 2>&1 || \
-        pip3 install --user flask flask-cors 2>&1 || VERIFY_FAILED=true
+        pip3 install --break-system-packages $VERIFY_PKGS 2>&1 || \
+        pip3 install $VERIFY_PKGS 2>&1 || \
+        pip3 install --user $VERIFY_PKGS 2>&1 || VERIFY_FAILED=true
     elif command -v pip &>/dev/null; then
-        pip install --break-system-packages flask flask-cors 2>&1 || \
-        pip install flask flask-cors 2>&1 || \
-        pip install --user flask flask-cors 2>&1 || VERIFY_FAILED=true
+        pip install --break-system-packages $VERIFY_PKGS 2>&1 || \
+        pip install $VERIFY_PKGS 2>&1 || \
+        pip install --user $VERIFY_PKGS 2>&1 || VERIFY_FAILED=true
     else
         # Try via python3 -m pip
-        python3 -m pip install --break-system-packages flask flask-cors 2>&1 || \
-        python3 -m pip install flask flask-cors 2>&1 || \
-        { python3 -m ensurepip 2>/dev/null && python3 -m pip install flask flask-cors 2>&1; } || \
+        python3 -m pip install --break-system-packages $VERIFY_PKGS 2>&1 || \
+        python3 -m pip install $VERIFY_PKGS 2>&1 || \
+        { python3 -m ensurepip 2>/dev/null && python3 -m pip install $VERIFY_PKGS 2>&1; } || \
         VERIFY_FAILED=true
     fi
     if $VERIFY_FAILED; then
@@ -322,16 +324,16 @@ if ! python3 -c "import flask" 2>/dev/null; then
             if need_sudo; then
                 sudo apt-get update -qq 2>/dev/null
                 sudo apt-get install -y python3-flask python3-flask-cors 2>/dev/null || \
-                { sudo apt-get install -y python3-pip 2>/dev/null && pip3 install flask flask-cors 2>/dev/null; } || \
-                    warn "Could not install flask automatically"
+                { sudo apt-get install -y python3-pip 2>/dev/null && pip3 install $VERIFY_PKGS 2>/dev/null; } || \
+                    warn "Could not install dependencies automatically"
             else
                 apt-get update -qq 2>/dev/null
                 apt-get install -y python3-flask python3-flask-cors 2>/dev/null || \
-                { apt-get install -y python3-pip 2>/dev/null && pip3 install flask flask-cors 2>/dev/null; } || \
-                    warn "Could not install flask automatically"
+                { apt-get install -y python3-pip 2>/dev/null && pip3 install $VERIFY_PKGS 2>/dev/null; } || \
+                    warn "Could not install dependencies automatically"
             fi
         else
-            warn "Could not install flask automatically"
+            warn "Could not install dependencies automatically"
         fi
     else
         ok "flask installed"
@@ -347,6 +349,19 @@ if ! python3 -c "import flask_cors" 2>/dev/null; then
     python3 -m pip install flask-cors 2>/dev/null || true
 fi
 
+# Install office/pdf dependencies if missing
+for _entry in "python-docx:docx" "python-pptx:pptx" "openpyxl:openpyxl" "PyPDF2:PyPDF2" "reportlab:reportlab"; do
+    _pkg=$(echo "$_entry" | cut -d: -f1)
+    _imp=$(echo "$_entry" | cut -d: -f2)
+    if ! python3 -c "import $_imp" 2>/dev/null; then
+        info "$_pkg missing — installing..."
+        pip3 install --break-system-packages "$_pkg" 2>/dev/null || \
+        pip3 install "$_pkg" 2>/dev/null || \
+        python3 -m pip install "$_pkg" 2>/dev/null || \
+        warn "Could not install $_pkg — office/PDF features may not work"
+    fi
+done
+
 # Final smoke test
 SMOKE_OK=false
 if python3 -c "from flask import Flask; from flask_cors import CORS; print('OK')" 2>/dev/null; then
@@ -354,7 +369,7 @@ if python3 -c "from flask import Flask; from flask_cors import CORS; print('OK')
     SMOKE_OK=true
 else
     warn "Flask import still fails — you may need to run:"
-    echo -e "  ${CYAN}pip3 install flask flask-cors${NC}"
+    echo -e "  ${CYAN}pip3 install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab${NC}"
     echo ""
 fi
 
@@ -495,7 +510,7 @@ if ! python3 phoneide_server.py; then
     echo "  3. Python version is too old (need 3.8+)"
     echo ""
     info "Try these commands:"
-    echo -e "  ${CYAN}pip3 install --break-system-packages flask flask-cors${NC}"
+    echo -e "  ${CYAN}pip3 install --break-system-packages flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab${NC}"
     echo -e "  ${CYAN}cd $INSTALL_DIR && python3 phoneide_server.py${NC}"
     echo ""
     exit $EXIT_CODE

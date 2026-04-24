@@ -124,15 +124,16 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-# Install flask + flask-cors
-& $Python -m pip install flask flask-cors --quiet 2>$null
+# Install flask + flask-cors + office/pdf dependencies
+$PipPackages = "flask", "flask-cors", "python-docx", "python-pptx", "openpyxl", "PyPDF2", "reportlab"
+& $Python -m pip install @PipPackages --quiet 2>$null
 if ($LASTEXITCODE -ne 0) {
-    & $Python -m pip install --user flask flask-cors --quiet 2>$null
+    & $Python -m pip install --user @PipPackages --quiet 2>$null
 }
 if ($LASTEXITCODE -eq 0) {
-    Write-OK "flask + flask-cors"
+    Write-OK "flask + flask-cors + office/pdf dependencies"
 } else {
-    Write-Warn "pip install failed - try: $Python -m pip install flask flask-cors"
+    Write-Warn "pip install failed - try: $Python -m pip install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
 }
 
 # ── Step 3: Clone & setup ──────────────────────────────
@@ -242,12 +243,34 @@ try {
         if ($LASTEXITCODE -eq 0) { Write-OK "flask-cors installed" } else { $VerifyFailed = $true }
     }
 
+    # Install office/pdf dependencies if missing
+    $OfficeDeps = @(
+        @("python-docx", "docx"),
+        @("python-pptx", "pptx"),
+        @("openpyxl", "openpyxl"),
+        @("PyPDF2", "PyPDF2"),
+        @("reportlab", "reportlab")
+    )
+    foreach ($dep in $OfficeDeps) {
+        $pkg = $dep[0]
+        $mod = $dep[1]
+        $check = & $Python -c "import $mod" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "$pkg missing - installing..."
+            & $Python -m pip install $pkg --quiet 2>$null
+            if ($LASTEXITCODE -ne 0) { & $Python -m pip install --user $pkg --quiet 2>$null }
+            if ($LASTEXITCODE -eq 0) { Write-OK "$pkg installed" } else { Write-Warn "Could not install $pkg - office/PDF features may not work" }
+        } else {
+            Write-OK "$pkg"
+        }
+    }
+
     # Final smoke test
     $smoke = & $Python -c "from flask import Flask; from flask_cors import CORS; print('OK')" 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-OK "All dependencies ready"
     } else {
-        Write-Warn "Flask import still fails - you may need to run: $Python -m pip install flask flask-cors"
+        Write-Warn "Flask import still fails - you may need to run: $Python -m pip install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
     }
 } finally {
     Pop-Location
