@@ -6,6 +6,7 @@ import os
 import json
 import re
 import time
+import signal
 import platform
 import shutil
 import tempfile
@@ -2151,27 +2152,86 @@ def _tool_run_command(args):
             _path_sep = ';' if IS_WINDOWS else ':'
             env['PATH'] = venv_bin + _path_sep + env.get('PATH', '')
             env['VIRTUAL_ENV'] = venv_path
+    # Use Popen with process groups so that on timeout we can kill
+    # the entire process tree (shell + child commands).  subprocess.run()
+    # with shell=True only kills the shell, leaving orphans running.
+    is_windows = platform.system() == 'Windows'
+    proc = None
     try:
-        result = subprocess.run(
-            command, shell=True, cwd=cwd, capture_output=True, text=True,
-            timeout=timeout, env=env,
+        kwargs = dict(
+            shell=True, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env,
         )
+        if not is_windows:
+            # Start the shell in its own process group so we can kill
+            # the whole group (shell + descendants) on timeout.
+            kwargs['preexec_fn'] = os.setsid
+        proc = subprocess.Popen(command, **kwargs)
+        try:
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # ── Timeout: kill the entire process group ──
+            if is_windows:
+                # On Windows, taskkill /T kills the process tree
+                subprocess.call(
+                    ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                # On Unix, kill the process group (negative PID)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (OSError, ProcessLookupError):
+                    pass
+                # Give processes a moment to exit gracefully, then force-kill
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (OSError, ProcessLookupError):
+                        pass
+                    proc.kill()
+            # Try to collect any partial output
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=5) if proc.poll() is None else (b'', b'')
+            stdout_text = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ''
+            stderr_text = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ''
+            partial = ''
+            if stdout_text:
+                partial += stdout_text
+            if stderr_text:
+                partial += ('\n' if partial else '') + stderr_text
+            if partial:
+                partial = '\n--- Partial output before timeout ---\n' + partial
+            raise RuntimeError(f'Command timed out after {timeout} seconds. The process has been terminated.{partial}')
+
+        stdout_text = stdout_bytes.decode('utf-8', errors='replace') if stdout_bytes else ''
+        stderr_text = stderr_bytes.decode('utf-8', errors='replace') if stderr_bytes else ''
         output = ''
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            output += ('\n' if output else '') + result.stderr
-        exit_info = f'\n[Exit code: {result.returncode}]'
+        if stdout_text:
+            output += stdout_text
+        if stderr_text:
+            output += ('\n' if output else '') + stderr_text
+        exit_info = f'\n[Exit code: {proc.returncode}]'
         full_output = (output or '(no output)') + exit_info
         # Return error status when command exits with non-zero code
-        if result.returncode != 0:
+        if proc.returncode != 0:
             raise RuntimeError(full_output)
         return (_suggestion or '') + _truncate(full_output)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f'Command timed out after {timeout} seconds')
     except RuntimeError:
-        raise  # Re-raise RuntimeError (non-zero exit code) without wrapping
+        raise  # Re-raise RuntimeError (non-zero exit code / timeout) without wrapping
     except Exception as e:
+        # Ensure orphan processes are cleaned up on unexpected errors
+        if proc and proc.poll() is None:
+            try:
+                if is_windows:
+                    subprocess.call(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.kill()
         raise RuntimeError(f'Error executing command: {str(e)}')
 
 def _tool_git_status(args):
