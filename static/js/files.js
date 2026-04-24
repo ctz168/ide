@@ -195,6 +195,23 @@ const FileManager = (() => {
      */
     async function openFile(path) {
         try {
+            const fileName = path.split('/').pop();
+            const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+
+            // Office documents: open in browser preview instead of text editor
+            if (['docx', 'pptx', 'xlsx'].includes(ext)) {
+                const relPath = path.replace(/^\/workspace\/?/, '');
+                // Open in the built-in browser preview
+                if (window.BrowserManager && typeof window.BrowserManager.navigate === 'function') {
+                    window.BrowserManager.navigate(`/api/files/office-preview?path=${encodeURIComponent(relPath)}`);
+                    safeToast(`Previewing ${fileName}`, 'info');
+                } else {
+                    // Fallback: open in new tab
+                    window.open(`/api/files/office-preview?path=${encodeURIComponent(relPath)}`, '_blank');
+                }
+                return;
+            }
+
             // Convert absolute path to relative path for server API
             const relPath = path.replace(/^\/workspace\/?/, '');
             const resp = await fetch(`/api/files/read?path=${encodeURIComponent(relPath)}`);
@@ -203,7 +220,7 @@ const FileManager = (() => {
             const content = data.content !== undefined ? data.content : '';
 
             currentFilePath = path;
-            currentFileName = path.split('/').pop();
+            currentFileName = fileName;
             fileCache[path] = { content, modified: false };
             saveState();
 
@@ -425,8 +442,21 @@ const FileManager = (() => {
     }
 
     /**
-     * Rename a file or folder
+     * Download a file or directory (as zip)
      */
+    function downloadFile(path) {
+        const relPath = path.replace(/^\/workspace\/?/, '');
+        const url = `/api/files/download?path=${encodeURIComponent(relPath)}`;
+        // Create a temporary link and click it to trigger download
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        safeToast(`Downloading ${path.split('/').pop()}...`, 'info');
+    }
+
     async function renameFile(oldPath, newName) {
         if (!oldPath) {
             if (!currentFilePath) {
@@ -734,10 +764,12 @@ const FileManager = (() => {
 
         if (type === 'file') {
             items.push({ label: 'Open', action: () => openFile(path) });
+            items.push({ label: '📥 Download', action: () => downloadFile(path) });
             items.push({ label: 'Rename', action: () => renameFile(path) });
             items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
         } else {
             items.push({ label: 'Open Folder', action: () => openFolder(path) });
+            items.push({ label: '📥 Download ZIP', action: () => downloadFile(path) });
             items.push({ label: 'Rename', action: () => renameFile(path) });
             items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
         }

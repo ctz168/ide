@@ -157,6 +157,9 @@ _PREVIEW_MIME_TYPES = {
     '.ico': 'image/x-icon',
     '.webp': 'image/webp',
     '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 }
 
 
@@ -791,3 +794,360 @@ def replace_in_files():
         return jsonify({'ok': True, 'replacements': len(re.findall(search if use_regex else re.escape(search), content, flags=flags))})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+# ==================== File Download & Project Archive ====================
+
+import tempfile
+import zipfile
+import time as _time
+
+@bp.route('/api/files/download', methods=['GET'])
+@handle_error
+def download_file():
+    """Download a single file or directory as zip."""
+    path = request.args.get('path', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    target = os.path.realpath(os.path.join(base, path))
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.exists(target):
+        return jsonify({'error': 'Path not found'}), 404
+
+    # If it's a file, serve directly
+    if os.path.isfile(target):
+        ext = os.path.splitext(target)[1].lower()
+        mime = _PREVIEW_MIME_TYPES.get(ext, 'application/octet-stream')
+        return send_file(target, mimetype=mime, as_attachment=True,
+                         download_name=os.path.basename(target))
+
+    # If it's a directory, create a zip on-the-fly
+    dirname = os.path.basename(target) or 'project'
+    zip_name = f'{dirname}.zip'
+
+    # Create temp zip
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.zip', prefix='phoneide_dl_')
+    try:
+        with os.fdopen(tmp_fd, 'wb') as zf:
+            with zipfile.ZipFile(zf, 'w', zipfile.ZIP_DEFLATED) as z:
+                for root, dirs, files in os.walk(target):
+                    # Skip hidden dirs and __pycache__
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__' and d != 'node_modules' and d != '.git']
+                    for f in files:
+                        if f.startswith('.') and f != '.env':
+                            continue
+                        fp = os.path.join(root, f)
+                        arcname = os.path.relpath(fp, target)
+                        # Skip files > 50MB
+                        if os.path.getsize(fp) > 50 * 1024 * 1024:
+                            continue
+                        z.write(fp, arcname)
+        return send_file(tmp_path, mimetype='application/zip', as_attachment=True,
+                         download_name=zip_name)
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/files/project-archive', methods=['POST'])
+@handle_error
+def create_project_archive():
+    """Create a zip archive of the project and return a download URL.
+    Used by the AI agent's project_download tool."""
+    data = request.json or {}
+    path = data.get('path', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    project = config.get('project', None)
+
+    # Determine target directory
+    if path:
+        target = os.path.realpath(os.path.join(base, path))
+    elif project:
+        target = os.path.realpath(os.path.join(base, project))
+    else:
+        target = os.path.realpath(base)
+
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'ok': False, 'error': 'Access denied'}), 403
+
+    if not os.path.isdir(target):
+        return jsonify({'ok': False, 'error': 'Target is not a directory'}), 400
+
+    dirname = os.path.basename(target) or 'project'
+    timestamp = _time.strftime('%Y%m%d_%H%M%S')
+    zip_filename = f'{dirname}_{timestamp}.zip'
+
+    # Store archives in a temp directory
+    archive_dir = os.path.join(base, '.phoneide_archives')
+    os.makedirs(archive_dir, exist_ok=True)
+    zip_path = os.path.join(archive_dir, zip_filename)
+
+    file_count = 0
+    total_size = 0
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__' and d != 'node_modules' and d != '.git' and d != '.phoneide_archives']
+            for f in files:
+                if f.startswith('.') and f != '.env':
+                    continue
+                fp = os.path.join(root, f)
+                arcname = os.path.relpath(fp, target)
+                if os.path.getsize(fp) > 50 * 1024 * 1024:
+                    continue
+                z.write(fp, arcname)
+                file_count += 1
+                total_size += os.path.getsize(fp)
+
+    zip_size = os.path.getsize(zip_path)
+    # Return a download URL relative to the workspace
+    rel_path = os.path.relpath(zip_path, base).replace(os.sep, '/')
+
+    return jsonify({
+        'ok': True,
+        'filename': zip_filename,
+        'path': rel_path,
+        'download_url': f'/api/files/download?path={rel_path}',
+        'file_count': file_count,
+        'total_size': total_size,
+        'zip_size': zip_size,
+    })
+
+
+@bp.route('/api/files/office-preview', methods=['GET'])
+@handle_error
+def office_preview():
+    """Convert Office documents (docx/pptx/xlsx) to HTML for in-browser preview."""
+    path = request.args.get('path', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    target = os.path.realpath(os.path.join(base, path))
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isfile(target):
+        return jsonify({'error': 'File not found'}), 404
+
+    ext = os.path.splitext(target)[1].lower()
+
+    try:
+        if ext == '.docx':
+            return _docx_to_html(target)
+        elif ext == '.pptx':
+            return _pptx_to_html(target)
+        elif ext == '.xlsx':
+            return _xlsx_to_html(target)
+        else:
+            return jsonify({'error': f'Unsupported file type: {ext}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Preview failed: {str(e)}'}), 500
+
+
+def _docx_to_html(filepath):
+    """Convert DOCX to HTML for preview."""
+    from docx import Document
+    import json as _json
+
+    doc = Document(filepath)
+    sections = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            sections.append('<br/>')
+            continue
+        style = para.style.name if para.style else ''
+        if 'Heading 1' in style:
+            sections.append(f'<h1>{_html_escape(text)}</h1>')
+        elif 'Heading 2' in style:
+            sections.append(f'<h2>{_html_escape(text)}</h2>')
+        elif 'Heading 3' in style:
+            sections.append(f'<h3>{_html_escape(text)}</h3>')
+        elif 'Heading 4' in style:
+            sections.append(f'<h4>{_html_escape(text)}</h4>')
+        else:
+            # Process runs for bold/italic
+            runs_html = []
+            for run in para.runs:
+                rtext = _html_escape(run.text)
+                if run.bold:
+                    rtext = f'<strong>{rtext}</strong>'
+                if run.italic:
+                    rtext = f'<em>{rtext}</em>'
+                if run.underline:
+                    rtext = f'<u>{rtext}</u>'
+                runs_html.append(rtext)
+            line = ''.join(runs_html) if runs_html else _html_escape(text)
+            sections.append(f'<p>{line}</p>')
+
+    # Process tables
+    for table in doc.tables:
+        rows_html = []
+        for i, row in enumerate(table.rows):
+            cells = []
+            for cell in row.cells:
+                cells.append(f'<td>{_html_escape(cell.text)}</td>')
+            tag = 'th' if i == 0 else 'td'
+            cells_str = ''.join(f'<{tag}>{_html_escape(cell.text)}</{tag}>' for cell in row.cells)
+            rows_html.append(f'<tr>{cells_str}</tr>')
+        sections.append(f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>')
+
+    body = '\n'.join(sections)
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }}
+h1,h2,h3,h4 {{ margin-top: 1.5em; margin-bottom: 0.5em; }}
+table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+th,td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+th {{ background: #f5f5f5; }}
+img {{ max-width: 100%; }}
+</style></head><body>{body}</body></html>'''
+    return Response(html, mimetype='text/html; charset=utf-8')
+
+
+def _pptx_to_html(filepath):
+    """Convert PPTX to HTML for preview."""
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    prs = Presentation(filepath)
+    slides_html = []
+
+    for i, slide in enumerate(prs.slides):
+        shapes_html = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    runs_html = []
+                    for run in para.runs:
+                        rtext = _html_escape(run.text)
+                        if run.font.bold:
+                            rtext = f'<strong>{rtext}</strong>'
+                        if run.font.italic:
+                            rtext = f'<em>{rtext}</em>'
+                        runs_html.append(rtext)
+                    text = ''.join(runs_html) if runs_html else _html_escape(para.text)
+                    if text.strip():
+                        shapes_html.append(f'<p>{text}</p>')
+            elif shape.has_table:
+                table = shape.table
+                rows_html = []
+                for ri, row in enumerate(table.rows):
+                    cells_str = ''.join(f'<td>{_html_escape(cell.text)}</td>' for cell in row.cells)
+                    rows_html.append(f'<tr>{cells_str}</tr>')
+                shapes_html.append(f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>')
+
+        slide_content = '\n'.join(shapes_html) if shapes_html else '<p style="color:#999">(empty slide)</p>'
+        slides_html.append(f'''<div class="slide">
+<div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
+<div class="slide-content">{slide_content}</div>
+</div>''')
+
+    body = '\n'.join(slides_html)
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       margin: 0; padding: 20px; background: #f0f0f0; color: #333; }}
+.slide {{ background: white; margin: 20px auto; max-width: 960px; padding: 40px;
+          border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); min-height: 200px; }}
+.slide-number {{ color: #999; font-size: 12px; margin-bottom: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; }}
+.slide-content {{ font-size: 18px; line-height: 1.6; }}
+.slide-content h1 {{ font-size: 28px; }}
+.slide-content h2 {{ font-size: 24px; }}
+table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+th,td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+th {{ background: #f5f5f5; }}
+</style></head><body>{body}</body></html>'''
+    return Response(html, mimetype='text/html; charset=utf-8')
+
+
+def _xlsx_to_html(filepath):
+    """Convert XLSX to HTML for preview."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(filepath, read_only=True, data_only=True)
+    sheets_html = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        rows_html = []
+        for ri, row in enumerate(ws.iter_rows(max_row=200, max_col=50, values_only=False)):
+            cells = []
+            for cell in row:
+                val = cell.value if cell.value is not None else ''
+                val_str = _html_escape(str(val))
+                tag = 'th' if ri == 0 else 'td'
+                cells.append(f'<{tag}>{val_str}</{tag}>')
+            if cells:
+                rows_html.append(f'<tr>{"".join(cells)}</tr>')
+
+        table_html = f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>'
+        sheet_label = sheet_name if sheet_name == wb.sheetnames[0] else sheet_name
+        sheets_html.append(f'''<div class="sheet">
+<h3 class="sheet-title">{_html_escape(sheet_label)}</h3>
+{table_html}
+</div>''')
+
+    wb.close()
+    body = '\n'.join(sheets_html)
+
+    # If multiple sheets, add tab navigation
+    if len(wb.sheetnames) > 1:
+        tabs = ''.join(f'<button class="sheet-tab" onclick="showSheet({i})">{_html_escape(name)}</button>'
+                       for i, name in enumerate(wb.sheetnames))
+        nav = f'<div class="sheet-nav">{tabs}</div>'
+    else:
+        nav = ''
+
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.4; color: #333; }}
+.sheet {{ margin: 16px 0; }}
+.sheet-title {{ margin-bottom: 8px; color: #555; }}
+.sheet-nav {{ display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }}
+.sheet-tab {{ padding: 6px 16px; border: 1px solid #ccc; border-radius: 4px; background: #f8f8f8;
+              cursor: pointer; font-size: 14px; }}
+.sheet-tab.active {{ background: #0078d4; color: white; border-color: #0078d4; }}
+table {{ border-collapse: collapse; width: 100%; margin: 0 0 1em; font-size: 13px; }}
+th,td {{ border: 1px solid #ddd; padding: 4px 8px; text-align: left; white-space: nowrap; }}
+th {{ background: #f5f5f5; font-weight: 600; }}
+tr:nth-child(even) {{ background: #fafafa; }}
+</style></head><body>
+{nav}
+{body}
+<script>
+(function() {{
+    const sheets = document.querySelectorAll('.sheet');
+    const tabs = document.querySelectorAll('.sheet-tab');
+    if (sheets.length > 1) {{
+        sheets.forEach((s, i) => {{ if (i > 0) s.style.display = 'none'; }});
+        if (tabs[0]) tabs[0].classList.add('active');
+    }}
+    window.showSheet = function(idx) {{
+        sheets.forEach((s, i) => {{ s.style.display = i === idx ? '' : 'none'; }});
+        tabs.forEach((t, i) => {{ t.classList.toggle('active', i === idx); }});
+    }};
+}})();
+</script>
+</body></html>'''
+    return Response(html, mimetype='text/html; charset=utf-8')
+
+
+def _html_escape(text):
+    """Simple HTML entity escaping."""
+    if not isinstance(text, str):
+        text = str(text)
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')

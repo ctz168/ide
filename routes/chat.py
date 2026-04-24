@@ -803,6 +803,217 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- Project Archive --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'project_download',
+            'description': 'Package project directory into a zip archive and return a download URL for the user. Use when user wants to download or backup the project.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Subdirectory to archive (relative to project root). Empty = entire project.'},
+                },
+                'required': [],
+            },
+        },
+    },
+    # -- Word Document (DOCX) --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'docx_generate',
+            'description': 'Create a Word (.docx) document with headings, paragraphs, tables, and formatting. Returns file path.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Output file path (e.g. report.docx)'},
+                    'title': {'type': 'string', 'description': 'Document title'},
+                    'sections': {
+                        'type': 'array',
+                        'description': 'Document sections in order',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'heading': {'type': 'string', 'description': 'Section heading (omit for no heading)'},
+                                'level': {'type': 'integer', 'description': 'Heading level 1-4. Default: 1', 'default': 1},
+                                'paragraphs': {
+                                    'type': 'array',
+                                    'description': 'Paragraph texts',
+                                    'items': {'type': 'string'},
+                                },
+                                'table': {
+                                    'type': 'object',
+                                    'description': 'Table data (optional)',
+                                    'properties': {
+                                        'headers': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Column headers'},
+                                        'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}, 'description': 'Row data'},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                'required': ['path', 'sections'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'docx_edit',
+            'description': 'Read or modify an existing Word (.docx) document. Can append content, replace text, or read structure.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'File path of the .docx file'},
+                    'action': {'type': 'string', 'enum': ['read', 'append', 'replace'], 'description': 'read=return structure, append=add sections, replace=replace text'},
+                    'sections': {
+                        'type': 'array',
+                        'description': 'Sections to append (for append action)',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'heading': {'type': 'string'},
+                                'level': {'type': 'integer', 'default': 1},
+                                'paragraphs': {'type': 'array', 'items': {'type': 'string'}},
+                                'table': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'headers': {'type': 'array', 'items': {'type': 'string'}},
+                                        'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    'search': {'type': 'string', 'description': 'Text to search for (for replace action)'},
+                    'replace': {'type': 'string', 'description': 'Replacement text (for replace action)'},
+                },
+                'required': ['path', 'action'],
+            },
+        },
+    },
+    # -- PowerPoint (PPTX) --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'pptx_generate',
+            'description': 'Create a PowerPoint (.pptx) presentation with slides, titles, bullet points, and tables.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Output file path (e.g. presentation.pptx)'},
+                    'title': {'type': 'string', 'description': 'Presentation title (used on first slide)'},
+                    'slides': {
+                        'type': 'array',
+                        'description': 'Slides in order',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'title': {'type': 'string', 'description': 'Slide title'},
+                                'subtitle': {'type': 'string', 'description': 'Slide subtitle (optional)'},
+                                'bullets': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Bullet point texts'},
+                                'table': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'headers': {'type': 'array', 'items': {'type': 'string'}},
+                                        'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                'required': ['path', 'slides'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'pptx_edit',
+            'description': 'Read or modify an existing PowerPoint (.pptx). Can append slides, read structure, or delete slides.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'File path of the .pptx file'},
+                    'action': {'type': 'string', 'enum': ['read', 'append', 'delete_slide'], 'description': 'read=return structure, append=add slides, delete_slide=remove slide by index'},
+                    'slides': {
+                        'type': 'array',
+                        'description': 'Slides to append (for append action)',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'title': {'type': 'string'},
+                                'subtitle': {'type': 'string'},
+                                'bullets': {'type': 'array', 'items': {'type': 'string'}},
+                                'table': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'headers': {'type': 'array', 'items': {'type': 'string'}},
+                                        'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    'slide_index': {'type': 'integer', 'description': 'Slide index to delete (0-based, for delete_slide action)'},
+                },
+                'required': ['path', 'action'],
+            },
+        },
+    },
+    # -- Excel (XLSX) --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'xlsx_generate',
+            'description': 'Create an Excel (.xlsx) spreadsheet with sheets, headers, and data rows. Supports multiple sheets and column widths.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Output file path (e.g. data.xlsx)'},
+                    'sheets': {
+                        'type': 'array',
+                        'description': 'Sheets in the workbook',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'name': {'type': 'string', 'description': 'Sheet name'},
+                                'headers': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Column headers'},
+                                'rows': {'type': 'array', 'items': {'type': 'array', 'items': {}}, 'description': 'Row data (strings, numbers, or booleans)'},
+                                'column_widths': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Column widths in characters (optional)'},
+                            },
+                            'required': ['name', 'headers', 'rows'],
+                        },
+                    },
+                },
+                'required': ['path', 'sheets'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'xlsx_edit',
+            'description': 'Read or modify an existing Excel (.xlsx). Can read structure, append rows, add sheets, or update cells.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'File path of the .xlsx file'},
+                    'action': {'type': 'string', 'enum': ['read', 'append_rows', 'add_sheet', 'update_cell'], 'description': 'read=return structure, append_rows=add rows to sheet, add_sheet=create new sheet, update_cell=set single cell'},
+                    'sheet': {'type': 'string', 'description': 'Sheet name (for append_rows/update_cell)'},
+                    'rows': {'type': 'array', 'items': {'type': 'array', 'items': {}}, 'description': 'Rows to append (for append_rows)'},
+                    'headers': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Headers for new sheet (for add_sheet)'},
+                    'cell_row': {'type': 'integer', 'description': 'Row number (1-based, for update_cell)'},
+                    'cell_col': {'type': 'integer', 'description': 'Column number (1-based, for update_cell)'},
+                    'cell_value': {'description': 'New cell value (for update_cell)'},
+                },
+                'required': ['path', 'action'],
+            },
+        },
+    },
 ]
 
 # ==================== Compact Tool Variants ====================
@@ -3664,6 +3875,435 @@ def _tool_kill_port(args):
 
     return '\n'.join(result_parts)
 
+
+# ==================== Project Download & Office Document Tools ====================
+
+def _tool_project_download(args):
+    """Package project directory into a zip and return download link."""
+    import urllib.request
+    import urllib.parse
+
+    sub_path = args.get('path', '')
+    try:
+        # Get the server port
+        port = int(os.environ.get('PHONEIDE_PORT', 12345))
+        data = json.dumps({'path': sub_path}).encode('utf-8')
+        req = urllib.request.Request(
+            f'http://127.0.0.1:{port}/api/files/project-archive',
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+
+        if result.get('ok'):
+            dl_url = result.get('download_url', '')
+            filename = result.get('filename', 'project.zip')
+            file_count = result.get('file_count', 0)
+            zip_size = result.get('zip_size', 0)
+            size_str = f'{zip_size / 1024:.1f}KB' if zip_size < 1024 * 1024 else f'{zip_size / (1024*1024):.1f}MB'
+            return f'Project archived successfully!\n\n📦 {filename}\n- Files: {file_count}\n- Size: {size_str}\n- Download: {dl_url}\n\nThe user can download the archive using the link above.'
+        else:
+            return f'Error: Failed to create archive: {result.get("error", "unknown")}'
+    except Exception as e:
+        return f'Error creating project archive: {str(e)}'
+
+
+def _add_docx_sections(doc, sections):
+    """Helper: add sections to a python-docx Document."""
+    for sec in sections:
+        heading = sec.get('heading', '')
+        level = sec.get('level', 1)
+        if heading:
+            doc.add_heading(heading, level=min(level, 4))
+
+        for para_text in sec.get('paragraphs', []):
+            doc.add_paragraph(para_text)
+
+        table_data = sec.get('table')
+        if table_data:
+            headers = table_data.get('headers', [])
+            rows = table_data.get('rows', [])
+            if headers:
+                tbl = doc.add_table(rows=1 + len(rows), cols=len(headers))
+                tbl.style = 'Table Grid'
+                for i, h in enumerate(headers):
+                    tbl.rows[0].cells[i].text = str(h)
+                for ri, row in enumerate(rows):
+                    for ci, val in enumerate(row):
+                        if ci < len(headers):
+                            tbl.rows[ri + 1].cells[ci].text = str(val)
+            elif rows:
+                tbl = doc.add_table(rows=len(rows), cols=max(len(r) for r in rows))
+                tbl.style = 'Table Grid'
+                for ri, row in enumerate(rows):
+                    for ci, val in enumerate(row):
+                        tbl.rows[ri].cells[ci].text = str(val)
+
+
+def _tool_docx_generate(args):
+    """Create a new Word (.docx) document."""
+    from docx import Document
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not path.endswith('.docx'):
+        path += '.docx'
+
+    doc = Document()
+    title = args.get('title', '')
+    if title:
+        doc.add_heading(title, level=0)
+
+    sections = args.get('sections', [])
+    _add_docx_sections(doc, sections)
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    doc.save(path)
+    return f'Word document created: {path} ({len(sections)} sections)'
+
+
+def _tool_docx_edit(args):
+    """Read or modify an existing Word (.docx) document."""
+    from docx import Document
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}'
+
+    action = args.get('action', 'read')
+
+    doc = Document(path)
+
+    if action == 'read':
+        # Return document structure
+        lines = [f'Document: {os.path.basename(path)}']
+        lines.append(f'Paragraphs: {len(doc.paragraphs)}, Tables: {len(doc.tables)}')
+        for i, para in enumerate(doc.paragraphs):
+            if para.text.strip():
+                style = para.style.name if para.style else 'Normal'
+                lines.append(f'  [{i}] ({style}): {para.text[:200]}')
+        for i, table in enumerate(doc.tables):
+            lines.append(f'  Table[{i}]: {len(table.rows)} rows x {len(table.columns)} cols')
+        return '\n'.join(lines)
+
+    elif action == 'append':
+        sections = args.get('sections', [])
+        if not sections:
+            return 'Error: sections required for append action'
+        _add_docx_sections(doc, sections)
+        doc.save(path)
+        return f'Appended {len(sections)} sections to {path}'
+
+    elif action == 'replace':
+        search_text = args.get('search', '')
+        replace_text = args.get('replace', '')
+        if not search_text:
+            return 'Error: search text required for replace action'
+        count = 0
+        for para in doc.paragraphs:
+            if search_text in para.text:
+                for run in para.runs:
+                    if search_text in run.text:
+                        run.text = run.text.replace(search_text, replace_text)
+                        count += 1
+        if count > 0:
+            doc.save(path)
+        return f'Replaced {count} occurrence(s) in {path}'
+
+    else:
+        return f'Error: Unknown action: {action}'
+
+
+def _add_pptx_slides(prs, slides):
+    """Helper: add slides to a python-pptx Presentation."""
+    from pptx.util import Inches, Pt
+    for slide_data in slides:
+        title = slide_data.get('title', '')
+        subtitle = slide_data.get('subtitle', '')
+        bullets = slide_data.get('bullets', [])
+        table_data = slide_data.get('table')
+
+        if title and not bullets and not table_data:
+            # Title slide
+            slide_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(slide_layout)
+            slide.shapes.title.text = title
+            if subtitle and len(slide.shapes) > 1:
+                slide.shapes.placeholders[1].text = subtitle
+        elif bullets:
+            # Title + Content slide
+            slide_layout = prs.slide_layouts[1]
+            slide = prs.slides.add_slide(slide_layout)
+            slide.shapes.title.text = title
+            body = slide.shapes.placeholders[1]
+            tf = body.text_frame
+            tf.clear()
+            for bi, bullet in enumerate(bullets):
+                if bi == 0:
+                    tf.paragraphs[0].text = str(bullet)
+                else:
+                    tf.add_paragraph().text = str(bullet)
+        elif table_data:
+            # Slide with table
+            slide_layout = prs.slide_layouts[5]  # blank
+            slide = prs.slides.add_slide(slide_layout)
+            if title:
+                slide.shapes.title.text = title
+            headers = table_data.get('headers', [])
+            rows = table_data.get('rows', [])
+            n_rows = len(rows) + 1
+            n_cols = len(headers) or (max(len(r) for r in rows) if rows else 1)
+            tbl_shape = slide.shapes.add_table(n_rows, n_cols, Inches(0.5), Inches(1.5), Inches(9), Inches(0.8 * n_rows))
+            tbl = tbl_shape.table
+            for ci, h in enumerate(headers):
+                tbl.cell(0, ci).text = str(h)
+            for ri, row in enumerate(rows):
+                for ci, val in enumerate(row):
+                    if ci < n_cols:
+                        tbl.cell(ri + 1, ci).text = str(val)
+        else:
+            # Minimal slide
+            slide_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(slide_layout)
+            slide.shapes.title.text = title or '(untitled)'
+
+
+def _tool_pptx_generate(args):
+    """Create a new PowerPoint (.pptx) presentation."""
+    from pptx import Presentation
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not path.endswith('.pptx'):
+        path += '.pptx'
+
+    prs = Presentation()
+    title = args.get('title', '')
+    slides = args.get('slides', [])
+
+    # If title provided but no first slide with this title, add a title slide
+    if title and (not slides or slides[0].get('title', '') != title):
+        slides = [{'title': title, 'subtitle': ''}] + list(slides)
+
+    _add_pptx_slides(prs, slides)
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    prs.save(path)
+    return f'Presentation created: {path} ({len(slides)} slides)'
+
+
+def _tool_pptx_edit(args):
+    """Read or modify an existing PowerPoint (.pptx) presentation."""
+    from pptx import Presentation
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}'
+
+    action = args.get('action', 'read')
+
+    if action == 'read':
+        prs = Presentation(path)
+        lines = [f'Presentation: {os.path.basename(path)}']
+        lines.append(f'Slides: {len(prs.slides)}')
+        for i, slide in enumerate(prs.slides):
+            texts = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        if para.text.strip():
+                            texts.append(para.text.strip()[:100])
+            lines.append(f'  Slide {i + 1}: {"; ".join(texts[:3])}{"..." if len(texts) > 3 else ""}')
+        return '\n'.join(lines)
+
+    elif action == 'append':
+        prs = Presentation(path)
+        slides = args.get('slides', [])
+        if not slides:
+            return 'Error: slides required for append action'
+        _add_pptx_slides(prs, slides)
+        prs.save(path)
+        return f'Appended {len(slides)} slides to {path}'
+
+    elif action == 'delete_slide':
+        prs = Presentation(path)
+        idx = args.get('slide_index', -1)
+        if idx < 0 or idx >= len(prs.slides):
+            return f'Error: Invalid slide_index {idx} (0-{len(prs.slides)-1})'
+        # python-pptx doesn't support delete directly; remove from XML
+        rId = prs.slides._sldIdLst[idx].get('r:id')
+        prs.part.drop_rel(rId)
+        del prs.slides._sldIdLst[idx]
+        prs.save(path)
+        return f'Deleted slide {idx} from {path}'
+
+    else:
+        return f'Error: Unknown action: {action}'
+
+
+def _tool_xlsx_generate(args):
+    """Create a new Excel (.xlsx) spreadsheet."""
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not path.endswith('.xlsx'):
+        path += '.xlsx'
+
+    sheets = args.get('sheets', [])
+    if not sheets:
+        return 'Error: at least one sheet is required'
+
+    wb = Workbook()
+    # Remove default sheet
+    if 'Sheet' in wb.sheetnames:
+        del wb['Sheet']
+
+    for si, sheet_data in enumerate(sheets):
+        name = sheet_data.get('name', f'Sheet{si + 1}')
+        ws = wb.create_sheet(title=name)
+
+        headers = sheet_data.get('headers', [])
+        rows = sheet_data.get('rows', [])
+        col_widths = sheet_data.get('column_widths', [])
+
+        # Write headers
+        for ci, h in enumerate(headers):
+            cell = ws.cell(row=1, column=ci + 1, value=h)
+            cell.font = cell.font.copy(bold=True)
+
+        # Write data
+        for ri, row in enumerate(rows):
+            for ci, val in enumerate(row):
+                ws.cell(row=ri + 2, column=ci + 1, value=val)
+
+        # Set column widths
+        if col_widths:
+            for ci, w in enumerate(col_widths):
+                ws.column_dimensions[get_column_letter(ci + 1)].width = w
+        elif headers:
+            # Auto-size based on header length
+            for ci, h in enumerate(headers):
+                ws.column_dimensions[get_column_letter(ci + 1)].width = max(len(str(h)) + 4, 12)
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    wb.save(path)
+
+    total_rows = sum(len(s.get('rows', [])) for s in sheets)
+    return f'Excel workbook created: {path} ({len(sheets)} sheets, {total_rows} data rows)'
+
+
+def _tool_xlsx_edit(args):
+    """Read or modify an existing Excel (.xlsx) spreadsheet."""
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}'
+
+    action = args.get('action', 'read')
+
+    if action == 'read':
+        wb = load_workbook(path, read_only=True, data_only=True)
+        lines = [f'Workbook: {os.path.basename(path)}']
+        lines.append(f'Sheets: {", ".join(wb.sheetnames)}')
+        for name in wb.sheetnames:
+            ws = wb[name]
+            lines.append(f'  Sheet "{name}": {ws.max_row} rows x {ws.max_column} cols')
+        wb.close()
+        return '\n'.join(lines)
+
+    elif action == 'append_rows':
+        wb = load_workbook(path)
+        sheet_name = args.get('sheet', wb.sheetnames[0])
+        if sheet_name not in wb.sheetnames:
+            wb.close()
+            return f'Error: Sheet "{sheet_name}" not found. Available: {", ".join(wb.sheetnames)}'
+        ws = wb[sheet_name]
+        rows = args.get('rows', [])
+        if not rows:
+            wb.close()
+            return 'Error: rows required for append_rows action'
+        start_row = ws.max_row + 1
+        for ri, row in enumerate(rows):
+            for ci, val in enumerate(row):
+                ws.cell(row=start_row + ri, column=ci + 1, value=val)
+        wb.save(path)
+        wb.close()
+        return f'Appended {len(rows)} rows to sheet "{sheet_name}" in {path}'
+
+    elif action == 'add_sheet':
+        wb = load_workbook(path)
+        name = args.get('sheet', '')
+        if not name:
+            wb.close()
+            return 'Error: sheet name required for add_sheet action'
+        if name in wb.sheetnames:
+            wb.close()
+            return f'Error: Sheet "{name}" already exists'
+        ws = wb.create_sheet(title=name)
+        headers = args.get('headers', [])
+        for ci, h in enumerate(headers):
+            cell = ws.cell(row=1, column=ci + 1, value=h)
+            cell.font = cell.font.copy(bold=True)
+            ws.column_dimensions[get_column_letter(ci + 1)].width = max(len(str(h)) + 4, 12)
+        wb.save(path)
+        wb.close()
+        return f'Added sheet "{name}" with {len(headers)} columns to {path}'
+
+    elif action == 'update_cell':
+        wb = load_workbook(path)
+        sheet_name = args.get('sheet', wb.sheetnames[0])
+        if sheet_name not in wb.sheetnames:
+            wb.close()
+            return f'Error: Sheet "{sheet_name}" not found'
+        ws = wb[sheet_name]
+        row = args.get('cell_row')
+        col = args.get('cell_col')
+        value = args.get('cell_value')
+        if row is None or col is None:
+            wb.close()
+            return 'Error: cell_row and cell_col required for update_cell action'
+        ws.cell(row=row, column=col, value=value)
+        wb.save(path)
+        wb.close()
+        return f'Updated cell ({row},{col}) in sheet "{sheet_name}" to: {value}'
+
+    else:
+        return f'Error: Unknown action: {action}'
+
+
 def _tool_delegate_task(args):
     """Launch a sub-agent for a subtask. Supports read and write modes."""
     task = args.get('task', '').strip()
@@ -3769,6 +4409,15 @@ _TOOL_HANDLERS = {
     'run_tests': _tool_run_tests,
     # Process & Port Management
     'kill_port': _tool_kill_port,
+    # Project Download
+    'project_download': _tool_project_download,
+    # Office Document Tools
+    'docx_generate': _tool_docx_generate,
+    'docx_edit': _tool_docx_edit,
+    'pptx_generate': _tool_pptx_generate,
+    'pptx_edit': _tool_pptx_edit,
+    'xlsx_generate': _tool_xlsx_generate,
+    'xlsx_edit': _tool_xlsx_edit,
 }
 
 def execute_agent_tool(name, arguments):
