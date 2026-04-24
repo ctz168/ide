@@ -182,4 +182,10 @@ if __name__ == '__main__':
     # Git init is now handled per-project via the Project panel
     log_write(f'[SERVER] Starting on {HOST}:{PORT}, workspace: {WORKSPACE}')
 
+    # Suppress Werkzeug's per-request access logs (127.0.0.1 "GET /api/..." 200)
+    # These are noisy and useless for a local IDE — our own log_write captures
+    # important events. Only log errors (404/500) through Werkzeug.
+    import logging as _logging
+    _logging.getLogger('werkzeug').setLevel(_logging.ERROR)
+
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

@@ -1,14 +1,12 @@
 /**
  * DebugManager - 调试工具面板
- * 控制台、网络监视、错误日志、HTTP 客户端、进程管理
+ * 控制台捕获、进程管理
  */
 const DebugManager = (() => {
     'use strict';
 
     // ── State ──
     const consoleLogs = [];
-    const networkLogs = [];
-    const errorLogs = [];
     let activeTab = 'output';
     let processRefreshTimer = null;
 
@@ -16,8 +14,6 @@ const DebugManager = (() => {
     function init() {
         initBottomTabs();
         interceptConsole();
-        interceptErrors();
-        interceptNetwork();
         _ensureProcessTimer();
         // Always refresh process list immediately on init (page load).
         // This ensures running processes are shown even after a page refresh.
@@ -83,8 +79,6 @@ const DebugManager = (() => {
                     }
                 }
                 if (target === 'console') renderConsole();
-                if (target === 'network') renderNetwork();
-                if (target === 'errors') renderErrors();
                 if (target === 'procs') refreshProcesses();
             });
         });
@@ -160,122 +154,15 @@ const DebugManager = (() => {
         container.scrollTop = container.scrollHeight;
     }
 
-    // ── Error Capture ──
-    function interceptErrors() {
-        window.addEventListener('error', (e) => {
-            const entry = {
-                message: e.message || 'Unknown error',
-                source: e.filename ? e.filename.split('/').pop() + ':' + e.lineno : '',
-                time: new Date().toLocaleTimeString(),
-                type: 'runtime'
-            };
-            errorLogs.push(entry);
-            if (errorLogs.length > 200) errorLogs.splice(0, errorLogs.length - 200);
-            if (activeTab === 'errors') renderErrors();
-        });
-
-        window.addEventListener('unhandledrejection', (e) => {
-            const entry = {
-                message: 'Unhandled Promise: ' + (e.reason ? (e.reason.message || String(e.reason)) : 'Unknown'),
-                source: '',
-                time: new Date().toLocaleTimeString(),
-                type: 'promise'
-            };
-            errorLogs.push(entry);
-            if (activeTab === 'errors') renderErrors();
-        });
-    }
-
+    /**
+     * Add an error message. Kept as a compatibility API —
+     * other modules (e.g., chat.js) call DebugManager.addError().
+     * Now simply logs to console.error instead of a separate Errors panel.
+     */
     function addError(message, source) {
-        const entry = { message, source: source || '', time: new Date().toLocaleTimeString(), type: 'custom' };
-        errorLogs.push(entry);
-        if (activeTab === 'errors') renderErrors();
+        const prefix = source ? `[${source}] ` : '';
+        console.error(prefix + message);
     }
-
-    function renderErrors() {
-        const container = document.getElementById('debug-errors-content');
-        if (!container) return;
-        container.innerHTML = '';
-        if (errorLogs.length === 0) {
-            container.innerHTML = '<div style="color:var(--text-muted);padding:12px;text-align:center;">暂无错误记录</div>';
-            return;
-        }
-        for (const entry of errorLogs) {
-            const div = document.createElement('div');
-            div.style.cssText = 'padding:6px 0;border-bottom:1px solid var(--border);';
-            let html = '<div style="display:flex;align-items:center;gap:6px;">' +
-                '<span style="color:var(--red);font-size:10px;font-weight:bold;">' + escapeHTML(entry.type.toUpperCase()) + '</span>' +
-                '<span style="color:var(--text-muted);font-size:10px;">' + escapeHTML(entry.time) + '</span></div>' +
-                '<div style="color:var(--text-primary);margin-top:2px;">' + escapeHTML(entry.message) + '</div>';
-            if (entry.source) {
-                html += '<div style="color:var(--text-muted);font-size:10px;margin-top:2px;">' + escapeHTML(entry.source) + '</div>';
-            }
-            div.innerHTML = html;
-            container.appendChild(div);
-        }
-    }
-
-    // ── Network Interceptor ──
-    function interceptNetwork() {
-        const origFetch = window.fetch;
-        window.fetch = function(...args) {
-            const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
-            const method = args[1] && args[1].method ? args[1].method : 'GET';
-            const startTime = performance.now();
-
-            return origFetch.apply(this, args).then(async resp => {
-                const duration = Math.round(performance.now() - startTime);
-                const entry = {
-                    method,
-                    url: url.split('?')[0],
-                    fullUrl: url,
-                    status: resp.status,
-                    statusText: resp.statusText,
-                    duration,
-                    time: new Date().toLocaleTimeString(),
-                    type: resp.ok ? 'ok' : 'error'
-                };
-                networkLogs.push(entry);
-                if (networkLogs.length > 200) networkLogs.splice(0, networkLogs.length - 200);
-                if (activeTab === 'network') renderNetwork();
-                return resp;
-            }).catch(err => {
-                const duration = Math.round(performance.now() - startTime);
-                networkLogs.push({
-                    method, url: url.split('?')[0], fullUrl: url,
-                    status: 0, statusText: 'Error', duration,
-                    time: new Date().toLocaleTimeString(), type: 'error',
-                    error: err.message
-                });
-                if (activeTab === 'network') renderNetwork();
-                throw err;
-            });
-        };
-    }
-
-    function renderNetwork() {
-        const container = document.getElementById('debug-network-content');
-        if (!container) return;
-        container.innerHTML = '';
-        if (networkLogs.length === 0) {
-            container.innerHTML = '<div style="color:var(--text-muted);padding:12px;text-align:center;">暂无网络请求</div>';
-            return;
-        }
-        for (let i = networkLogs.length - 1; i >= 0; i--) {
-            const entry = networkLogs[i];
-            const div = document.createElement('div');
-            div.style.cssText = 'padding:4px 0;border-bottom:1px solid var(--border);';
-            const statusColor = entry.type === 'ok' ? 'var(--green)' : 'var(--red)';
-            div.innerHTML = '<div style="display:flex;align-items:center;gap:6px;">' +
-                '<span style="color:var(--mauve);font-weight:bold;font-size:10px;width:40px;">' + escapeHTML(entry.method) + '</span>' +
-                '<span style="color:' + statusColor + ';font-size:10px;">' + entry.status + '</span>' +
-                '<span style="color:var(--text-secondary);font-size:11px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHTML(entry.url) + '</span>' +
-                '<span style="color:var(--text-muted);font-size:10px;">' + entry.duration + 'ms</span></div>';
-            container.appendChild(div);
-        }
-    }
-
-
 
     // ── Process Manager ──
     async function refreshProcesses() {
