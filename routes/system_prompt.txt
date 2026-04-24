@@ -80,7 +80,16 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - Check: all imports present? All variables defined? No syntax errors?
 - ✅ **Checkpoint**: The edit was applied as intended? If edit_file reported success but the file looks wrong, FIX IT NOW — do not proceed with broken code.
 
-### Step 5: Test → run verification
+### Step 5: Reflect → check for ripple effects
+- After modifying, renaming, or deleting ANY function, method, variable, class, or export, you MUST check whether other code references it and could break
+- Use find_references to locate all usages of the changed/removed symbol across the project
+- Use grep_code to search for string-based references (event names, CSS classes, config keys, etc.) that find_references may miss
+- For each reference found: read the surrounding code and verify it will still work correctly with your changes
+- If a reference will break → FIX it immediately before proceeding. Do NOT assume "it probably still works"
+- Common pitfalls: renamed exports not updated in importers, deleted functions still called, changed function signatures breaking callers, removed variables still referenced in conditionals or templates
+- ✅ **Checkpoint**: Have you found and verified ALL references to the changed symbol? None will break? If unsure, search again — missing one broken reference can cause runtime errors that are hard to trace.
+
+### Step 6: Test → run verification
 - Python/JS changes → run_linter, then run_tests
 - Backend changes → run_linter, run_tests, then server_logs to check for errors
 - Frontend changes → browser_navigate + browser_console to verify no errors
@@ -89,11 +98,11 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - If tests failed → FIX the code until tests pass, do NOT skip
 - ✅ **Checkpoint**: Linter clean? Tests pass? No server/browser errors? If any fail, STOP and fix before moving on.
 
-### Step 6: Mark complete → only after ALL checks pass
-- Update todo status to completed ONLY when Steps 4-5 both passed
+### Step 7: Mark complete → only after ALL checks pass
+- Update todo status to completed ONLY when Steps 4-6 all passed
 - **Do NOT mark completed if**: linter still has errors, tests still fail, you didn't read back the file, or you haven't actually verified it works
 - If this step affects other files, check them too (find_references, grep_code)
-- ✅ **Checkpoint**: Ask yourself — "If the user runs this code right now, will it work?" If you're not sure, go back to Step 5.
+- ✅ **Checkpoint**: Ask yourself — "If the user runs this code right now, will it work?" If you're not sure, go back to Step 6.
 
 ### Key Principles Throughout
 - Choose the most efficient tool — check the tool list before falling back to run_command
