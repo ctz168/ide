@@ -212,6 +212,18 @@ const FileManager = (() => {
                 return;
             }
 
+            // PDF files: open in rich PDF.js viewer with page navigation, zoom, and text extraction
+            if (ext === 'pdf') {
+                const relPath = path.replace(/^\/workspace\/?/, '');
+                if (window.BrowserManager && typeof window.BrowserManager.navigate === 'function') {
+                    window.BrowserManager.navigate(`/api/files/pdf-preview?path=${encodeURIComponent(relPath)}`);
+                    safeToast(`Previewing ${fileName}`, 'info');
+                } else {
+                    window.open(`/api/files/pdf-preview?path=${encodeURIComponent(relPath)}`, '_blank');
+                }
+                return;
+            }
+
             // Convert absolute path to relative path for server API
             const relPath = path.replace(/^\/workspace\/?/, '');
             const resp = await fetch(`/api/files/read?path=${encodeURIComponent(relPath)}`);
@@ -536,6 +548,7 @@ const FileManager = (() => {
             'rs': '🦀', 'go': '🐹', 'rb': '💎', 'php': '🐘',
             'sql': '🗃️', 'xml': '📰', 'svg': '🖼️',
             'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️', 'webp': '🖼️', 'ico': '🖼️',
+            'docx': '📄', 'pptx': '📊', 'xlsx': '📋', 'pdf': '📕',
             'gitignore': '🚫', 'dockerfile': '🐳', 'makefile': '🔨',
             'lock': '🔒', 'pyc': '🔒',
         };

@@ -921,7 +921,7 @@ def create_project_archive():
 @bp.route('/api/files/office-preview', methods=['GET'])
 @handle_error
 def office_preview():
-    """Convert Office documents (docx/pptx/xlsx) to HTML for in-browser preview."""
+    """Convert Office/PDF documents (docx/pptx/xlsx/pdf) to HTML for in-browser preview."""
     path = request.args.get('path', '')
     config = load_config()
     base = config.get('workspace', WORKSPACE)
@@ -942,10 +942,263 @@ def office_preview():
             return _pptx_to_html(target)
         elif ext == '.xlsx':
             return _xlsx_to_html(target)
+        elif ext == '.pdf':
+            return _pdf_to_html(target)
         else:
             return jsonify({'error': f'Unsupported file type: {ext}'}), 400
     except Exception as e:
         return jsonify({'error': f'Preview failed: {str(e)}'}), 500
+
+
+@bp.route('/api/files/pdf-preview', methods=['GET'])
+@handle_error
+def pdf_preview():
+    """Render a PDF file in-browser using PDF.js for a rich reading experience.
+    Provides page navigation, zoom, and text extraction — much better than
+    raw send_file which relies on the browser's built-in PDF viewer (unreliable in iframes)."""
+    path = request.args.get('path', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    target = os.path.realpath(os.path.join(base, path))
+    if not target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied'}), 403
+
+    if not os.path.isfile(target):
+        return jsonify({'error': 'File not found'}), 404
+
+    ext = os.path.splitext(target)[1].lower()
+    if ext != '.pdf':
+        return jsonify({'error': 'Not a PDF file'}), 400
+
+    # Build a PDF.js-based viewer page that loads the raw PDF via /api/files/preview
+    rel_path = os.path.relpath(target, os.path.realpath(base)).replace(os.sep, '/')
+    from urllib.parse import quote as _url_quote
+    pdf_url = f'/api/files/preview?path={_url_quote(rel_path)}'
+    file_name = _html_escape(os.path.basename(target))
+
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{file_name} - PDF Preview</title>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs" type="module"></script>
+<style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       background: #525659; color: #333; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }}
+.toolbar {{ background: #323639; padding: 8px 12px; display: flex; align-items: center; gap: 10px;
+            flex-shrink: 0; border-bottom: 1px solid #1e1e1e; }}
+.toolbar button {{ background: #4a4d50; color: #e0e0e0; border: none; border-radius: 4px;
+                   padding: 6px 12px; cursor: pointer; font-size: 13px; }}
+.toolbar button:hover {{ background: #5a5d60; }}
+.toolbar button:disabled {{ opacity: 0.4; cursor: default; }}
+.toolbar span {{ color: #ccc; font-size: 13px; min-width: 80px; text-align: center; }}
+.toolbar select {{ background: #4a4d50; color: #e0e0e0; border: none; border-radius: 4px;
+                   padding: 4px 8px; font-size: 13px; }}
+.toolbar .file-name {{ color: #aaa; font-size: 12px; margin-left: auto; max-width: 200px;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.viewer {{ flex: 1; overflow: auto; padding: 10px; display: flex; flex-direction: column; align-items: center; }}
+.page-container {{ margin: 5px 0; background: white; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }}
+.page-container canvas {{ display: block; }}
+.loading {{ color: #aaa; padding: 40px; text-align: center; font-size: 16px; }}
+</style>
+</head><body>
+<div class="toolbar">
+  <button id="btnPrev" title="Previous Page">&#9664; Prev</button>
+  <span id="pageInfo">- / -</span>
+  <button id="btnNext" title="Next Page">Next &#9654;</button>
+  <select id="zoomSelect" title="Zoom Level">
+    <option value="0.5">50%</option>
+    <option value="0.75">75%</option>
+    <option value="1" selected>100%</option>
+    <option value="1.25">125%</option>
+    <option value="1.5">150%</option>
+    <option value="2">200%</option>
+  </select>
+  <button id="btnText" title="Extract Text">Extract Text</button>
+  <span class="file-name">{file_name}</span>
+</div>
+<div class="viewer" id="viewer">
+  <div class="loading" id="loadingMsg">Loading PDF...</div>
+</div>
+<script type="module">
+const pdfUrl = "{pdf_url}";
+let pdfDoc = null;
+let currentPage = 1;
+let scale = 1.0;
+let textMode = false;
+
+const viewer = document.getElementById('viewer');
+const pageInfo = document.getElementById('pageInfo');
+const btnPrev = document.getElementById('btnPrev');
+const btnNext = document.getElementById('btnNext');
+const zoomSelect = document.getElementById('zoomSelect');
+const btnText = document.getElementById('btnText');
+
+async function loadPDF() {{
+  try {{
+    const pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+    pdfDoc = await pdfjsLib.getDocument(pdfUrl).promise;
+    document.getElementById('loadingMsg').style.display = 'none';
+    updatePageInfo();
+    renderAllPages();
+  }} catch(e) {{
+    document.getElementById('loadingMsg').textContent = 'Failed to load PDF: ' + e.message;
+    console.error(e);
+  }}
+}}
+
+async function renderAllPages() {{
+  viewer.innerHTML = '';
+  for (let i = 1; i <= pdfDoc.numPages; i++) {{
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({{ scale }});
+    const container = document.createElement('div');
+    container.className = 'page-container';
+    container.id = 'page-' + i;
+    if (textMode) {{
+      const textContent = await page.getTextContent();
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:20px;max-width:900px;font-size:14px;line-height:1.8;white-space:pre-wrap;';
+      let lastY = null;
+      let lines = [];
+      let currentLine = '';
+      for (const item of textContent.items) {{
+        if (lastY !== null && Math.abs(item.transform[5] - lastY) > 5) {{
+          lines.push(currentLine);
+          currentLine = '';
+        }}
+        currentLine += item.str;
+        lastY = item.transform[5];
+      }}
+      if (currentLine) lines.push(currentLine);
+      div.textContent = lines.join('\\n');
+      container.appendChild(div);
+    }} else {{
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      container.appendChild(canvas);
+      const ctx = canvas.getContext('2d');
+      await page.render({{ canvasContext: ctx, viewport }}).promise;
+    }}
+    viewer.appendChild(container);
+  }}
+  // Scroll to current page
+  const target = document.getElementById('page-' + currentPage);
+  if (target) target.scrollIntoView({{ behavior: 'auto' }});
+}}
+
+function updatePageInfo() {{
+  if (!pdfDoc) return;
+  pageInfo.textContent = currentPage + ' / ' + pdfDoc.numPages;
+  btnPrev.disabled = currentPage <= 1;
+  btnNext.disabled = currentPage >= pdfDoc.numPages;
+}}
+
+btnPrev.addEventListener('click', () => {{
+  if (currentPage > 1) {{ currentPage--; updatePageInfo(); scrollToPage(); }}
+}});
+btnNext.addEventListener('click', () => {{
+  if (pdfDoc && currentPage < pdfDoc.numPages) {{ currentPage++; updatePageInfo(); scrollToPage(); }}
+}});
+zoomSelect.addEventListener('change', (e) => {{
+  scale = parseFloat(e.target.value);
+  if (pdfDoc) renderAllPages();
+}});
+btnText.addEventListener('click', () => {{
+  textMode = !textMode;
+  btnText.style.background = textMode ? '#0078d4' : '#4a4d50';
+  if (pdfDoc) renderAllPages();
+}});
+function scrollToPage() {{
+  const target = document.getElementById('page-' + currentPage);
+  if (target) target.scrollIntoView({{ behavior: 'smooth' }});
+}}
+// Intersection observer to update current page number on scroll
+const observer = new IntersectionObserver((entries) => {{
+  for (const entry of entries) {{
+    if (entry.isIntersecting && entry.intersectionRatio > 0.3) {{
+      const pageNum = parseInt(entry.target.id.replace('page-', ''));
+      if (!isNaN(pageNum)) {{ currentPage = pageNum; updatePageInfo(); }}
+    }}
+  }}
+}}, {{ root: viewer, threshold: 0.3 }});
+// Re-observe after render
+const origRender = renderAllPages;
+renderAllPages = async function() {{
+  await origRender();
+  for (let i = 1; i <= pdfDoc.numPages; i++) {{
+    const el = document.getElementById('page-' + i);
+    if (el) observer.observe(el);
+  }}
+}};
+loadPDF();
+</script>
+</body></html>'''
+    return Response(html, mimetype='text/html; charset=utf-8')
+
+
+def _pdf_to_html(filepath):
+    """Convert PDF to HTML for preview (text extraction mode).
+    Uses PyPDF2 to extract text content from each page and renders
+    it as a styled HTML document with page separators."""
+    from PyPDF2 import PdfReader
+
+    reader = PdfReader(filepath)
+    pages_html = []
+    total_pages = len(reader.pages)
+
+    for i, page in enumerate(reader.pages):
+        try:
+            text = page.extract_text() or ''
+        except Exception:
+            text = '(text extraction failed for this page)'
+
+        # Escape HTML entities
+        text = _html_escape(text)
+
+        if text.strip():
+            # Preserve line breaks from PDF text extraction
+            formatted_text = text.replace('\n', '<br/>\n')
+        else:
+            formatted_text = '<p style="color:#999;font-style:italic">(This page has no extractable text — it may contain only images or scanned content)</p>'
+
+        pages_html.append(f'''<div class="page">
+<div class="page-header">Page {i + 1} of {total_pages}</div>
+<div class="page-content">{formatted_text}</div>
+</div>''')
+
+    body = '\n'.join(pages_html)
+    html = f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       margin: 0; padding: 20px; background: #525659; color: #333; }}
+.page {{ background: white; margin: 20px auto; max-width: 800px; padding: 40px 50px;
+        border-radius: 2px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); min-height: 200px; }}
+.page-header {{ color: #999; font-size: 11px; text-align: center; margin-bottom: 20px;
+               border-bottom: 1px solid #eee; padding-bottom: 8px; }}
+.page-content {{ font-size: 13px; line-height: 1.8; white-space: pre-wrap; word-wrap: break-word; }}
+.page-nav {{ position: fixed; bottom: 20px; right: 20px; display: flex; gap: 8px; z-index: 100; }}
+.page-nav button {{ background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 4px;
+                    padding: 8px 14px; cursor: pointer; font-size: 13px; }}
+.page-nav button:hover {{ background: rgba(0,0,0,0.8); }}
+.page-nav span {{ color: white; font-size: 13px; line-height: 36px; }}
+.info-bar {{ background: #323639; color: #aaa; padding: 8px 16px; font-size: 12px;
+             text-align: center; position: sticky; top: 0; z-index: 50; }}
+.info-bar a {{ color: #6db3f2; text-decoration: none; }}
+.info-bar a:hover {{ text-decoration: underline; }}
+</style></head><body>
+<div class="info-bar">
+  PDF Document &mdash; {total_pages} page{"s" if total_pages != 1 else ""} &mdash;
+  <a href="/api/files/preview?path={_html_escape(os.path.relpath(filepath, os.path.realpath(load_config().get('workspace', WORKSPACE))).replace(os.sep, '/'))}">Download Original PDF</a>
+</div>
+{body}
+</body></html>'''
+    return Response(html, mimetype='text/html; charset=utf-8')
 
 
 def _docx_to_html(filepath):

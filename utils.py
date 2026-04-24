@@ -536,7 +536,7 @@ def get_file_type(filename):
         '.dockerfile': 'dockerfile', '.toml': 'toml', '.ini': 'ini',
         '.cfg': 'ini', '.conf': 'ini', '.log': 'text',
         '.env': 'shell', '.gitignore': 'text', '.editorconfig': 'ini',
-        '.docx': 'docx', '.pptx': 'pptx', '.xlsx': 'xlsx',
+        '.docx': 'docx', '.pptx': 'pptx', '.xlsx': 'xlsx', '.pdf': 'pdf',
     }
     # Check special filenames
     if filename == 'Dockerfile':
@@ -559,7 +559,7 @@ def get_icon_for_file(filename):
         '.java': '☕', '.go': '🐹', '.rs': '🦀', '.rb': '💎',
         '.sql': '🗃️', '.xml': '📰', '.svg': '🖼️',
         '.png': '🖼️', '.jpg': '🖼️', '.jpeg': '🖼️', '.gif': '🖼️',
-        '.docx': '📄', '.pptx': '📊', '.xlsx': '📋',
+        '.docx': '📄', '.pptx': '📊', '.xlsx': '📋', '.pdf': '📕',
     }
     if filename == 'Dockerfile':
         return '🐳'

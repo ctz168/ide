@@ -1014,6 +1014,69 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- PDF --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'pdf_generate',
+            'description': 'Create a PDF document with titles, headings, paragraphs, tables, and bullet lists. Uses ReportLab for high-quality output.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'Output file path (e.g. report.pdf)'},
+                    'title': {'type': 'string', 'description': 'Document title (displayed at the top of the first page)'},
+                    'sections': {
+                        'type': 'array',
+                        'description': 'Document sections in order',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'heading': {'type': 'string', 'description': 'Section heading (omit for no heading)'},
+                                'level': {'type': 'integer', 'description': 'Heading level 1-3. Default: 1', 'default': 1},
+                                'paragraphs': {
+                                    'type': 'array',
+                                    'description': 'Paragraph texts',
+                                    'items': {'type': 'string'},
+                                },
+                                'bullets': {
+                                    'type': 'array',
+                                    'description': 'Bullet point items',
+                                    'items': {'type': 'string'},
+                                },
+                                'table': {
+                                    'type': 'object',
+                                    'description': 'Table data (optional)',
+                                    'properties': {
+                                        'headers': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Column headers'},
+                                        'rows': {'type': 'array', 'items': {'type': 'array', 'items': {'type': 'string'}}, 'description': 'Row data'},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                'required': ['path', 'sections'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'pdf_edit',
+            'description': 'Read or modify an existing PDF document. Can read structure (extract text), merge PDFs, or add pages with text content.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'path': {'type': 'string', 'description': 'File path of the PDF file'},
+                    'action': {'type': 'string', 'enum': ['read', 'merge', 'add_text_page'], 'description': 'read=extract text/page info, merge=append another PDF, add_text_page=add a new page with text content'},
+                    'source_path': {'type': 'string', 'description': 'Path of second PDF to merge (for merge action)'},
+                    'page_text': {'type': 'string', 'description': 'Text content for the new page (for add_text_page action)'},
+                    'page_heading': {'type': 'string', 'description': 'Optional heading for the new page (for add_text_page action)'},
+                },
+                'required': ['path', 'action'],
+            },
+        },
+    },
 ]
 
 # ==================== Compact Tool Variants ====================
@@ -4304,6 +4367,322 @@ def _tool_xlsx_edit(args):
         return f'Error: Unknown action: {action}'
 
 
+def _tool_pdf_generate(args):
+    """Create a new PDF document with titles, headings, paragraphs, tables, and bullet lists."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm, cm
+    from reportlab.lib.colors import HexColor, black, grey, white
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table as RLTable,
+        TableStyle, PageBreak, ListFlowable, ListItem
+    )
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not path.endswith('.pdf'):
+        path += '.pdf'
+
+    title = args.get('title', '')
+    sections = args.get('sections', [])
+    if not sections and not title:
+        return 'Error: at least one section or title is required'
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=A4,
+        leftMargin=2.5*cm, rightMargin=2.5*cm,
+        topMargin=2.5*cm, bottomMargin=2.5*cm
+    )
+
+    styles = getSampleStyleSheet()
+
+    # Custom styles for better PDF output
+    styles.add(ParagraphStyle(
+        name='DocTitle',
+        parent=styles['Title'],
+        fontSize=22,
+        spaceAfter=20,
+        spaceBefore=10,
+        textColor=HexColor('#1a1a2e'),
+    ))
+    styles.add(ParagraphStyle(
+        name='Heading1Custom',
+        parent=styles['Heading1'],
+        fontSize=16,
+        spaceAfter=10,
+        spaceBefore=18,
+        textColor=HexColor('#16213e'),
+        borderWidth=0,
+        borderPadding=0,
+    ))
+    styles.add(ParagraphStyle(
+        name='Heading2Custom',
+        parent=styles['Heading2'],
+        fontSize=13,
+        spaceAfter=8,
+        spaceBefore=14,
+        textColor=HexColor('#0f3460'),
+    ))
+    styles.add(ParagraphStyle(
+        name='Heading3Custom',
+        parent=styles['Heading3'],
+        fontSize=11,
+        spaceAfter=6,
+        spaceBefore=10,
+        textColor=HexColor('#533483'),
+    ))
+    styles.add(ParagraphStyle(
+        name='BodyCustom',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=16,
+        spaceAfter=8,
+        spaceBefore=2,
+    ))
+    styles.add(ParagraphStyle(
+        name='BulletCustom',
+        parent=styles['Normal'],
+        fontSize=10,
+        leading=14,
+        leftIndent=20,
+        spaceAfter=3,
+        bulletIndent=8,
+    ))
+
+    story = []
+
+    # Add document title
+    if title:
+        story.append(Paragraph(title, styles['DocTitle']))
+        story.append(Spacer(1, 10))
+
+    # Process sections
+    for section in sections:
+        heading = section.get('heading', '')
+        level = section.get('level', 1)
+        paragraphs = section.get('paragraphs', [])
+        bullets = section.get('bullets', [])
+        table_data = section.get('table')
+
+        # Add heading
+        if heading:
+            heading_style = {
+                1: 'Heading1Custom',
+                2: 'Heading2Custom',
+                3: 'Heading3Custom',
+            }.get(min(level, 3), 'Heading1Custom')
+            story.append(Paragraph(heading, styles[heading_style]))
+
+        # Add paragraphs
+        for para_text in paragraphs:
+            # Escape XML special chars for ReportLab Paragraph
+            safe_text = (para_text
+                         .replace('&', '&amp;')
+                         .replace('<', '&lt;')
+                         .replace('>', '&gt;'))
+            story.append(Paragraph(safe_text, styles['BodyCustom']))
+
+        # Add bullet list
+        if bullets:
+            bullet_items = []
+            for bullet_text in bullets:
+                safe_text = (bullet_text
+                             .replace('&', '&amp;')
+                             .replace('<', '&lt;')
+                             .replace('>', '&gt;'))
+                bullet_items.append(ListItem(Paragraph(safe_text, styles['BulletCustom'])))
+            story.append(ListFlowable(
+                bullet_items,
+                bulletType='bullet',
+                start='•',
+            ))
+
+        # Add table
+        if table_data:
+            headers = table_data.get('headers', [])
+            rows = table_data.get('rows', [])
+            table_rows = []
+            if headers:
+                table_rows.append([Paragraph(f'<b>{h}</b>', styles['BodyCustom']) for h in headers])
+            for row in rows:
+                table_rows.append([Paragraph(str(cell), styles['BodyCustom']) for cell in row])
+
+            if table_rows:
+                # Calculate column widths
+                n_cols = len(table_rows[0]) if table_rows else 0
+                available_width = A4[0] - 5*cm  # page width minus margins
+                col_width = available_width / max(n_cols, 1)
+
+                t = RLTable(table_rows, colWidths=[col_width] * n_cols)
+                t.setStyle(TableStyle([
+                    # Header row styling
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4a90d9')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    # Body styling
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 9),
+                    # Grid
+                    ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#cccccc')),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [HexColor('#ffffff'), HexColor('#f5f7fa')]),
+                    # Padding
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 8),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ]))
+                story.append(Spacer(1, 6))
+                story.append(t)
+                story.append(Spacer(1, 6))
+
+        # Add spacing between sections
+        story.append(Spacer(1, 8))
+
+    try:
+        doc.build(story)
+    except Exception as e:
+        return f'Error generating PDF: {e}'
+
+    section_count = len(sections)
+    return f'PDF document created: {path} ({section_count} sections)'
+
+
+def _tool_pdf_edit(args):
+    """Read or modify an existing PDF document."""
+    from PyPDF2 import PdfReader, PdfWriter
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    import tempfile
+
+    raw_path = args.get('path', '')
+    if not raw_path:
+        return 'Error: path is required'
+    raw_path = _resolve_path(raw_path)
+    path = _validate_path(raw_path)
+
+    if not os.path.isfile(path):
+        return f'Error: File not found: {path}'
+
+    action = args.get('action', 'read')
+
+    if action == 'read':
+        reader = PdfReader(path)
+        lines = [f'PDF: {os.path.basename(path)}']
+        lines.append(f'Pages: {len(reader.pages)}')
+        # Extract text from each page (summary)
+        for i, page in enumerate(reader.pages):
+            try:
+                text = page.extract_text() or ''
+                # Show first 150 chars of each page
+                preview = text.strip()[:150].replace('\n', ' ')
+                if preview:
+                    lines.append(f'  Page {i + 1}: {preview}{"..." if len(text.strip()) > 150 else ""}')
+                else:
+                    lines.append(f'  Page {i + 1}: (no extractable text — may contain images/scanned content)')
+            except Exception:
+                lines.append(f'  Page {i + 1}: (text extraction error)')
+        return '\n'.join(lines)
+
+    elif action == 'merge':
+        source_path = args.get('source_path', '')
+        if not source_path:
+            return 'Error: source_path is required for merge action'
+        source_path = _resolve_path(source_path)
+        source_path = _validate_path(source_path)
+
+        if not os.path.isfile(source_path):
+            return f'Error: Source PDF not found: {source_path}'
+
+        reader1 = PdfReader(path)
+        reader2 = PdfReader(source_path)
+
+        writer = PdfWriter()
+        for page in reader1.pages:
+            writer.add_page(page)
+        for page in reader2.pages:
+            writer.add_page(page)
+
+        # Write merged result back to original path
+        with open(path, 'wb') as f:
+            writer.write(f)
+
+        total_pages = len(reader1.pages) + len(reader2.pages)
+        return f'Merged {os.path.basename(source_path)} into {os.path.basename(path)} (total: {total_pages} pages)'
+
+    elif action == 'add_text_page':
+        page_heading = args.get('page_heading', '')
+        page_text = args.get('page_text', '')
+        if not page_text and not page_heading:
+            return 'Error: page_text or page_heading required for add_text_page action'
+
+        # Create a temporary PDF with the new text page using ReportLab
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf', prefix='phoneide_pdf_')
+        try:
+            doc = SimpleDocTemplate(
+                tmp_path, pagesize=A4,
+                leftMargin=2.5*cm, rightMargin=2.5*cm,
+                topMargin=2.5*cm, bottomMargin=2.5*cm
+            )
+            styles = getSampleStyleSheet()
+            story = []
+            if page_heading:
+                safe_heading = page_heading.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                story.append(Paragraph(safe_heading, styles['Heading1']))
+                story.append(Spacer(1, 12))
+            if page_text:
+                # Split by newlines to create paragraphs
+                for para in page_text.split('\n'):
+                    para = para.strip()
+                    if para:
+                        safe_para = para.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        story.append(Paragraph(safe_para, styles['Normal']))
+                        story.append(Spacer(1, 4))
+                    else:
+                        story.append(Spacer(1, 8))
+            doc.build(story)
+        except Exception as e:
+            os.close(tmp_fd)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            return f'Error creating text page: {e}'
+
+        os.close(tmp_fd)
+
+        # Merge: original PDF + new text page
+        try:
+            reader_orig = PdfReader(path)
+            reader_new = PdfReader(tmp_path)
+            writer = PdfWriter()
+            for page in reader_orig.pages:
+                writer.add_page(page)
+            for page in reader_new.pages:
+                writer.add_page(page)
+            with open(path, 'wb') as f:
+                writer.write(f)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        orig_pages = len(reader_orig.pages)
+        new_pages = len(reader_new.pages)
+        return f'Added {new_pages} text page(s) to {os.path.basename(path)} (now {orig_pages + new_pages} total pages)'
+
+    else:
+        return f'Error: Unknown action: {action}'
+
+
 def _tool_delegate_task(args):
     """Launch a sub-agent for a subtask. Supports read and write modes."""
     task = args.get('task', '').strip()
@@ -4418,6 +4797,9 @@ _TOOL_HANDLERS = {
     'pptx_edit': _tool_pptx_edit,
     'xlsx_generate': _tool_xlsx_generate,
     'xlsx_edit': _tool_xlsx_edit,
+    # PDF Document Tools
+    'pdf_generate': _tool_pdf_generate,
+    'pdf_edit': _tool_pdf_edit,
 }
 
 def execute_agent_tool(name, arguments):
