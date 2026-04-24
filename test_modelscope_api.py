@@ -160,7 +160,7 @@ def test_api():
         "model": MODEL,
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 4096,
+        "max_tokens": 100000,
         "tools": AGENT_TOOLS,
         "tool_choice": "auto",
         "stream": False,

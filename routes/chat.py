@@ -3532,7 +3532,7 @@ def _run_subagent(task, mode='read', max_iterations=8, llm_config=None, context=
                 'model': llm_config.get('model', 'gpt-4o-mini'),
                 'messages': api_messages,
                 'temperature': 0.3,
-                'max_tokens': 4096,
+                'max_tokens': 100000,
                 'tools': sub_tool_defs,
                 'tool_choice': 'auto',
             }
@@ -4310,7 +4310,7 @@ def _call_llm_api(messages, llm_config, stream=False):
     """Make a non-streaming LLM API call. Returns parsed response dict."""
     model = llm_config.get('model', 'gpt-4o-mini')
     temperature = llm_config.get('temperature', 0.7)
-    max_tokens = llm_config.get('max_tokens', 4096)
+    max_tokens = llm_config.get('max_tokens', 100000)
 
     api_messages = _build_api_messages(messages, llm_config)
 
@@ -4384,7 +4384,7 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
 
     model = llm_config.get('model', 'gpt-4o-mini')
     temperature = llm_config.get('temperature', 0.7)
-    max_tokens = llm_config.get('max_tokens', 4096)
+    max_tokens = llm_config.get('max_tokens', 100000)
     reasoning = llm_config.get('reasoning', True)
 
     api_messages = _build_api_messages(messages, llm_config)
@@ -4604,9 +4604,9 @@ def _get_context_budget(llm_config):
     """
     max_context = llm_config.get('max_context', 0)
     if max_context > 0:
-        max_output = llm_config.get('max_tokens', 4096)
+        max_output = llm_config.get('max_tokens', 100000)
         return max(max_context - max_output - 4000, 8000)  # safety margin + minimum floor
-    return llm_config.get('max_tokens', 4096) * 10
+    return llm_config.get('max_tokens', 100000) * 10
 
 
 # ==================== AI-Powered History Summarization ====================
@@ -4725,7 +4725,7 @@ def _ai_summarize_messages(messages, llm_config):
             'model': llm_config.get('model'),
             'messages': [{'role': 'user', 'content': summary_prompt}],
             'temperature': 0.3,  # Low temperature for factual summarization
-            'max_tokens': min(2000, llm_config.get('max_tokens', 4096)),
+            'max_tokens': min(2000, llm_config.get('max_tokens', 100000)),
         }
         
         body_bytes = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
@@ -5627,7 +5627,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                         return
                     # Aggressively compress context and retry (don't consume normal retry counter)
-                    budget = llm_config.get('max_tokens', 4096) * 10
+                    budget = llm_config.get('max_tokens', 100000) * 10
                     context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context too large, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
                     print(f'[LLM] Context overflow detected (HTTP {e.code}), compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {budget // 2})')
@@ -5660,7 +5660,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts.'})}\n\n"
                         yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                         return
-                    budget = llm_config.get('max_tokens', 4096) * 10
+                    budget = llm_config.get('max_tokens', 100000) * 10
                     context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context error, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
                     print(f'[LLM] Context overflow exception, compressed and retrying')
