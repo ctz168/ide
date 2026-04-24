@@ -1103,6 +1103,135 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         reasoningVisible = false;
     }
 
+    // ── Raw Debug Display ─────────────────────────────────────────
+    // Shows the raw LLM output (tool calls + arguments) in a collapsible
+    // debug section for diagnosing tool call parsing failures.
+
+    /**
+     * Show or update the raw debug section with LLM response data.
+     * Creates a collapsible block similar to reasoning display.
+     */
+    function showRawDebug(debugData) {
+        const container = document.getElementById('chat-messages');
+        if (!container) return;
+
+        // Find or create the debug panel
+        let debugPanel = container.querySelector('.raw-debug-panel');
+        if (!debugPanel) {
+            debugPanel = document.createElement('div');
+            debugPanel.className = 'raw-debug-panel';
+            debugPanel.innerHTML = `
+                <div class="raw-debug-header" onclick="this.parentElement.classList.toggle('raw-debug-collapsed'); this.querySelector('.raw-debug-toggle').textContent = this.parentElement.classList.contains('raw-debug-collapsed') ? '▸' : '▾'">
+                    <span class="raw-debug-toggle">▾</span>
+                    <span class="raw-debug-title">🔧 LLM Raw Output Debug</span>
+                    <span class="raw-debug-count"></span>
+                </div>
+                <div class="raw-debug-body"></div>
+            `;
+            // Insert before typing indicator if present, else append
+            const typing = container.querySelector('.chat-typing');
+            if (typing) {
+                container.insertBefore(debugPanel, typing);
+            } else {
+                container.appendChild(debugPanel);
+            }
+        }
+
+        const body = debugPanel.querySelector('.raw-debug-body');
+        const countEl = debugPanel.querySelector('.raw-debug-count');
+
+        // Build debug content
+        let html = '';
+        const d = debugData;
+
+        // Summary line
+        html += `<div class="raw-debug-summary">`;
+        html += `<span>Iteration: ${d.iteration || '?'}</span>`;
+        html += `<span>finish_reason: <b>${d.finish_reason || 'null'}</b></span>`;
+        html += `<span>tool_calls: <b>${d.tool_call_count || 0}</b></span>`;
+        html += `<span>content_len: ${d.content_length || 0}</span>`;
+        html += `</div>`;
+
+        // Content preview (if any)
+        if (d.content_preview) {
+            html += `<div class="raw-debug-section">`;
+            html += `<div class="raw-debug-section-title">Content Preview</div>`;
+            html += `<pre class="raw-debug-pre">${escapeHtml(d.content_preview)}</pre>`;
+            html += `</div>`;
+        }
+
+        // Assembled tool calls
+        if (d.tool_calls && d.tool_calls.length > 0) {
+            for (const tc of d.tool_calls) {
+                html += `<div class="raw-debug-section">`;
+                html += `<div class="raw-debug-section-title">TC[${tc.index}] ${tc.name || '(unnamed)'} (args_len=${tc.args_length})</div>`;
+                if (tc.args_preview) {
+                    html += `<pre class="raw-debug-pre">${escapeHtml(tc.args_preview)}`;
+                    if (tc.args_tail) {
+                        html += `\n...\n${escapeHtml(tc.args_tail)}`;
+                    }
+                    html += `</pre>`;
+                }
+                html += `</div>`;
+            }
+        }
+
+        // Raw SSE tool calls (accumulated directly from SSE stream)
+        if (d.raw_sse_tool_calls && d.raw_sse_tool_calls.length > 0) {
+            for (const rtc of d.raw_sse_tool_calls) {
+                html += `<div class="raw-debug-section raw-debug-sse">`;
+                html += `<div class="raw-debug-section-title">SSE_RAW ${rtc.name || '(unnamed)'} (args_len=${rtc.args_length})</div>`;
+                if (rtc.args_preview) {
+                    html += `<pre class="raw-debug-pre">${escapeHtml(rtc.args_preview)}`;
+                    if (rtc.args_tail) {
+                        html += `\n...\n${escapeHtml(rtc.args_tail)}`;
+                    }
+                    html += `</pre>`;
+                }
+                html += `</div>`;
+            }
+        }
+
+        // No tool calls at all
+        if ((!d.tool_calls || d.tool_calls.length === 0) && (!d.raw_sse_tool_calls || d.raw_sse_tool_calls.length === 0)) {
+            html += `<div class="raw-debug-section">`;
+            html += `<div class="raw-debug-section-title">No tool calls detected</div>`;
+            html += `</div>`;
+        }
+
+        body.innerHTML += html;
+
+        // Update count
+        const existingCount = parseInt(countEl.textContent) || 0;
+        countEl.textContent = `${existingCount + 1} rounds`;
+
+        // Auto-expand on first round
+        if (existingCount === 0) {
+            debugPanel.classList.remove('raw-debug-collapsed');
+        }
+
+        forceScrollToBottom();
+    }
+
+    /**
+     * Clear the raw debug panel (at start of new task)
+     */
+    function clearRawDebug() {
+        const container = document.getElementById('chat-messages');
+        if (!container) return;
+        const panel = container.querySelector('.raw-debug-panel');
+        if (panel) panel.remove();
+    }
+
+    /**
+     * Simple HTML escape
+     */
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     /**
      * Finalize the current streaming message
      */
@@ -1460,6 +1589,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         setProcessing(true);
         hideTurnIndicator();
+        clearRawDebug();
 
         streamingStartTime = Date.now();
         iterationCount = 0;
@@ -1617,6 +1747,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         }
                         addMessage('system', '⏹ 任务已停止');
                         if (window.notifyAndroid) window.notifyAndroid('PhoneIDE', 'AI 任务已停止', 'warning', 3000);
+                    } else if (eventType === 'raw_debug') {
+                        showRawDebug(parsed.data || parsed);
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
@@ -1823,6 +1955,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         addMessage('user', message);
         setProcessing(true);
         hideTurnIndicator();
+        clearRawDebug();
 
         // Plan mode: prepend plan instruction to message
         let actualMessage = message;
@@ -2013,6 +2146,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         addMessage('system', '⏹ 任务已停止');
+                    } else if (eventType === 'raw_debug') {
+                        showRawDebug(parsed.data || parsed);
                     } else if (eventType === 'error') {
                         // Error occurred
                         hasError = true;
@@ -2194,6 +2329,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         setProcessing(true);
         hideTurnIndicator();
+        clearRawDebug();
 
         streamingStartTime = Date.now();
         iterationCount = 0;
@@ -2364,6 +2500,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         addMessage('system', '⏹ 任务已停止');
+                    } else if (eventType === 'raw_debug') {
+                        showRawDebug(parsed.data || parsed);
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();

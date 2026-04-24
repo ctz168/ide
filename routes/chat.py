@@ -4497,6 +4497,7 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
         byte_buffer = b''
         accumulated_finish_reason = None
         raw_sse_lines = []  # Capture raw SSE lines for debugging empty responses
+        raw_tool_call_accumulator = {}  # idx -> {id, name, arguments} for raw debug output
         while True:
             chunk = resp.read(4096)
             if not chunk:
@@ -4514,6 +4515,7 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
                 if data_str == '[DONE]':
                     # Store raw SSE data for debugging before returning
                     _last_llm_payload_debug['raw_sse_count'] = len(raw_sse_lines)
+                    _last_llm_payload_debug['raw_tool_calls'] = list(raw_tool_call_accumulator.values()) if raw_tool_call_accumulator else []
                     _last_llm_payload_debug['finish_reason'] = accumulated_finish_reason
                     _last_llm_payload_debug['raw_sse_tail'] = raw_sse_lines[-5:] if len(raw_sse_lines) > 5 else raw_sse_lines
                     return
@@ -4534,6 +4536,20 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
                         # The delta dict may contain 'reasoning_content' field
                         if 'reasoning_content' in delta:
                             delta['_reasoning'] = True
+                        # Accumulate raw tool_call deltas for debug output
+                        _tc_deltas = delta.get('tool_calls')
+                        if _tc_deltas:
+                            for _tcd in _tc_deltas:
+                                _tidx = _tcd.get('index', 0)
+                                if _tidx not in raw_tool_call_accumulator:
+                                    raw_tool_call_accumulator[_tidx] = {'id': '', 'name': '', 'arguments': ''}
+                                if _tcd.get('id'):
+                                    raw_tool_call_accumulator[_tidx]['id'] = _tcd['id']
+                                _fn = _tcd.get('function', {})
+                                if _fn.get('name'):
+                                    raw_tool_call_accumulator[_tidx]['name'] += _fn['name']
+                                if _fn.get('arguments'):
+                                    raw_tool_call_accumulator[_tidx]['arguments'] += _fn['arguments']
                         yield delta
                 except json.JSONDecodeError:
                     continue
@@ -4556,6 +4572,7 @@ def _call_llm_stream_raw(messages, llm_config, tools_level='full'):
                     pass
         # Store raw SSE data for debugging (stream ended without [DONE])
         _last_llm_payload_debug['raw_sse_count'] = len(raw_sse_lines)
+        _last_llm_payload_debug['raw_tool_calls'] = list(raw_tool_call_accumulator.values()) if raw_tool_call_accumulator else []
         _last_llm_payload_debug['finish_reason'] = accumulated_finish_reason
         _last_llm_payload_debug['raw_sse_tail'] = raw_sse_lines[-5:] if len(raw_sse_lines) > 5 else raw_sse_lines
 
@@ -5462,6 +5479,58 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 for idx, tc_entry in enumerate(current_tool_calls):
                     if idx in current_args_buffer:
                         tc_entry['function']['arguments'] = current_args_buffer[idx]
+
+                # ── RAW DEBUG: Dump LLM raw output to server log and frontend ──
+                # This helps diagnose tool call parsing failures
+                _raw_debug_info = {
+                    'iteration': total_iterations + 1,
+                    'finish_reason': finish_reason,
+                    'has_tool_calls': bool(current_tool_calls),
+                    'tool_call_count': len(current_tool_calls),
+                    'content_length': len(delta_content) if delta_content else 0,
+                    'content_preview': (delta_content or '')[:500],
+                }
+                if current_tool_calls:
+                    _raw_debug_info['tool_calls'] = []
+                    for _i, _tc in enumerate(current_tool_calls):
+                        _fn = _tc.get('function', {})
+                        _args_str = _fn.get('arguments', '')
+                        _raw_debug_info['tool_calls'].append({
+                            'index': _i,
+                            'id': _tc.get('id', ''),
+                            'name': _fn.get('name', ''),
+                            'args_length': len(_args_str),
+                            'args_preview': _args_str[:300] if _args_str else '',
+                            'args_tail': _args_str[-200:] if _args_str and len(_args_str) > 300 else '',
+                        })
+                # Also get raw tool calls from _last_llm_payload_debug (accumulated directly from SSE)
+                _raw_tc_from_sse = _last_llm_payload_debug.get('raw_tool_calls', [])
+                if _raw_tc_from_sse:
+                    _raw_debug_info['raw_sse_tool_calls'] = []
+                    for _rtc in _raw_tc_from_sse:
+                        _rtc_args = _rtc.get('arguments', '')
+                        _raw_debug_info['raw_sse_tool_calls'].append({
+                            'id': _rtc.get('id', ''),
+                            'name': _rtc.get('name', ''),
+                            'args_length': len(_rtc_args),
+                            'args_preview': _rtc_args[:300] if _rtc_args else '',
+                            'args_tail': _rtc_args[-200:] if _rtc_args and len(_rtc_args) > 300 else '',
+                        })
+                # Print to server console
+                print(f'[LLM RAW DEBUG] iter={total_iterations+1} finish_reason={finish_reason} '
+                      f'tool_calls={len(current_tool_calls)} content_len={len(delta_content or "")}')
+                if current_tool_calls:
+                    for _i, _tc in enumerate(current_tool_calls):
+                        _fn = _tc.get('function', {})
+                        print(f'  TC[{_i}] name={_fn.get("name","")} args_len={len(_fn.get("arguments",""))}')
+                        print(f'  TC[{_i}] args_preview: {_fn.get("arguments","")[:200]}')
+                        print(f'  TC[{_i}] args_tail: {_fn.get("arguments","")[-100:]}')
+                if _raw_tc_from_sse:
+                    for _i, _rtc in enumerate(_raw_tc_from_sse):
+                        print(f'  RAW_SSE[{_i}] name={_rtc.get("name","")} args_len={len(_rtc.get("arguments",""))}')
+                        print(f'  RAW_SSE[{_i}] args_preview: {_rtc.get("arguments","")[:200]}')
+                # Send to frontend as SSE event
+                yield f"data: {json.dumps({'type': 'raw_debug', 'data': _raw_debug_info}, ensure_ascii=False)}\n\n"
 
                 # If reasoning was accumulated but reasoning_end not yet signaled
                 if reasoning_text and not reasoning_ended:
