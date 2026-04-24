@@ -68,19 +68,28 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - Use find_definition/find_references for code navigation (more precise than grep_code)
 - ✅ **Checkpoint**: Do you fully understand the existing code structure? If not, read more files before proceeding.
 
-### Step 3: Edit → make targeted changes
+### Step 3: Think → plan the full change chain
+- BEFORE writing any code, think through the COMPLETE chain of changes needed — not just the first edit
+- Analyze the full call/data flow: where does the change originate, what does it affect downstream, what must change together to stay consistent?
+- After forming an initial approach, challenge it: Will this really work? Could anything be missed? Are there edge cases?
+- Search for SIMILAR implementations elsewhere in the project — if one pattern is being changed, the same pattern in other files likely needs the same change (use grep_code, search_files)
+- Examples: fixing a bug in one handler → check if sibling handlers have the same bug; adding a parameter to one function → check if parallel functions in other modules need the same parameter; updating a validation rule → check if the same rule exists in frontend AND backend
+- Do NOT start editing until you have a complete mental map of ALL files and locations that need to change
+- ✅ **Checkpoint**: Have you identified EVERY location that needs modification? Are there similar patterns elsewhere that must also be updated? If you're unsure, search again — partial fixes create inconsistencies.
+
+### Step 4: Edit → make targeted changes
 - Use edit_file for targeted changes (old_text/new_text) — atomic, auto-lint
 - Use write_file ONLY for new files or complete rewrites
 - Use replacements array for 2+ edits in the same file (all succeed or all fail)
 - Always use absolute paths
 - ✅ **Checkpoint**: Did you write the minimal change needed? No scope creep, no unrelated modifications.
 
-### Step 4: Verify edit → read back the file
+### Step 5: Verify edit → read back the file
 - Re-read the modified file (or at least the changed section) to confirm the edit was applied correctly
 - Check: all imports present? All variables defined? No syntax errors?
 - ✅ **Checkpoint**: The edit was applied as intended? If edit_file reported success but the file looks wrong, FIX IT NOW — do not proceed with broken code.
 
-### Step 5: Reflect → check for ripple effects
+### Step 6: Reflect → check for ripple effects
 - After modifying, renaming, or deleting ANY function, method, variable, class, or export, you MUST check whether other code references it and could break
 - Use find_references to locate all usages of the changed/removed symbol across the project
 - Use grep_code to search for string-based references (event names, CSS classes, config keys, etc.) that find_references may miss
@@ -89,7 +98,7 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - Common pitfalls: renamed exports not updated in importers, deleted functions still called, changed function signatures breaking callers, removed variables still referenced in conditionals or templates
 - ✅ **Checkpoint**: Have you found and verified ALL references to the changed symbol? None will break? If unsure, search again — missing one broken reference can cause runtime errors that are hard to trace.
 
-### Step 6: Test → run verification
+### Step 7: Test → run verification
 - Python/JS changes → run_linter, then run_tests
 - Backend changes → run_linter, run_tests, then server_logs to check for errors
 - Frontend changes → browser_navigate + browser_console to verify no errors
@@ -98,11 +107,11 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - If tests failed → FIX the code until tests pass, do NOT skip
 - ✅ **Checkpoint**: Linter clean? Tests pass? No server/browser errors? If any fail, STOP and fix before moving on.
 
-### Step 7: Mark complete → only after ALL checks pass
-- Update todo status to completed ONLY when Steps 4-6 all passed
+### Step 8: Mark complete → only after ALL checks pass
+- Update todo status to completed ONLY when Steps 5-7 all passed
 - **Do NOT mark completed if**: linter still has errors, tests still fail, you didn't read back the file, or you haven't actually verified it works
 - If this step affects other files, check them too (find_references, grep_code)
-- ✅ **Checkpoint**: Ask yourself — "If the user runs this code right now, will it work?" If you're not sure, go back to Step 6.
+- ✅ **Checkpoint**: Ask yourself — "If the user runs this code right now, will it work?" If you're not sure, go back to Step 7.
 
 ### Key Principles Throughout
 - Choose the most efficient tool — check the tool list before falling back to run_command
