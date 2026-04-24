@@ -6,7 +6,7 @@ const ChatManager = (() => {
     'use strict';
 
     // ── Version stamp (for cache-busting verification) ──────────
-    const CHAT_JS_VERSION = '2026-04-24-raw-debug';
+    const CHAT_JS_VERSION = '2026-04-24-v2';
 
     // ── State ──────────────────────────────────────────────────────
     let isProcessing = false;
@@ -603,6 +603,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         else if (role === 'assistant') div.classList.add('assistant');
         else if (role === 'tool') div.classList.add('tool');
         else if (role === 'error') div.classList.add('error');
+        else if (role === 'warning') div.classList.add('warning');
         else if (role === 'system') div.classList.add('system');
 
         // Role badge for assistant
@@ -721,6 +722,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 });
                 div.appendChild(retryBtn);
             }
+        } else if (role === 'warning') {
+            // Warning messages (max_tokens truncation, etc.)
+            const icon = document.createElement('span');
+            icon.textContent = '⚠️ ';
+            div.appendChild(icon);
+            const textEl = document.createElement('span');
+            textEl.innerHTML = renderMarkdownLite(content);
+            div.appendChild(textEl);
         } else if (role === 'system') {
             // System / status messages (thinking, done, etc.)
             const textEl = document.createElement('div');
@@ -1106,130 +1115,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         reasoningVisible = false;
     }
 
-    // ── Raw Debug Display ─────────────────────────────────────────
-    // Shows the raw LLM output (tool calls + arguments) in a collapsible
-    // debug section for diagnosing tool call parsing failures.
-
-    /**
-     * Show or update the raw debug section with LLM response data.
-     * Creates a collapsible block similar to reasoning display.
-     */
-    function showRawDebug(debugData) {
-        console.log('[PhoneIDE] raw_debug event received:', debugData);
-        const container = document.getElementById('chat-messages');
-        if (!container) {
-            console.warn('[PhoneIDE] showRawDebug: chat-messages container not found');
-            return;
-        }
-
-        // Find or create the debug panel
-        let debugPanel = container.querySelector('.raw-debug-panel');
-        if (!debugPanel) {
-            debugPanel = document.createElement('div');
-            debugPanel.className = 'raw-debug-panel';
-            debugPanel.innerHTML = `
-                <div class="raw-debug-header" onclick="this.parentElement.classList.toggle('raw-debug-collapsed'); this.querySelector('.raw-debug-toggle').textContent = this.parentElement.classList.contains('raw-debug-collapsed') ? '▸' : '▾'">
-                    <span class="raw-debug-toggle">▾</span>
-                    <span class="raw-debug-title">🔧 LLM Raw Output Debug</span>
-                    <span class="raw-debug-count"></span>
-                </div>
-                <div class="raw-debug-body"></div>
-            `;
-            // Insert before typing indicator if present, else append
-            const typing = container.querySelector('.chat-typing');
-            if (typing) {
-                container.insertBefore(debugPanel, typing);
-            } else {
-                container.appendChild(debugPanel);
-            }
-        }
-
-        const body = debugPanel.querySelector('.raw-debug-body');
-        const countEl = debugPanel.querySelector('.raw-debug-count');
-
-        // Build debug content
-        let html = '';
-        const d = debugData;
-
-        // Summary line
-        html += `<div class="raw-debug-summary">`;
-        html += `<span>Iteration: ${d.iteration || '?'}</span>`;
-        html += `<span>finish_reason: <b>${d.finish_reason || 'null'}</b></span>`;
-        html += `<span>tool_calls: <b>${d.tool_call_count || 0}</b></span>`;
-        html += `<span>content_len: ${d.content_length || 0}</span>`;
-        html += `</div>`;
-
-        // Content preview (if any)
-        if (d.content_preview) {
-            html += `<div class="raw-debug-section">`;
-            html += `<div class="raw-debug-section-title">Content Preview</div>`;
-            html += `<pre class="raw-debug-pre">${escapeHtml(d.content_preview)}</pre>`;
-            html += `</div>`;
-        }
-
-        // Assembled tool calls
-        if (d.tool_calls && d.tool_calls.length > 0) {
-            for (const tc of d.tool_calls) {
-                html += `<div class="raw-debug-section">`;
-                html += `<div class="raw-debug-section-title">TC[${tc.index}] ${tc.name || '(unnamed)'} (args_len=${tc.args_length})</div>`;
-                if (tc.args_preview) {
-                    html += `<pre class="raw-debug-pre">${escapeHtml(tc.args_preview)}`;
-                    if (tc.args_tail) {
-                        html += `\n...\n${escapeHtml(tc.args_tail)}`;
-                    }
-                    html += `</pre>`;
-                }
-                html += `</div>`;
-            }
-        }
-
-        // Raw SSE tool calls (accumulated directly from SSE stream)
-        if (d.raw_sse_tool_calls && d.raw_sse_tool_calls.length > 0) {
-            for (const rtc of d.raw_sse_tool_calls) {
-                html += `<div class="raw-debug-section raw-debug-sse">`;
-                html += `<div class="raw-debug-section-title">SSE_RAW ${rtc.name || '(unnamed)'} (args_len=${rtc.args_length})</div>`;
-                if (rtc.args_preview) {
-                    html += `<pre class="raw-debug-pre">${escapeHtml(rtc.args_preview)}`;
-                    if (rtc.args_tail) {
-                        html += `\n...\n${escapeHtml(rtc.args_tail)}`;
-                    }
-                    html += `</pre>`;
-                }
-                html += `</div>`;
-            }
-        }
-
-        // No tool calls at all
-        if ((!d.tool_calls || d.tool_calls.length === 0) && (!d.raw_sse_tool_calls || d.raw_sse_tool_calls.length === 0)) {
-            html += `<div class="raw-debug-section">`;
-            html += `<div class="raw-debug-section-title">No tool calls detected</div>`;
-            html += `</div>`;
-        }
-
-        body.innerHTML += html;
-
-        // Update count
-        const existingCount = parseInt(countEl.textContent) || 0;
-        countEl.textContent = `${existingCount + 1} rounds`;
-
-        // Auto-expand on first round
-        if (existingCount === 0) {
-            debugPanel.classList.remove('raw-debug-collapsed');
-        }
-
-        forceScrollToBottom();
-    }
-
-    /**
-     * Clear the raw debug panel (at start of new task)
-     */
-    function clearRawDebug() {
-        const container = document.getElementById('chat-messages');
-        if (!container) return;
-        const panel = container.querySelector('.raw-debug-panel');
-        if (panel) panel.remove();
-    }
-
     /**
      * Simple HTML escape
      */
@@ -1596,7 +1481,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         setProcessing(true);
         hideTurnIndicator();
-        clearRawDebug();
 
         streamingStartTime = Date.now();
         iterationCount = 0;
@@ -1754,8 +1638,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         }
                         addMessage('system', '⏹ 任务已停止');
                         if (window.notifyAndroid) window.notifyAndroid('PhoneIDE', 'AI 任务已停止', 'warning', 3000);
-                    } else if (eventType === 'raw_debug') {
-                        showRawDebug(parsed.data || parsed);
+                    } else if (eventType === 'warning') {
+                        // max_tokens truncation or other warnings
+                        const warnMsg = parsed.content || parsed.message || 'Warning';
+                        addMessage('warning', warnMsg);
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE Warning', warnMsg.substring(0, 200), 'warning', 5000);
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
@@ -1962,7 +1849,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         addMessage('user', message);
         setProcessing(true);
         hideTurnIndicator();
-        clearRawDebug();
 
         // Plan mode: prepend plan instruction to message
         let actualMessage = message;
@@ -2153,8 +2039,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         addMessage('system', '⏹ 任务已停止');
-                    } else if (eventType === 'raw_debug') {
-                        showRawDebug(parsed.data || parsed);
+                    } else if (eventType === 'warning') {
+                        // max_tokens truncation or other warnings
+                        const warnMsg = parsed.content || parsed.message || 'Warning';
+                        addMessage('warning', warnMsg);
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE Warning', warnMsg.substring(0, 200), 'warning', 5000);
                     } else if (eventType === 'error') {
                         // Error occurred
                         hasError = true;
@@ -2336,7 +2225,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         setProcessing(true);
         hideTurnIndicator();
-        clearRawDebug();
 
         streamingStartTime = Date.now();
         iterationCount = 0;
@@ -2507,8 +2395,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                             finalizeStreamMessage();
                         }
                         addMessage('system', '⏹ 任务已停止');
-                    } else if (eventType === 'raw_debug') {
-                        showRawDebug(parsed.data || parsed);
+                    } else if (eventType === 'warning') {
+                        // max_tokens truncation or other warnings
+                        const warnMsg = parsed.content || parsed.message || 'Warning';
+                        addMessage('warning', warnMsg);
+                        if (window.notifyAndroid) window.notifyAndroid('PhoneIDE Warning', warnMsg.substring(0, 200), 'warning', 5000);
                     } else if (eventType === 'error') {
                         hasError = true;
                         hideTyping();
@@ -2754,7 +2645,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                     <input type="number" class="llm-temperature" data-idx="${idx}" min="0" max="2" step="0.1" value="${m.temperature !== undefined ? m.temperature : '0.7'}">
                                 </label>
                                 <label><span>Max Tokens</span>
-                                    <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="128000" step="256" value="${m.max_tokens || '4096'}">
+                                    <input type="number" class="llm-max-tokens" data-idx="${idx}" min="256" max="256000" step="256" value="${m.max_tokens || '100000'}">
                                 </label>
                                 <label><span>最大上下文</span>
                                     <input type="number" class="llm-max-context" data-idx="${idx}" min="1024" max="2000000" step="1024" value="${m.max_context || '128000'}">
@@ -2845,7 +2736,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].temperature = parseFloat(input.value) || 0.7; });
             });
             list.querySelectorAll('.llm-max-tokens').forEach(input => {
-                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096; });
+                input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 100000; });
             });
             list.querySelectorAll('.llm-max-context').forEach(input => {
                 input.addEventListener('change', () => { workingModels[parseInt(input.dataset.idx)].max_context = parseInt(input.value, 10) || 128000; });
@@ -2879,7 +2770,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 workingModels[parseInt(input.dataset.idx)].temperature = parseFloat(input.value) || 0.7;
             });
             overlay.querySelectorAll('.llm-max-tokens').forEach(input => {
-                workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 4096;
+                workingModels[parseInt(input.dataset.idx)].max_tokens = parseInt(input.value, 10) || 100000;
             });
             overlay.querySelectorAll('.llm-max-context').forEach(input => {
                 workingModels[parseInt(input.dataset.idx)].max_context = parseInt(input.value, 10) || 128000;
@@ -2902,7 +2793,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 model: '',
                 enabled: false,
                 temperature: 0.7,
-                max_tokens: 4096,
+                max_tokens: 100000,
                 max_context: 128000,
                 reasoning: true,
             });

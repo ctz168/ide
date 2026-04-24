@@ -1775,6 +1775,14 @@ html, body {
     font-size: 12px;
 }
 
+.chat-msg.warning {
+    align-self: flex-start;
+    background: rgba(232, 180, 30, 0.12);
+    border: 1px solid rgba(232, 180, 30, 0.3);
+    color: #c8a000;
+    font-size: 12px;
+}
+
 .chat-msg .chat-time {
     font-size: 10px;
     color: var(--text-muted);
@@ -1836,95 +1844,6 @@ html, body {
     0%, 20% { content: '.'; }
     40% { content: '..'; }
     60%, 100% { content: '...'; }
-}
-
-/* ── Raw LLM Debug Panel ─────────────────────────── */
-.raw-debug-panel {
-    margin: 6px 0;
-    border: 1px solid var(--mauve);
-    border-radius: var(--radius);
-    background: var(--bg-surface);
-    font-size: 12px;
-    max-width: 100%;
-    overflow: hidden;
-}
-.raw-debug-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    cursor: pointer;
-    background: color-mix(in srgb, var(--mauve) 15%, transparent);
-    user-select: none;
-}
-.raw-debug-header:hover {
-    background: color-mix(in srgb, var(--mauve) 25%, transparent);
-}
-.raw-debug-toggle {
-    font-size: 12px;
-    color: var(--mauve);
-    flex-shrink: 0;
-}
-.raw-debug-title {
-    color: var(--mauve);
-    font-weight: 600;
-    flex: 1;
-}
-.raw-debug-count {
-    color: var(--text-muted);
-    font-size: 11px;
-}
-.raw-debug-body {
-    padding: 8px 10px;
-    max-height: 500px;
-    overflow-y: auto;
-}
-.raw-debug-collapsed .raw-debug-body {
-    display: none;
-}
-.raw-debug-summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 16px;
-    margin-bottom: 8px;
-    color: var(--text-muted);
-    font-size: 11px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-}
-.raw-debug-summary b {
-    color: var(--text);
-}
-.raw-debug-section {
-    margin-bottom: 8px;
-    padding: 4px 0;
-}
-.raw-debug-section:last-child {
-    margin-bottom: 0;
-}
-.raw-debug-section-title {
-    color: var(--blue);
-    font-weight: 600;
-    font-size: 11px;
-    margin-bottom: 2px;
-}
-.raw-debug-sse .raw-debug-section-title {
-    color: var(--green);
-}
-.raw-debug-pre {
-    background: var(--mantle);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 8px;
-    color: var(--text);
-    font-family: 'Sarasa Mono SC', 'Fira Code', 'Consolas', monospace;
-    font-size: 11px;
-    line-height: 1.4;
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 300px;
-    overflow-y: auto;
-    margin: 0;
 }
 
 #chat-input-area {
@@ -2749,6 +2668,11 @@ button, .file-item, .search-result-item, .git-change-item {
 [data-theme="claude"] .chat-msg.error {
     background: rgba(192, 57, 43, 0.08);
     border-color: rgba(192, 57, 43, 0.25);
+}
+[data-theme="claude"] .chat-msg.warning {
+    background: rgba(180, 140, 20, 0.08);
+    border-color: rgba(180, 140, 20, 0.25);
+    color: #9a7b00;
 }
 [data-theme="claude"] .chat-msg pre {
     background: #F5F0E8;

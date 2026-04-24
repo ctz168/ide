@@ -5481,68 +5481,68 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         tc_entry['function']['arguments'] = current_args_buffer[idx]
 
                 # ── RAW DEBUG: Dump LLM raw output to server log and frontend ──
-                # This helps diagnose tool call parsing failures
-                _raw_debug_info = {
-                    'iteration': total_iterations + 1,
-                    'finish_reason': finish_reason,
-                    'has_tool_calls': bool(current_tool_calls),
-                    'tool_call_count': len(current_tool_calls),
-                    'content_length': len(delta_content) if delta_content else 0,
-                    'content_preview': (delta_content or '')[:500],
-                }
-                if current_tool_calls:
-                    _raw_debug_info['tool_calls'] = []
-                    for _i, _tc in enumerate(current_tool_calls):
-                        _fn = _tc.get('function', {})
-                        _args_str = _fn.get('arguments', '')
-                        _raw_debug_info['tool_calls'].append({
-                            'index': _i,
-                            'id': _tc.get('id', ''),
-                            'name': _fn.get('name', ''),
-                            'args_length': len(_args_str),
-                            'args_preview': _args_str[:300] if _args_str else '',
-                            'args_tail': _args_str[-200:] if _args_str and len(_args_str) > 300 else '',
-                        })
-                # Also get raw tool calls from _last_llm_payload_debug (accumulated directly from SSE)
-                _raw_tc_from_sse = _last_llm_payload_debug.get('raw_tool_calls', [])
-                if _raw_tc_from_sse:
-                    _raw_debug_info['raw_sse_tool_calls'] = []
-                    for _rtc in _raw_tc_from_sse:
-                        _rtc_args = _rtc.get('arguments', '')
-                        _raw_debug_info['raw_sse_tool_calls'].append({
-                            'id': _rtc.get('id', ''),
-                            'name': _rtc.get('name', ''),
-                            'args_length': len(_rtc_args),
-                            'args_preview': _rtc_args[:300] if _rtc_args else '',
-                            'args_tail': _rtc_args[-200:] if _rtc_args and len(_rtc_args) > 300 else '',
-                        })
-                # Print to server console — dump full args for debugging
-                print(f'[LLM RAW DEBUG] iter={total_iterations+1} finish_reason={finish_reason} '
-                      f'tool_calls={len(current_tool_calls)} content_len={len(delta_content or "")}')
-                if delta_content:
-                    print(f'  content_preview: {delta_content[:300]}')
-                if current_tool_calls:
-                    for _i, _tc in enumerate(current_tool_calls):
-                        _fn = _tc.get('function', {})
-                        _args_full = _fn.get('arguments', '')
-                        print(f'  TC[{_i}] name={_fn.get("name","")} args_len={len(_args_full)}')
-                        # Print first 500 chars and last 300 chars of args
-                        if len(_args_full) <= 800:
-                            print(f'  TC[{_i}] args_full: {_args_full}')
-                        else:
-                            print(f'  TC[{_i}] args_head: {_args_full[:500]}')
-                            print(f'  TC[{_i}] args_tail: {_args_full[-300:]}')
-                if _raw_tc_from_sse:
-                    for _i, _rtc in enumerate(_raw_tc_from_sse):
-                        _rtc_args = _rtc.get('arguments', '')
-                        print(f'  RAW_SSE[{_i}] name={_rtc.get("name","")} args_len={len(_rtc_args)}')
-                        if len(_rtc_args) <= 800:
-                            print(f'  RAW_SSE[{_i}] args_full: {_rtc_args}')
-                        else:
-                            print(f'  RAW_SSE[{_i}] args_head: {_rtc_args[:500]}')
-                            print(f'  RAW_SSE[{_i}] args_tail: {_rtc_args[-300:]}')
-                # Send to frontend as SSE event
-                yield f"data: {json.dumps({'type': 'raw_debug', 'data': _raw_debug_info}, ensure_ascii=False)}\n\n"
+                # [DISABLED] Uncomment when debugging tool call parsing failures
+                # _raw_debug_info = {
+                #     'iteration': total_iterations + 1,
+                #     'finish_reason': finish_reason,
+                #     'has_tool_calls': bool(current_tool_calls),
+                #     'tool_call_count': len(current_tool_calls),
+                #     'content_length': len(delta_content) if delta_content else 0,
+                #     'content_preview': (delta_content or '')[:500],
+                # }
+                # if current_tool_calls:
+                #     _raw_debug_info['tool_calls'] = []
+                #     for _i, _tc in enumerate(current_tool_calls):
+                #         _fn = _tc.get('function', {})
+                #         _args_str = _fn.get('arguments', '')
+                #         _raw_debug_info['tool_calls'].append({
+                #             'index': _i,
+                #             'id': _tc.get('id', ''),
+                #             'name': _fn.get('name', ''),
+                #             'args_length': len(_args_str),
+                #             'args_preview': _args_str[:300] if _args_str else '',
+                #             'args_tail': _args_str[-200:] if _args_str and len(_args_str) > 300 else '',
+                #         })
+                # # Also get raw tool calls from _last_llm_payload_debug (accumulated directly from SSE)
+                # _raw_tc_from_sse = _last_llm_payload_debug.get('raw_tool_calls', [])
+                # if _raw_tc_from_sse:
+                #     _raw_debug_info['raw_sse_tool_calls'] = []
+                #     for _rtc in _raw_tc_from_sse:
+                #         _rtc_args = _rtc.get('arguments', '')
+                #         _raw_debug_info['raw_sse_tool_calls'].append({
+                #             'id': _rtc.get('id', ''),
+                #             'name': _rtc.get('name', ''),
+                #             'args_length': len(_rtc_args),
+                #             'args_preview': _rtc_args[:300] if _rtc_args else '',
+                #             'args_tail': _rtc_args[-200:] if _rtc_args and len(_rtc_args) > 300 else '',
+                #         })
+                # # Print to server console — dump full args for debugging
+                # print(f'[LLM RAW DEBUG] iter={total_iterations+1} finish_reason={finish_reason} '
+                #       f'tool_calls={len(current_tool_calls)} content_len={len(delta_content or "")}')
+                # if delta_content:
+                #     print(f'  content_preview: {delta_content[:300]}')
+                # if current_tool_calls:
+                #     for _i, _tc in enumerate(current_tool_calls):
+                #         _fn = _tc.get('function', {})
+                #         _args_full = _fn.get('arguments', '')
+                #         print(f'  TC[{_i}] name={_fn.get("name","")} args_len={len(_args_full)}')
+                #         # Print first 500 chars and last 300 chars of args
+                #         if len(_args_full) <= 800:
+                #             print(f'  TC[{_i}] args_full: {_args_full}')
+                #         else:
+                #             print(f'  TC[{_i}] args_head: {_args_full[:500]}')
+                #             print(f'  TC[{_i}] args_tail: {_args_full[-300:]}')
+                # if _raw_tc_from_sse:
+                #     for _i, _rtc in enumerate(_raw_tc_from_sse):
+                #         _rtc_args = _rtc.get('arguments', '')
+                #         print(f'  RAW_SSE[{_i}] name={_rtc.get("name","")} args_len={len(_rtc_args)}')
+                #         if len(_rtc_args) <= 800:
+                #             print(f'  RAW_SSE[{_i}] args_full: {_rtc_args}')
+                #         else:
+                #             print(f'  RAW_SSE[{_i}] args_head: {_rtc_args[:500]}')
+                #             print(f'  RAW_SSE[{_i}] args_tail: {_rtc_args[-300:]}')
+                # # Send to frontend as SSE event
+                # yield f"data: {json.dumps({'type': 'raw_debug', 'data': _raw_debug_info}, ensure_ascii=False)}\n\n"
 
                 # If reasoning was accumulated but reasoning_end not yet signaled
                 if reasoning_text and not reasoning_ended:
@@ -5716,9 +5716,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         accumulated_text = ''  # reset for next iteration
                         continue
                 # All tool calls valid or recoverable despite length truncation
-                yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached) but tool calls are intact or recoverable. Consider increasing Max Tokens.'})}\n\n"
+                _cur_max = llm_config.get('max_tokens', 100000)
+                yield f"data: {json.dumps({'type': 'warning', 'content': f'⚠️ 输出被截断（已达到 max_tokens={_cur_max} 上限），但工具调用完整可用。如需更长的输出，请在设置中调大 Max Tokens 值。'})}\n\n"
             else:
-                yield f"data: {json.dumps({'type': 'warning', 'content': 'Response was truncated (max_tokens reached). Consider increasing Max Tokens in settings for longer responses.'})}\n\n"
+                _cur_max = llm_config.get('max_tokens', 100000)
+                yield f"data: {json.dumps({'type': 'warning', 'content': f'⚠️ 输出被截断（已达到 max_tokens={_cur_max} 上限），模型生成未完成。请在设置中调大 Max Tokens 值（当前: {_cur_max}），然后重新发送消息以获取完整响应。'})}\n\n"
 
         content = response_message.get('content', '') or ''
         tool_calls_raw = response_message.get('tool_calls', [])
@@ -5759,7 +5761,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             if _raw_tail:
                 _empty_debug.append(f'last_sse_chunks: {json.dumps(_raw_tail, ensure_ascii=False)[:1000]}')
             # Print full debug to server log
-            print(f'[LLM] EMPTY RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _empty_debug))
+            # print(f'[LLM] EMPTY RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _empty_debug))
 
             # Try auto-retry for empty responses (up to 3 times)
             empty_retries = getattr(run_agent_loop_stream, '_empty_retry', 0) + 1
@@ -5801,7 +5803,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 _final_debug.append(f'payload_size: {_debug.get("size", "?")} bytes')
                 _final_debug.append(f'sse_chunks_received: {_debug.get("raw_sse_count", "?")}')
                 _final_debug.append(f'sse_finish_reason: {_debug.get("finish_reason", "?")}')
-                print(f'[LLM] EMPTY FINAL RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _final_debug))
+                # print(f'[LLM] EMPTY FINAL RESPONSE DEBUG:\n' + '\n'.join(f'  {l}' for l in _final_debug))
                 _err_msg = 'Model returned an empty final response.\n\nRaw debug info:\n' + '\n'.join(f'  {l}' for l in _final_debug)
                 yield f"data: {json.dumps({'type': 'error', 'content': _err_msg})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
