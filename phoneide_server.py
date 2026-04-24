@@ -70,13 +70,20 @@ app.register_blueprint(debug_bp)
 
 @app.route('/')
 def index():
-    resp = make_response(send_from_directory(app.static_folder, 'index.html'))
-    # Replace cache-bust placeholder with server start timestamp
+    # Read index.html directly to avoid Werkzeug 3.0+ direct_passthrough issue.
+    # send_from_directory() returns a Response with direct_passthrough=True in
+    # Werkzeug 3.0+, which makes get_data() raise:
+    #   "Attempted implicit sequence conversion but the response object
+    #    is in direct passthrough mode."
+    # Reading the file ourselves avoids this entirely.
     import time as _time
     _bust = str(int(_time.time()))
-    _html = resp.get_data(as_text=True)
+    _html_path = os.path.join(app.static_folder, 'index.html')
+    with open(_html_path, 'r', encoding='utf-8') as f:
+        _html = f.read()
     _html = _html.replace('__CACHE_BUST__', _bust)
-    resp.set_data(_html)
+    resp = make_response(_html)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
 
