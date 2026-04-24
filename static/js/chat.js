@@ -3154,16 +3154,21 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             .code-block-wrapper pre {
                 margin: 0 !important;
                 border-radius: var(--radius-sm) !important;
+                padding-top: 28px !important;
             }
             .code-block-wrapper .code-lang {
                 position: absolute;
-                top: 4px;
-                left: 8px;
-                font-size: 10px;
+                top: 5px;
+                left: 10px;
+                font-size: 11px;
                 color: var(--text-muted);
                 font-family: var(--font-mono);
-                z-index: 1;
+                z-index: 2;
                 pointer-events: none;
+                background: var(--bg-tertiary);
+                padding: 1px 4px;
+                border-radius: 2px;
+                line-height: 1.4;
             }
             .code-copy-btn {
                 position: absolute;
@@ -3177,8 +3182,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 border-radius: var(--radius-sm);
                 cursor: pointer;
                 opacity: 0.7;
-                z-index: 1;
-                line-height: 1;
+                z-index: 2;
+                line-height: 1.4;
             }
             .code-copy-btn:hover { opacity: 1; }
             .code-copy-btn:active { transform: scale(0.9); }
