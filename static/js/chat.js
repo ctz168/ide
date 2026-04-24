@@ -1361,7 +1361,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // Build queue list HTML
             let html = '<div class="pending-queue-header">';
             html += `<span class="pending-queue-title">⏳ 排队消息 (${pendingMessages.length})</span>`;
-            html += `<button class="pending-queue-clear" onclick="ChatModule.clearPendingQueue()">全部清除</button>`;
+            html += `<button class="pending-queue-clear">全部清除</button>`;
             html += '</div>';
             html += '<div class="pending-queue-list">';
             pendingMessages.forEach((entry, idx) => {
@@ -1391,6 +1391,17 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     }
                 });
             });
+
+            // Bind clear all button
+            const clearBtn = container.querySelector('.pending-queue-clear');
+            if (clearBtn) {
+                clearBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    pendingMessages = [];
+                    savePendingQueue();
+                    updatePendingBadge();
+                });
+            }
         } else if (container) {
             container.style.display = 'none';
         }
