@@ -303,6 +303,11 @@ def _proxy_response(target_resp, proxy_base):
         try:
             text = raw_body.decode(target_resp.encoding or 'utf-8', errors='replace')
             text = _rewrite_html_urls(text, proxy_base)
+            # Remove <link rel="preload" as="font"> tags — the browser cannot
+            # match preloaded proxy URLs to CSS @font-face references through
+            # the proxy, causing "preloaded but not used" warnings and wasted
+            # requests.  Fonts will load normally via CSS @font-face.
+            text = re.sub(r'<link\b[^>]*\brel\s*=\s*["\']?preload["\']?[^>]*\bas\s*=\s*["\']?font["\']?[^>]*/?\s*>', '', text, flags=re.IGNORECASE)
             # Inject a script that intercepts dynamically-created script elements
             # and rewrites their src to route through the proxy. This handles cases
             # where JS code creates <script> elements at runtime (e.g. chat.js's
