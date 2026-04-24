@@ -108,7 +108,7 @@ const SearchManager = (() => {
         if (resultsEl) {
             // Show search scope info
             const scopeLabel = getScopeLabel();
-            resultsEl.innerHTML = `<div class="search-summary">Searching${scopeLabel}...</div>`;
+            resultsEl.innerHTML = `<div class="search-summary">Searching ${scopeLabel}...</div>`;
         }
 
         try {
