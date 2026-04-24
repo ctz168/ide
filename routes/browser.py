@@ -215,8 +215,10 @@ _STRIP_HEADERS = {
 # to prevent the browser from caching stale rewritten content.
 _PASS_HEADERS = {
     'content-type',
-    'transfer-encoding',
-    'set-cookie',
+    # Do NOT pass through 'transfer-encoding' — we buffer the entire response
+    # and Flask sends it with Content-Length.  Passing 'chunked' through causes
+    # the browser to expect chunked framing but receive a plain body, resulting
+    # in ERR_INCOMPLETE_CHUNKED_ENCODING.
     'access-control-allow-origin',
     'access-control-allow-credentials',
 }
