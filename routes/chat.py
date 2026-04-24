@@ -5516,19 +5516,31 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                             'args_preview': _rtc_args[:300] if _rtc_args else '',
                             'args_tail': _rtc_args[-200:] if _rtc_args and len(_rtc_args) > 300 else '',
                         })
-                # Print to server console
+                # Print to server console — dump full args for debugging
                 print(f'[LLM RAW DEBUG] iter={total_iterations+1} finish_reason={finish_reason} '
                       f'tool_calls={len(current_tool_calls)} content_len={len(delta_content or "")}')
+                if delta_content:
+                    print(f'  content_preview: {delta_content[:300]}')
                 if current_tool_calls:
                     for _i, _tc in enumerate(current_tool_calls):
                         _fn = _tc.get('function', {})
-                        print(f'  TC[{_i}] name={_fn.get("name","")} args_len={len(_fn.get("arguments",""))}')
-                        print(f'  TC[{_i}] args_preview: {_fn.get("arguments","")[:200]}')
-                        print(f'  TC[{_i}] args_tail: {_fn.get("arguments","")[-100:]}')
+                        _args_full = _fn.get('arguments', '')
+                        print(f'  TC[{_i}] name={_fn.get("name","")} args_len={len(_args_full)}')
+                        # Print first 500 chars and last 300 chars of args
+                        if len(_args_full) <= 800:
+                            print(f'  TC[{_i}] args_full: {_args_full}')
+                        else:
+                            print(f'  TC[{_i}] args_head: {_args_full[:500]}')
+                            print(f'  TC[{_i}] args_tail: {_args_full[-300:]}')
                 if _raw_tc_from_sse:
                     for _i, _rtc in enumerate(_raw_tc_from_sse):
-                        print(f'  RAW_SSE[{_i}] name={_rtc.get("name","")} args_len={len(_rtc.get("arguments",""))}')
-                        print(f'  RAW_SSE[{_i}] args_preview: {_rtc.get("arguments","")[:200]}')
+                        _rtc_args = _rtc.get('arguments', '')
+                        print(f'  RAW_SSE[{_i}] name={_rtc.get("name","")} args_len={len(_rtc_args)}')
+                        if len(_rtc_args) <= 800:
+                            print(f'  RAW_SSE[{_i}] args_full: {_rtc_args}')
+                        else:
+                            print(f'  RAW_SSE[{_i}] args_head: {_rtc_args[:500]}')
+                            print(f'  RAW_SSE[{_i}] args_tail: {_rtc_args[-300:]}')
                 # Send to frontend as SSE event
                 yield f"data: {json.dumps({'type': 'raw_debug', 'data': _raw_debug_info}, ensure_ascii=False)}\n\n"
 

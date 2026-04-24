@@ -5,6 +5,9 @@
 const ChatManager = (() => {
     'use strict';
 
+    // ── Version stamp (for cache-busting verification) ──────────
+    const CHAT_JS_VERSION = '2026-04-24-raw-debug';
+
     // ── State ──────────────────────────────────────────────────────
     let isProcessing = false;
     let messages = [];                // local cache of chat history
@@ -1112,8 +1115,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * Creates a collapsible block similar to reasoning display.
      */
     function showRawDebug(debugData) {
+        console.log('[PhoneIDE] raw_debug event received:', debugData);
         const container = document.getElementById('chat-messages');
-        if (!container) return;
+        if (!container) {
+            console.warn('[PhoneIDE] showRawDebug: chat-messages container not found');
+            return;
+        }
 
         // Find or create the debug panel
         let debugPanel = container.querySelector('.raw-debug-panel');
@@ -4610,6 +4617,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         // Mode control
         get chatMode() { return chatMode; },
         set chatMode(mode) { chatMode = mode; updateModeToggleUI(); },
+
+        // Debug
+        get version() { return CHAT_JS_VERSION; },
     };
 })();
 

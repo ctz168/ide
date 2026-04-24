@@ -71,6 +71,12 @@ app.register_blueprint(debug_bp)
 @app.route('/')
 def index():
     resp = make_response(send_from_directory(app.static_folder, 'index.html'))
+    # Replace cache-bust placeholder with server start timestamp
+    import time as _time
+    _bust = str(int(_time.time()))
+    _html = resp.get_data(as_text=True)
+    _html = _html.replace('__CACHE_BUST__', _bust)
+    resp.set_data(_html)
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
 
