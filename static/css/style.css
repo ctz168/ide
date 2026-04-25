@@ -2717,6 +2717,7 @@ button, .file-item, .search-result-item, .git-change-item {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 16px;
+    padding-bottom: 60px;
     font-size: 14px;
     line-height: 1.7;
     color: var(--text-primary);

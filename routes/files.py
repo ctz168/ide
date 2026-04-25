@@ -209,7 +209,7 @@ def preview_file():
   #hljs-dark {{ disabled: false; }}
 }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.7;
+       max-width: 900px; margin: 0 auto; padding: 20px; padding-bottom: 60px; line-height: 1.7;
        color: var(--fg); background: var(--bg); }}
 h1 {{ font-size: 2em; font-weight: 700; margin-top: 1.2em; margin-bottom: 0.4em;
       border-bottom: 2px solid var(--border); padding-bottom: 0.3em; color: var(--heading); }}
@@ -420,7 +420,7 @@ def serve_preview_file(subpath):
   #hljs-dark {{ disabled: false; }}
 }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.7;
+       max-width: 900px; margin: 0 auto; padding: 20px; padding-bottom: 60px; line-height: 1.7;
        color: var(--fg); background: var(--bg); }}
 h1 {{ font-size: 2em; font-weight: 700; margin-top: 1.2em; margin-bottom: 0.4em;
       border-bottom: 2px solid var(--border); padding-bottom: 0.3em; color: var(--heading); }}
@@ -1545,7 +1545,7 @@ def _pdf_to_html(filepath):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       margin: 0; padding: 20px; background: #525659; color: #333; }}
+       margin: 0; padding: 20px; padding-bottom: 60px; background: #525659; color: #333; }}
 .page {{ background: white; margin: 20px auto; max-width: 800px; padding: 40px 50px;
         border-radius: 2px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); min-height: 200px; }}
 .page-header {{ color: #999; font-size: 11px; text-align: center; margin-bottom: 20px;
@@ -1912,7 +1912,7 @@ def _docx_to_html(filepath):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333;
+       max-width: 900px; margin: 0 auto; padding: 20px; padding-bottom: 60px; line-height: 1.6; color: #333;
        background: #fff; }}
 h1 {{ font-size: 1.8em; margin-top: 1.5em; margin-bottom: 0.5em; }}
 h2 {{ font-size: 1.5em; margin-top: 1.3em; margin-bottom: 0.4em; }}
@@ -2808,7 +2808,7 @@ def _pptx_to_html(filepath):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       margin: 0; padding: 20px; background: #f0f0f0; color: #333; }}
+       margin: 0; padding: 20px; padding-bottom: 60px; background: #f0f0f0; color: #333; }}
 .slide {{ margin: 20px auto; max-width: {slide_w_px}px; width: calc(100vw - 40px);
           border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); overflow: hidden; }}
 .slide-scaler {{ width: 100%; position: relative; }}
@@ -3148,7 +3148,7 @@ def _xlsx_to_html(filepath):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.4; color: #333; }}
+       max-width: 1200px; margin: 0 auto; padding: 20px; padding-bottom: 60px; line-height: 1.4; color: #333; }}
 .sheet {{ margin: 16px 0; }}
 .sheet-title {{ margin-bottom: 8px; color: #555; font-size: 16px; }}
 .sheet-nav {{ display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }}
