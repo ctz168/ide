@@ -1715,7 +1715,6 @@ const EditorManager = (() => {
         if (!previewEl || !editor) return;
 
         var mdRaw = editor.getValue();
-        var originalContent = editor.getValue(); // unmodified content for line mapping
 
         if (typeof marked === 'undefined') {
             previewEl.innerHTML = '<p style="color:var(--text-muted)">Markdown 渲染器未加载</p>';
@@ -1762,83 +1761,17 @@ const EditorManager = (() => {
 
         // --- Step 2: Configure marked v12 with custom code highlighter ---
         var renderer = new marked.Renderer();
-        var queueIdx = 0;
-
-        function nextSourceLine(type) {
-            // Check if the next queue entry matches this type
-            if (queueIdx < blockLineQueue.length && blockLineQueue[queueIdx].type === type) {
-                var line = blockLineQueue[queueIdx].startLine;
-                queueIdx++;
-                return line;
-            }
-            // Type mismatch → this is a nested render call (e.g. paragraph inside blockquote).
-            return -1;
-        }
-
-        function injectLine(html, line) {
-            if (line < 0) return html; // nested call — don't inject
-            return html.replace(/^<(\w+)/, '<$1 data-source-line="' + line + '"');
-        }
-
-        // Code renderer with highlight.js + data-source-line
         renderer.code = function(code, lang) {
-            var line = nextSourceLine('code');
-            var codeHtml;
             if (typeof hljs !== 'undefined') {
                 if (lang && hljs.getLanguage(lang)) {
-                    try { codeHtml = '<pre><code class="hljs language-' + lang + '">' +
+                    try { return '<pre><code class="hljs language-' + lang + '">' +
                                 hljs.highlight(code, { language: lang }).value + '</code></pre>'; }
-                    catch(e) { codeHtml = '<pre><code>' + code + '</code></pre>'; }
-                } else {
-                    try { codeHtml = '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }
-                    catch(e) { codeHtml = '<pre><code>' + code + '</code></pre>'; }
+                    catch(e) {}
                 }
-            } else {
-                codeHtml = '<pre><code>' + code + '</code></pre>';
+                try { return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }
+                catch(e) {}
             }
-            return injectLine(codeHtml, line);
-        };
-
-        // Heading renderer with data-source-line
-        var origHeading = renderer.heading.bind(renderer);
-        renderer.heading = function(text, depth, raw) {
-            var line = nextSourceLine('heading');
-            return injectLine(origHeading(text, depth, raw), line);
-        };
-
-        // Paragraph renderer with data-source-line
-        var origParagraph = renderer.paragraph.bind(renderer);
-        renderer.paragraph = function(text) {
-            var line = nextSourceLine('paragraph');
-            return injectLine(origParagraph(text), line);
-        };
-
-        // List renderer with data-source-line
-        var origList = renderer.list.bind(renderer);
-        renderer.list = function(body, ordered, start) {
-            var line = nextSourceLine('list');
-            return injectLine(origList(body, ordered, start), line);
-        };
-
-        // Blockquote renderer with data-source-line
-        var origBlockquote = renderer.blockquote.bind(renderer);
-        renderer.blockquote = function(body) {
-            var line = nextSourceLine('blockquote');
-            return injectLine(origBlockquote(body), line);
-        };
-
-        // Table renderer with data-source-line
-        var origTable = renderer.table.bind(renderer);
-        renderer.table = function(header, body) {
-            var line = nextSourceLine('table');
-            return injectLine(origTable(header, body), line);
-        };
-
-        // HR renderer with data-source-line
-        var origHr = renderer.hr.bind(renderer);
-        renderer.hr = function() {
-            var line = nextSourceLine('hr');
-            return injectLine(origHr(), line);
+            return '<pre><code>' + code + '</code></pre>';
         };
 
         marked.setOptions({
