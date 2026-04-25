@@ -42,20 +42,34 @@ def _get_effective_base(config=None):
 def _detect_project_type(project_dir):
     """Detect project type by checking for marker files.
     Returns 'node' for Node.js projects, 'python' for Python, or 'unknown'.
+
+    Python markers take priority: a project with both package.json and
+    requirements.txt/pyproject.toml is classified as Python (package.json
+    may just be for frontend tooling).
     """
     if not project_dir or not os.path.isdir(project_dir):
         return 'unknown'
 
-    # Check for Node.js project first (package.json is a strong signal)
-    if os.path.isfile(os.path.join(project_dir, 'package.json')):
-        return 'node'
+    try:
+        dir_files = os.listdir(project_dir)
+    except OSError:
+        return 'unknown'
 
-    # Check for Python project
-    for fname in os.listdir(project_dir):
+    has_package_json = 'package.json' in dir_files
+    has_python_markers = False
+    for fname in dir_files:
         if fname.endswith('.py'):
             return 'python'
-        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'):
-            return 'python'
+        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile', 'setup.cfg', 'tox.ini'):
+            has_python_markers = True
+
+    # Python markers take priority over package.json
+    if has_python_markers:
+        return 'python'
+
+    # Only classify as Node.js if package.json exists with no Python markers
+    if has_package_json:
+        return 'node'
 
     return 'unknown'
 

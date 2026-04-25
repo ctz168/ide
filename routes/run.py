@@ -25,6 +25,12 @@ _IDE_PORT = int(os.environ.get('PHONEIDE_PORT', 12345))
 def _detect_project_type(project_dir):
     """Detect project type by checking for marker files.
     Returns dict with: type, label, scripts (for node), entry_files, etc.
+
+    Priority: Python markers > Node.js > Go > Rust > Java > C/C++
+    A package.json alone doesn't mean it's a Node.js project — many Python
+    projects include package.json for frontend tooling. We only classify as
+    Node.js if there are NO Python markers (requirements.txt, setup.py,
+    pyproject.toml, Pipfile, or .py files with main/__main__/app patterns).
     """
     result = {
         'type': 'unknown',
@@ -37,9 +43,41 @@ def _detect_project_type(project_dir):
     if not project_dir or not os.path.isdir(project_dir):
         return result
 
-    # Check for Node.js project
+    # ── Scan directory once ──
+    try:
+        dir_files = os.listdir(project_dir)
+    except OSError:
+        return result
+
+    has_package_json = 'package.json' in dir_files
+    has_py_files = False
+    has_python_markers = False
+    py_entry = []
+    for fname in dir_files:
+        if fname.endswith('.py'):
+            has_py_files = True
+            py_entry.append(fname)
+        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile', 'setup.cfg', 'tox.ini'):
+            has_python_markers = True
+
+    # ── Python Project (takes priority over Node.js) ──
+    # If there are Python-specific markers OR .py files with no package.json,
+    # classify as Python. Even if package.json exists, Python markers like
+    # requirements.txt or pyproject.toml are stronger signals.
+    if has_python_markers or (has_py_files and not has_package_json):
+        result['type'] = 'python'
+        result['label'] = 'Python'
+        result['compiler'] = 'python3'
+        result['entry_files'] = py_entry
+        # Also note if there's a package.json (hybrid project)
+        if has_package_json:
+            result['has_node'] = True
+        return result
+
+    # ── Node.js Project ──
+    # Only classify as Node.js if package.json exists AND no Python markers
     pkg_json_path = os.path.join(project_dir, 'package.json')
-    if os.path.isfile(pkg_json_path):
+    if has_package_json:
         result['type'] = 'node'
         result['label'] = 'Node.js'
         result['compiler'] = 'node'
@@ -61,23 +99,6 @@ def _detect_project_type(project_dir):
         except Exception:
             result['scripts'] = {}
             return result
-
-    # Check for Python project
-    has_py = False
-    py_entry = []
-    for fname in os.listdir(project_dir):
-        if fname.endswith('.py'):
-            has_py = True
-            py_entry.append(fname)
-        if fname in ('requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'):
-            has_py = True
-
-    if has_py:
-        result['type'] = 'python'
-        result['label'] = 'Python'
-        result['compiler'] = 'python3'
-        result['entry_files'] = py_entry
-        return result
 
     # Check for Go project
     if os.path.isfile(os.path.join(project_dir, 'go.mod')):
