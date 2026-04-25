@@ -18,6 +18,7 @@ const TerminalManager = (() => {
     let panelHeight = Math.floor(window.innerHeight * 0.85);  // default 85% of screen height
     let isDragging = false;         // resize drag state
     let currentCmdBlock = null;     // current command block container
+    let outputClearedSince = -1;    // pollSince value at last clearOutput(); -1 = not cleared
     let dragStartY = 0;            // touch/mouse Y at drag start
     let dragStartHeight = 0;        // panel height at drag start
     let onProcessComplete = null;   // callback after streamed process finishes
@@ -287,6 +288,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
+            outputClearedSince = -1;
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -371,6 +373,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
+            outputClearedSince = -1;
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -442,6 +445,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
+            outputClearedSince = -1;
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -819,9 +823,10 @@ const TerminalManager = (() => {
             outputTab.click();
         }
 
-        // Fetch all output from the beginning
+        // Fetch output — use outputClearedSince as lower bound if output was cleared
         try {
-            const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=0`);
+            var fetchSince = outputClearedSince >= 0 ? outputClearedSince : 0;
+            const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=${fetchSince}`);
             if (outResp.ok) {
                 const outData = await outResp.json();
                 const lines = outData.outputs || [];
@@ -869,6 +874,7 @@ const TerminalManager = (() => {
         clearPersistedProcId();
         currentProcId = null;
         pollSince = 0;
+        outputClearedSince = -1;
         setRunningState(false);
         // Execute post-complete callback if registered
         if (onProcessComplete) {
@@ -953,8 +959,11 @@ const TerminalManager = (() => {
             persistProcId(procId);
 
             // Fetch any output we missed while backgrounded
+            // Use outputClearedSince as the lower bound if output was cleared,
+            // so we don't re-fetch old output that the user explicitly cleared.
             try {
-                const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=0`);
+                var fetchSince = outputClearedSince >= 0 ? outputClearedSince : 0;
+                const outResp = await fetch(`/api/run/output?proc_id=${encodeURIComponent(procId)}&since=${fetchSince}`);
                 if (outResp.ok) {
                     const outData = await outResp.json();
                     const lines = outData.outputs || [];
@@ -1180,6 +1189,10 @@ const TerminalManager = (() => {
         currentCmdBlock = null;
         // Do NOT reset pollSince to 0 — that would re-fetch all old output.
         // Keep current value so only new lines are fetched after clearing.
+        // Record the current pollSince so that _recoverRunState() and
+        // reconnectToProcess() know to only fetch output after this point,
+        // not from the beginning (which would re-show cleared output).
+        outputClearedSince = pollSince;
     }
 
     // ── Panel Management ───────────────────────────────────────────
@@ -1781,6 +1794,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
+            outputClearedSince = -1;
                 setRunningState(true);
                 streamOutput(data.proc_id);
             } else {
@@ -1854,6 +1868,7 @@ const TerminalManager = (() => {
                 if (data.proc_id) {
                     currentProcId = data.proc_id;
                     pollSince = 0;
+            outputClearedSince = -1;
                     setRunningState(true);
                     onProcessComplete = () => {
                         _hideVenvProgress();
@@ -1892,6 +1907,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
+            outputClearedSince = -1;
                 setRunningState(true);
                 // Set callback to refresh package list after install
                 onProcessComplete = () => {
@@ -2004,6 +2020,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
+            outputClearedSince = -1;
                 setRunningState(true);
 
                 onProcessComplete = () => {
@@ -2094,6 +2111,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
+            outputClearedSince = -1;
                 setRunningState(true);
 
                 // Set callback to refresh and hide progress
