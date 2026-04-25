@@ -338,12 +338,6 @@ const EditorManager = (() => {
             });
         }
 
-        // Markdown preview toggle
-        const mdToggleBtn = document.getElementById('btn-md-toggle');
-        if (mdToggleBtn) {
-            mdToggleBtn.addEventListener('click', toggleMarkdownPreview);
-        }
-
         // Browser preview button (for HTML/HTM/MD files)
         const previewBtn = document.getElementById('editor-preview-btn');
         if (previewBtn) {
