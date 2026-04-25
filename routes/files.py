@@ -1202,53 +1202,341 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 
 
 def _docx_to_html(filepath):
-    """Convert DOCX to HTML for preview."""
+    """Convert DOCX to HTML for preview with rich formatting support."""
     from docx import Document
+    from docx.shared import Pt, RGBColor, Inches, Cm, Emu
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     import json as _json
+    import base64
+    import io
 
     doc = Document(filepath)
     sections = []
 
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            sections.append('<br/>')
-            continue
-        style = para.style.name if para.style else ''
-        if 'Heading 1' in style:
-            sections.append(f'<h1>{_html_escape(text)}</h1>')
-        elif 'Heading 2' in style:
-            sections.append(f'<h2>{_html_escape(text)}</h2>')
-        elif 'Heading 3' in style:
-            sections.append(f'<h3>{_html_escape(text)}</h3>')
-        elif 'Heading 4' in style:
-            sections.append(f'<h4>{_html_escape(text)}</h4>')
-        else:
-            # Process runs for bold/italic
-            runs_html = []
-            for run in para.runs:
-                rtext = _html_escape(run.text)
-                if run.bold:
-                    rtext = f'<strong>{rtext}</strong>'
-                if run.italic:
-                    rtext = f'<em>{rtext}</em>'
-                if run.underline:
-                    rtext = f'<u>{rtext}</u>'
-                runs_html.append(rtext)
-            line = ''.join(runs_html) if runs_html else _html_escape(text)
-            sections.append(f'<p>{line}</p>')
+    # --- Helper: convert docx color to CSS ---
+    def _docx_color_to_css(color):
+        if color is None:
+            return None
+        try:
+            if color.rgb and str(color.rgb) != '00000000':
+                return f'#{color.rgb}'
+        except Exception:
+            pass
+        try:
+            if color.theme_color is not None:
+                theme_map = {
+                    0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6e6',
+                    4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
+                    8: '#5B9BD5', 9: '#70AD47',
+                }
+                return theme_map.get(color.theme_color, None)
+        except Exception:
+            pass
+        return None
 
-    # Process tables
-    for table in doc.tables:
-        rows_html = []
-        for i, row in enumerate(table.rows):
-            cells = []
-            for cell in row.cells:
-                cells.append(f'<td>{_html_escape(cell.text)}</td>')
-            tag = 'th' if i == 0 else 'td'
-            cells_str = ''.join(f'<{tag}>{_html_escape(cell.text)}</{tag}>' for cell in row.cells)
-            rows_html.append(f'<tr>{cells_str}</tr>')
-        sections.append(f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>')
+    # --- Helper: extract image from docx as base64 data URI ---
+    _image_cache = {}
+    def _get_docx_image_base64(inline_or_shape):
+        try:
+            blip = inline_or_shape._inline.graphic.graphicData.pic.blipFill.blip
+            rId = blip.embed
+            if rId in _image_cache:
+                return _image_cache[rId]
+            rel = doc.part.rels[rId]
+            image_part = rel.target_part
+            image_bytes = image_part.blob
+            content_type = image_part.content_type or 'image/png'
+            b64 = base64.b64encode(image_bytes).decode('ascii')
+            data_uri = f'data:{content_type};base64,{b64}'
+            _image_cache[rId] = data_uri
+            return data_uri
+        except Exception:
+            return None
+
+    # --- Helper: render a paragraph with rich formatting ---
+    def _render_paragraph(para, tag='p'):
+        para_style_parts = []
+        para_class = ''
+
+        # Paragraph alignment
+        try:
+            align = para.alignment
+            align_map = {
+                WD_ALIGN_PARAGRAPH.LEFT: 'left',
+                WD_ALIGN_PARAGRAPH.CENTER: 'center',
+                WD_ALIGN_PARAGRAPH.RIGHT: 'right',
+                WD_ALIGN_PARAGRAPH.JUSTIFY: 'justify',
+            }
+            if align in align_map:
+                para_style_parts.append(f'text-align:{align_map[align]}')
+        except Exception:
+            pass
+
+        # Paragraph indentation
+        try:
+            fmt = para.paragraph_format
+            if fmt.left_indent:
+                li_pt = int(fmt.left_indent) / 12700
+                para_style_parts.append(f'margin-left:{li_pt:.1f}pt')
+            if fmt.right_indent:
+                ri_pt = int(fmt.right_indent) / 12700
+                para_style_parts.append(f'margin-right:{ri_pt:.1f}pt')
+            if fmt.first_line_indent:
+                fi_pt = int(fmt.first_line_indent) / 12700
+                para_style_parts.append(f'text-indent:{fi_pt:.1f}pt')
+            if fmt.space_before:
+                sb_pt = int(fmt.space_before) / 12700
+                para_style_parts.append(f'margin-top:{sb_pt:.1f}pt')
+            if fmt.space_after:
+                sa_pt = int(fmt.space_after) / 12700
+                para_style_parts.append(f'margin-bottom:{sa_pt:.1f}pt')
+            if fmt.line_spacing:
+                if isinstance(fmt.line_spacing, float):
+                    para_style_parts.append(f'line-height:{fmt.line_spacing:.2f}')
+                else:
+                    ls_pt = int(fmt.line_spacing) / 12700
+                    para_style_parts.append(f'line-height:{ls_pt:.1f}pt')
+        except Exception:
+            pass
+
+        # Runs with rich formatting
+        runs_html = []
+        for run in para.runs:
+            rtext = _html_escape(run.text)
+            span_styles = []
+
+            # Font color
+            try:
+                font = run.font
+                color_css = _docx_color_to_css(font.color)
+                if color_css:
+                    span_styles.append(f'color:{color_css}')
+            except Exception:
+                pass
+
+            # Font size
+            try:
+                if run.font.size:
+                    sz_pt = int(run.font.size) / 12700
+                    span_styles.append(f'font-size:{sz_pt:.1f}pt')
+            except Exception:
+                pass
+
+            # Font name
+            try:
+                if run.font.name:
+                    span_styles.append(f'font-family:"{run.font.name}",sans-serif')
+            except Exception:
+                pass
+
+            # Highlight
+            try:
+                if run.font.highlight_color:
+                    hl_map = {
+                        1: '#FFFF00', 2: '#00FF00', 3: '#00FFFF', 4: '#FF00FF',
+                        5: '#0000FF', 6: '#FF0000', 7: '#000080', 8: '#008080',
+                        9: '#808080', 10: '#C0C0C0', 11: '#800080', 12: '#800000',
+                        13: '#008000', 14: '#808000', 15: '#46D5DB',
+                    }
+                    hl = hl_map.get(run.font.highlight_color)
+                    if hl:
+                        span_styles.append(f'background:{hl}')
+            except Exception:
+                pass
+
+            # Bold
+            if run.font.bold:
+                rtext = f'<strong>{rtext}</strong>'
+            # Italic
+            if run.font.italic:
+                rtext = f'<em>{rtext}</em>'
+            # Underline
+            try:
+                if run.font.underline:
+                    rtext = f'<u>{rtext}</u>'
+            except Exception:
+                pass
+            # Strikethrough
+            try:
+                if run.font.strike:
+                    rtext = f'<s>{rtext}</s>'
+            except Exception:
+                pass
+            # Superscript / Subscript
+            try:
+                if run.font.superscript:
+                    rtext = f'<sup>{rtext}</sup>'
+                elif run.font.subscript:
+                    rtext = f'<sub>{rtext}</sub>'
+            except Exception:
+                pass
+
+            if span_styles:
+                style_str = ';'.join(span_styles)
+                rtext = f'<span style="{style_str}">{rtext}</span>'
+            runs_html.append(rtext)
+
+        content = ''.join(runs_html) if runs_html else _html_escape(para.text)
+
+        # Check for inline images (drawing elements in runs)
+        try:
+            from docx.oxml.ns import qn
+            for run in para.runs:
+                drawings = run._element.findall(qn('w:drawing'))
+                for drawing in drawings:
+                    blip = drawing.find('.//' + qn('a:blip'))
+                    if blip is not None:
+                        rId = blip.get(qn('r:embed'))
+                        if rId:
+                            data_uri = _image_cache.get(rId)
+                            if not data_uri:
+                                try:
+                                    rel = doc.part.rels[rId]
+                                    image_part = rel.target_part
+                                    image_bytes = image_part.blob
+                                    content_type = image_part.content_type or 'image/png'
+                                    b64 = base64.b64encode(image_bytes).decode('ascii')
+                                    data_uri = f'data:{content_type};base64,{b64}'
+                                    _image_cache[rId] = data_uri
+                                except Exception:
+                                    data_uri = None
+                            if data_uri:
+                                # Try to get image dimensions
+                                try:
+                                    extent = drawing.find('.//' + qn('wp:extent'))
+                                    if extent is not None:
+                                        cx = int(extent.get('cx', 0)) / 12700
+                                        cy = int(extent.get('cy', 0)) / 12700
+                                        img_style = f'max-width:{cx:.0f}pt;max-height:{cy:.0f}pt'
+                                    else:
+                                        img_style = 'max-width:100%'
+                                except Exception:
+                                    img_style = 'max-width:100%'
+                                runs_html.append(f'<img src="{data_uri}" style="{img_style};height:auto;margin:4px 0" />')
+                                content = ''.join(runs_html)
+        except Exception:
+            pass
+
+        pstyle = f' style="{";".join(para_style_parts)}"' if para_style_parts else ''
+        return f'<{tag}{pstyle}>{content}</{tag}>'
+
+    # --- Helper: render a table cell ---
+    def _render_table_cell(cell, tag='td'):
+        cell_style_parts = []
+        # Cell background
+        try:
+            from docx.oxml.ns import qn
+            tc = cell._element
+            tcPr = tc.find(qn('w:tcPr'))
+            if tcPr is not None:
+                shd = tcPr.find(qn('w:shd'))
+                if shd is not None:
+                    fill_val = shd.get(qn('w:fill'))
+                    if fill_val and fill_val.upper() != 'AUTO' and fill_val != '00000000':
+                        cell_style_parts.append(f'background:#{fill_val}')
+        except Exception:
+            pass
+
+        # Cell width
+        try:
+            if cell.width:
+                w_pt = int(cell.width) / 12700
+                cell_style_parts.append(f'min-width:{w_pt:.0f}pt')
+        except Exception:
+            pass
+
+        # Vertical alignment
+        try:
+            from docx.oxml.ns import qn
+            tc = cell._element
+            tcPr = tc.find(qn('w:tcPr'))
+            if tcPr is not None:
+                vAlign = tcPr.find(qn('w:vAlign'))
+                if vAlign is not None:
+                    val = vAlign.get(qn('w:val'), '')
+                    va_map = {'top': 'top', 'center': 'middle', 'bottom': 'bottom'}
+                    if val in va_map:
+                        cell_style_parts.append(f'vertical-align:{va_map[val]}')
+        except Exception:
+            pass
+
+        # Render cell paragraphs
+        cell_paragraphs = []
+        for para in cell.paragraphs:
+            cell_paragraphs.append(_render_paragraph(para, 'p'))
+        cell_content = ''.join(cell_paragraphs) if cell_paragraphs else _html_escape(cell.text)
+
+        cstyle = f' style="{";".join(cell_style_parts)}"' if cell_style_parts else ''
+        return f'<{tag}{cstyle}>{cell_content}</{tag}>'
+
+    # --- Main rendering ---
+    # Use iter_inner_content to handle interleaved paragraphs and tables
+    from docx.oxml.ns import qn
+    body_el = doc.element.body
+
+    for child in body_el:
+        tag_name = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+
+        if tag_name == 'p':
+            # Find matching paragraph object
+            para = None
+            for p in doc.paragraphs:
+                if p._element is child:
+                    para = p
+                    break
+            if para is None:
+                continue
+
+            style_name = para.style.name if para.style else ''
+
+            # Check if it's a list item
+            is_list = False
+            try:
+                pPr = child.find(qn('w:pPr'))
+                if pPr is not None:
+                    numPr = pPr.find(qn('w:numPr'))
+                    if numPr is not None:
+                        is_list = True
+            except Exception:
+                pass
+
+            if is_list:
+                sections.append(f'<div class="list-item">{_render_paragraph(para, "p")}</div>')
+            elif 'Heading 1' in style_name:
+                sections.append(_render_paragraph(para, 'h1'))
+            elif 'Heading 2' in style_name:
+                sections.append(_render_paragraph(para, 'h2'))
+            elif 'Heading 3' in style_name:
+                sections.append(_render_paragraph(para, 'h3'))
+            elif 'Heading 4' in style_name:
+                sections.append(_render_paragraph(para, 'h4'))
+            else:
+                text = para.text.strip()
+                if not text and not para.runs:
+                    sections.append('<br/>')
+                else:
+                    sections.append(_render_paragraph(para, 'p'))
+
+        elif tag_name == 'tbl':
+            # Find matching table object
+            table = None
+            for t in doc.tables:
+                if t._element is child:
+                    table = t
+                    break
+            if table is None:
+                continue
+
+            table_style_parts = ['border-collapse:collapse', 'width:100%']
+            rows_html = []
+            for ri, row in enumerate(table.rows):
+                cells_html = []
+                for ci, cell in enumerate(row.cells):
+                    tag = 'td'  # Don't assume first row is header
+                    cells_html.append(_render_table_cell(cell, tag))
+                rows_html.append(f'<tr>{"".join(cells_html)}</tr>')
+            table_style_str = ';'.join(table_style_parts)
+            sections.append(f'<table style="{table_style_str}">{"".join(rows_html)}</table>')
 
     body = '\n'.join(sections)
     html = f'''<!DOCTYPE html>
@@ -1256,12 +1544,17 @@ def _docx_to_html(filepath):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }}
-h1,h2,h3,h4 {{ margin-top: 1.5em; margin-bottom: 0.5em; }}
-table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
-th,td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
-th {{ background: #f5f5f5; }}
-img {{ max-width: 100%; }}
+       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333;
+       background: #fff; }}
+h1 {{ font-size: 1.8em; margin-top: 1.5em; margin-bottom: 0.5em; }}
+h2 {{ font-size: 1.5em; margin-top: 1.3em; margin-bottom: 0.4em; }}
+h3 {{ font-size: 1.25em; margin-top: 1.2em; margin-bottom: 0.3em; }}
+h4 {{ font-size: 1.1em; margin-top: 1em; margin-bottom: 0.3em; }}
+table {{ margin: 1em 0; }}
+th,td {{ border: 1px solid #ccc; padding: 8px 12px; text-align: left; }}
+img {{ max-width: 100%; height: auto; }}
+.list-item {{ margin-left: 1.5em; position: relative; }}
+.list-item::before {{ content: "•"; position: absolute; left: -1.2em; }}
 </style></head><body>{body}</body></html>'''
     return Response(html, mimetype='text/html; charset=utf-8')
 
@@ -1289,6 +1582,58 @@ def _pptx_to_html(filepath):
     slide_w_px = emu_to_px(slide_width_emu)
     slide_h_px = emu_to_px(slide_height_emu)
 
+    # Theme color map (Office default theme)
+    _SCHEME_MAP = {
+        'dk1': '#000000', 'lt1': '#FFFFFF', 'dk2': '#44546A', 'lt2': '#E7E6E6',
+        'accent1': '#4472C4', 'accent2': '#ED7D31', 'accent3': '#A5A5A5',
+        'accent4': '#FFC000', 'accent5': '#5B9BD5', 'accent6': '#70AD47',
+        'hlink': '#0563C1', 'folHlink': '#954F72',
+    }
+    _THEME_IDX_MAP = {
+        0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6E6',
+        4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
+        8: '#5B9BD5', 9: '#70AD47',
+    }
+
+    # Try to extract actual theme colors from the presentation
+    _pptx_theme_colors = {}
+    try:
+        from pptx.oxml.ns import qn
+        for sm in prs.slide_masters:
+            try:
+                theme_el = sm.slide_master.element.find('.//' + qn('a:theme'))
+                if theme_el is None:
+                    # Try through the relationship
+                    for rel in sm.part.rels.values():
+                        if 'theme' in rel.reltype:
+                            theme_part = rel.target_part
+                            theme_el = etree.fromstring(theme_part.blob)
+                            break
+                if theme_el is not None:
+                    clrScheme = theme_el.find('.//' + qn('a:clrScheme'))
+                    if clrScheme is not None:
+                        for child in clrScheme:
+                            tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                            for sub in child:
+                                sub_tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
+                                if sub_tag == 'srgbClr':
+                                    _pptx_theme_colors[tag] = f'#{sub.get("val", "")}'
+                                elif sub_tag == 'sysClr':
+                                    val = sub.get('lastClr', sub.get('val', ''))
+                                    if val:
+                                        _pptx_theme_colors[tag] = f'#{val}'
+                        break  # Use first master's theme
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    def _resolve_scheme_color(val):
+        """Resolve a scheme color name to CSS color."""
+        if val in _pptx_theme_colors:
+            return _pptx_theme_colors[val]
+        return _SCHEME_MAP.get(val, '#333333')
+
     def _color_to_css(color):
         """Convert a python-pptx color to CSS color string."""
         if color is None:
@@ -1297,21 +1642,15 @@ def _pptx_to_html(filepath):
             if color.type is not None and color.type == 1:  # RGB
                 return f'#{color.rgb}'
             elif color.type is not None and color.type == 2:  # Theme
-                # Theme colors — map to approximate CSS colors
-                theme_map = {
-                    0: '#000000',   # dk1
-                    1: '#FFFFFF',   # lt1
-                    2: '#44546A',   # dk2
-                    3: '#E7E6E6',   # lt2
-                    4: '#4472C4',   # accent1
-                    5: '#ED7D31',   # accent2
-                    6: '#A5A5A5',   # accent3
-                    7: '#FFC000',   # accent4
-                    8: '#5B9BD5',   # accent5
-                    9: '#70AD47',   # accent6
-                }
                 idx = color.theme
-                return theme_map.get(idx, '#333333')
+                # First check if we have actual theme colors
+                theme_keys = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+                              'accent3', 'accent4', 'accent5', 'accent6']
+                if idx < len(theme_keys):
+                    key = theme_keys[idx]
+                    if key in _pptx_theme_colors:
+                        return _pptx_theme_colors[key]
+                return _THEME_IDX_MAP.get(idx, '#333333')
             elif color.type is not None and color.type == 3:  # Scheme
                 return '#333333'
         except Exception:
@@ -1323,18 +1662,136 @@ def _pptx_to_html(filepath):
             pass
         return None
 
+    def _xml_color_to_css(el):
+        """Convert an XML color element (srgbClr, schemeClr, etc.) to CSS color."""
+        if el is None:
+            return None
+        from pptx.oxml.ns import qn
+        tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
+        if tag == 'srgbClr':
+            return f'#{el.get("val", "000000")}'
+        elif tag == 'schemeClr':
+            val = el.get('val', '')
+            color = _resolve_scheme_color(val)
+            # Check for tint/shade modifications
+            tint = el.find(qn('a:tint'))
+            shade = el.find(qn('a:shade'))
+            lumMod = el.find(qn('a:lumMod'))
+            lumOff = el.find(qn('a:lumOff'))
+            if tint is not None or shade is not None or lumMod is not None or lumOff is not None:
+                # Apply luminance modifications approximately
+                try:
+                    base = int(color[1:], 16)
+                    r, g, b = (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF
+                    if lumMod is not None:
+                        factor = int(lumMod.get('val', '100000')) / 100000
+                        r = min(255, int(r * factor))
+                        g = min(255, int(g * factor))
+                        b = min(255, int(b * factor))
+                    if lumOff is not None:
+                        offset = int(lumOff.get('val', '0')) / 100000 * 255
+                        r = min(255, int(r + offset))
+                        g = min(255, int(g + offset))
+                        b = min(255, int(b + offset))
+                    return f'#{r:02X}{g:02X}{b:02X}'
+                except Exception:
+                    pass
+            return color
+        elif tag == 'prstClr':
+            # Preset colors - common mapping
+            name = el.get('val', 'black').lower()
+            prst_map = {
+                'black': '#000000', 'white': '#FFFFFF', 'red': '#FF0000',
+                'green': '#008000', 'blue': '#0000FF', 'yellow': '#FFFF00',
+                'cyan': '#00FFFF', 'magenta': '#FF00FF', 'gray': '#808080',
+                'grey': '#808080', 'darkgray': '#404040', 'lightgray': '#C0C0C0',
+            }
+            return prst_map.get(name, '#333333')
+        return None
+
+    def _get_fill_css_from_xml(fill_el, default_color=None):
+        """Get CSS background from a fill XML element (a:solidFill, a:gradFill, etc.)."""
+        from pptx.oxml.ns import qn
+        if fill_el is None:
+            return default_color or 'transparent'
+
+        tag = fill_el.tag.split('}')[-1] if '}' in fill_el.tag else fill_el.tag
+
+        if tag == 'solidFill':
+            for child in fill_el:
+                color = _xml_color_to_css(child)
+                if color:
+                    return color
+
+        elif tag == 'gradFill':
+            # Build full CSS gradient
+            gsLst = fill_el.find(qn('a:gsLst'))
+            if gsLst is not None:
+                stops = []
+                for gs in gsLst.findall(qn('a:gs')):
+                    pos = int(gs.get('pos', '0')) / 1000  # pos is in 1/1000 percent
+                    color = None
+                    for child in gs:
+                        color = _xml_color_to_css(child)
+                        if color:
+                            break
+                    if color:
+                        stops.append(f'{color} {pos}%')
+                if stops:
+                    # Determine gradient direction
+                    lin = fill_el.find(qn('a:lin'))
+                    if lin is not None:
+                        ang = int(lin.get('ang', '0'))
+                        # Convert OOXML angle (54000 = vertical top-bottom) to CSS
+                        css_ang = (ang / 60000) % 360
+                        direction = f'{css_ang:.0f}deg'
+                    else:
+                        direction = 'to bottom'
+                    return f'linear-gradient({direction}, {", ".join(stops)})'
+
+            # Fallback: first stop color
+            try:
+                first_gs = gsLst.find(qn('a:gs'))
+                if first_gs is not None:
+                    for child in first_gs:
+                        color = _xml_color_to_css(child)
+                        if color:
+                            return color
+            except Exception:
+                pass
+
+        elif tag == 'pattFill':
+            # Pattern fill - use foreground color
+            fgClr = fill_el.find(qn('a:fgClr'))
+            if fgClr is not None:
+                for child in fgClr:
+                    color = _xml_color_to_css(child)
+                    if color:
+                        return color
+
+        return default_color or 'transparent'
+
     def _get_fill_css(fill, default_color=None):
-        """Get CSS background from a fill object."""
+        """Get CSS background from a python-pptx fill object."""
         try:
             if fill.type is None:
                 return default_color or 'transparent'
-            from pptx.oxml.ns import qn
             # type 1 = solid
             if fill.type == 1:  # SOLID
                 color = _color_to_css(fill.fore_color)
                 return color or default_color or 'transparent'
-            # type 2 = gradient — use first stop color
+            # type 2 = gradient — build CSS gradient
             elif fill.type == 2:  # GRADIENT
+                try:
+                    # Try to read gradient stops from XML
+                    fill_el = fill._fill
+                    if fill_el is not None:
+                        css = _get_fill_css_from_xml(fill_el, default_color)
+                        if css and css != 'transparent':
+                            return css
+                except Exception:
+                    pass
+                # Fallback: use first stop color
                 try:
                     color = _color_to_css(fill.fore_color)
                     return color or default_color or 'transparent'
@@ -1354,71 +1811,144 @@ def _pptx_to_html(filepath):
             pass
         return default_color or 'transparent'
 
+    def _get_bg_from_xml_element(bg_el):
+        """Get CSS background from a p:bg XML element."""
+        from pptx.oxml.ns import qn
+        if bg_el is None:
+            return None
+
+        # Check for bgRef (reference to theme)
+        bgRef = bg_el.find(qn('p:bgRef'))
+        if bgRef is not None:
+            idx = int(bgRef.get('idx', '0'))
+            # idx < 1000 means use theme color at that index
+            if idx < 1000:
+                theme_keys = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+                              'accent3', 'accent4', 'accent5', 'accent6']
+                if idx < len(theme_keys):
+                    return _resolve_scheme_color(theme_keys[idx])
+                return _THEME_IDX_MAP.get(idx, '#FFFFFF')
+            return '#FFFFFF'
+
+        # Check for bgPr (background properties)
+        bgPr = bg_el.find(qn('p:bgPr'))
+        if bgPr is not None:
+            # Solid fill
+            solidFill = bgPr.find(qn('a:solidFill'))
+            if solidFill is not None:
+                css = _get_fill_css_from_xml(solidFill)
+                if css and css != 'transparent':
+                    return css
+
+            # Gradient fill
+            gradFill = bgPr.find(qn('a:gradFill'))
+            if gradFill is not None:
+                css = _get_fill_css_from_xml(gradFill)
+                if css and css != 'transparent':
+                    return css
+
+            # Pattern fill
+            pattFill = bgPr.find(qn('a:pattFill'))
+            if pattFill is not None:
+                css = _get_fill_css_from_xml(pattFill)
+                if css and css != 'transparent':
+                    return css
+
+        return None
+
+    def _get_bg_image_css(bg_el, slide):
+        """Get CSS for background image if present."""
+        from pptx.oxml.ns import qn
+        if bg_el is None:
+            return None, None
+        bgPr = bg_el.find(qn('p:bgPr'))
+        if bgPr is None:
+            return None, None
+        blipFill = bgPr.find(qn('a:blipFill'))
+        if blipFill is None:
+            return None, None
+        blip = blipFill.find(qn('a:blip'))
+        if blip is None:
+            return None, None
+        rId = blip.get(qn('r:embed'))
+        if not rId:
+            return None, None
+        data_uri = _get_image_base64(slide, rId)
+        if not data_uri:
+            return None, None
+        # Determine fill mode
+        stretch = blipFill.find(qn('a:stretch'))
+        tile = blipFill.find(qn('a:tile'))
+        if stretch is not None:
+            return f'url("{data_uri}")', 'center/cover no-repeat'
+        elif tile is not None:
+            return f'url("{data_uri}")', 'repeat'
+        else:
+            return f'url("{data_uri}")', 'center/contain no-repeat'
+
     def _get_slide_bg_css(slide):
-        """Get CSS background for a slide from its background fill."""
+        """Get CSS background for a slide, checking slide -> layout -> master chain."""
+        from pptx.oxml.ns import qn
+
+        # 1. Check slide's own background
         bg = slide.background
         try:
             fill = bg.fill
             bg_css = _get_fill_css(fill)
             if bg_css and bg_css != 'transparent':
-                return bg_css
+                return bg_css, None, None
         except Exception:
             pass
 
-        # Try reading XML directly for more background options
+        # Try reading XML directly for slide background
+        cSld = slide._element.find(qn('p:cSld'))
+        if cSld is not None:
+            bg_el = cSld.find(qn('p:bg'))
+            if bg_el is not None:
+                # Check for background image first
+                img_css, img_size = _get_bg_image_css(bg_el, slide)
+                if img_css:
+                    return img_css, img_size, None
+                # Then other fill types
+                bg_css = _get_bg_from_xml_element(bg_el)
+                if bg_css and bg_css != 'transparent':
+                    return bg_css, None, None
+
+        # 2. Check slide layout background
         try:
-            nsmap = {
-                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
-                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
-                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
-            }
-            cSld = slide._element.find(qn('p:cSld'))
-            if cSld is not None:
-                bg_el = cSld.find(qn('p:bg'))
-                if bg_el is not None:
-                    # Check for bgRef (reference to theme)
-                    bgRef = bg_el.find(qn('p:bgRef'))
-                    if bgRef is not None:
-                        idx = int(bgRef.get('idx', '0'))
-                        theme_map = {
-                            0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6E6',
-                            4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
-                            8: '#5B9BD5', 9: '#70AD47',
-                        }
-                        if idx in theme_map:
-                            return theme_map[idx]
-                    # Check for solid fill in bgPr
-                    bgPr = bg_el.find(qn('p:bgPr'))
-                    if bgPr is not None:
-                        solidFill = bgPr.find(qn('a:solidFill'))
-                        if solidFill is not None:
-                            srgbClr = solidFill.find(qn('a:srgbClr'))
-                            if srgbClr is not None:
-                                return f'#{srgbClr.get("val", "FFFFFF")}'
-                            schemeClr = solidFill.find(qn('a:schemeClr'))
-                            if schemeClr is not None:
-                                val = schemeClr.get('val', '')
-                                scheme_map = {
-                                    'dk1': '#000000', 'lt1': '#FFFFFF', 'dk2': '#44546A',
-                                    'lt2': '#E7E6E6', 'accent1': '#4472C4', 'accent2': '#ED7D31',
-                                    'accent3': '#A5A5A5', 'accent4': '#FFC000', 'accent5': '#5B9BD5',
-                                    'accent6': '#70AD47', 'hlink': '#0563C1',
-                                }
-                                return scheme_map.get(val, '#FFFFFF')
-                        # Check for gradient fill
-                        gradFill = bgPr.find(qn('a:gradFill'))
-                        if gradFill is not None:
-                            gsLst = gradFill.find(qn('a:gsLst'))
-                            if gsLst is not None:
-                                first_gs = gsLst.find(qn('a:gs'))
-                                if first_gs is not None:
-                                    srgb = first_gs.find(qn('a:srgbClr'))
-                                    if srgb is not None:
-                                        return f'#{srgb.get("val", "FFFFFF")}'
+            layout = slide.slide_layout
+            if layout is not None:
+                cSld_layout = layout._element.find(qn('p:cSld'))
+                if cSld_layout is not None:
+                    bg_el = cSld_layout.find(qn('p:bg'))
+                    if bg_el is not None:
+                        img_css, img_size = _get_bg_image_css(bg_el, slide)
+                        if img_css:
+                            return img_css, img_size, None
+                        bg_css = _get_bg_from_xml_element(bg_el)
+                        if bg_css and bg_css != 'transparent':
+                            return bg_css, None, None
         except Exception:
             pass
 
-        return '#FFFFFF'  # Default white
+        # 3. Check slide master background
+        try:
+            master = slide.slide_layout.slide_master
+            if master is not None:
+                cSld_master = master._element.find(qn('p:cSld'))
+                if cSld_master is not None:
+                    bg_el = cSld_master.find(qn('p:bg'))
+                    if bg_el is not None:
+                        img_css, img_size = _get_bg_image_css(bg_el, slide)
+                        if img_css:
+                            return img_css, img_size, None
+                        bg_css = _get_bg_from_xml_element(bg_el)
+                        if bg_css and bg_css != 'transparent':
+                            return bg_css, None, None
+        except Exception:
+            pass
+
+        return '#FFFFFF', None, None  # Default white
 
     def _get_image_base64(slide, rId):
         """Extract image from PPTX by relationship ID and return base64 data URI."""
@@ -1429,7 +1959,6 @@ def _pptx_to_html(filepath):
             image_bytes = image_part.blob
             content_type = image_part.content_type
             if not content_type:
-                # Guess from extension
                 ext = image_part.partname.split('.')[-1].lower()
                 ct_map = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
                           'gif': 'image/gif', 'bmp': 'image/bmp', 'svg': 'image/svg+xml',
@@ -1440,8 +1969,9 @@ def _pptx_to_html(filepath):
         except Exception:
             return None
 
-    def _render_shape(slide, shape):
+    def _render_shape(slide, shape, is_placeholder=False):
         """Render a single shape to HTML with positioning and styling."""
+        from pptx.oxml.ns import qn
         parts = []
 
         left_px = emu_to_px(shape.left)
@@ -1452,14 +1982,51 @@ def _pptx_to_html(filepath):
         style_parts = [f'position:absolute', f'left:{left_px}px', f'top:{top_px}px',
                        f'width:{width_px}px', f'height:{height_px}px']
 
-        # Shape fill
+        # Shape fill — try both API and XML for richer results
+        fill_rendered = False
         try:
             fill = shape.fill
             fill_css = _get_fill_css(fill)
             if fill_css and fill_css != 'transparent':
                 style_parts.append(f'background:{fill_css}')
+                fill_rendered = True
         except Exception:
             pass
+
+        # If API fill didn't work, try XML directly
+        if not fill_rendered:
+            try:
+                sp = shape._element
+                spPr = sp.find(qn('p:spPr'))
+                if spPr is None:
+                    spPr = sp.find(qn('p:txBody'))
+                if spPr is None:
+                    spPr = sp.find('.//' + qn('a:spPr'))
+                if spPr is not None:
+                    # Try solidFill
+                    for fill_tag in ['a:solidFill', 'a:gradFill', 'a:pattFill', 'a:blipFill']:
+                        fill_el = spPr.find(qn(fill_tag))
+                        if fill_el is not None:
+                            if fill_tag == 'a:blipFill':
+                                blip = fill_el.find(qn('a:blip'))
+                                if blip is not None:
+                                    rId = blip.get(qn('r:embed'))
+                                    if rId:
+                                        data_uri = _get_image_base64(slide, rId)
+                                        if data_uri:
+                                            style_parts.append(f'background-image:url("{data_uri}")')
+                                            style_parts.append('background-size:cover')
+                                            style_parts.append('background-position:center')
+                                            fill_rendered = True
+                                            break
+                            else:
+                                css = _get_fill_css_from_xml(fill_el)
+                                if css and css != 'transparent':
+                                    style_parts.append(f'background:{css}')
+                                    fill_rendered = True
+                                    break
+            except Exception:
+                pass
 
         # Shape border/line
         try:
@@ -1470,6 +2037,8 @@ def _pptx_to_html(filepath):
                 if line_color and line_width:
                     w_pt = int(line_width) / 12700  # EMU to pt
                     style_parts.append(f'border:{w_pt:.1f}pt solid {line_color}')
+                elif line_color:
+                    style_parts.append(f'border:1pt solid {line_color}')
             elif line.fill.type is not None and line.fill.type == 5:  # no line
                 style_parts.append('border:none')
         except Exception:
@@ -1503,13 +2072,10 @@ def _pptx_to_html(filepath):
         # Picture shape
         if shape_type == MSO_SHAPE_TYPE.PICTURE or shape_type == MSO_SHAPE_TYPE.LINKED_PICTURE:
             try:
-                # Get image from shape element
-                nsmap_a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
-                nsmap_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
                 sp = shape._element
-                blipFill = sp.find('.//' + '{http://schemas.openxmlformats.org/drawingml/2006/main}blip')
-                if blipFill is not None:
-                    rId = blipFill.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                blipFill_el = sp.find('.//' + qn('a:blip'))
+                if blipFill_el is not None:
+                    rId = blipFill_el.get(qn('r:embed'))
                     if rId:
                         data_uri = _get_image_base64(slide, rId)
                         if data_uri:
@@ -1546,18 +2112,26 @@ def _pptx_to_html(filepath):
 
                 for run in para.runs:
                     rtext = _html_escape(run.text)
+                    run_styles = []
+
                     # Font color
                     try:
                         color_css = _color_to_css(run.font.color)
                         if color_css:
-                            rtext = f'<span style="color:{color_css}">{rtext}</span>'
+                            run_styles.append(f'color:{color_css}')
                     except Exception:
                         pass
                     # Font size
                     try:
                         if run.font.size:
                             sz_pt = int(run.font.size) / 12700  # EMU to pt
-                            rtext = f'<span style="font-size:{sz_pt:.0f}pt">{rtext}</span>'
+                            run_styles.append(f'font-size:{sz_pt:.0f}pt')
+                    except Exception:
+                        pass
+                    # Font name
+                    try:
+                        if run.font.name:
+                            run_styles.append(f'font-family:"{run.font.name}",sans-serif')
                     except Exception:
                         pass
                     # Bold
@@ -1572,6 +2146,10 @@ def _pptx_to_html(filepath):
                             rtext = f'<u>{rtext}</u>'
                     except Exception:
                         pass
+
+                    if run_styles:
+                        style_str = ';'.join(run_styles)
+                        rtext = f'<span style="{style_str}">{rtext}</span>'
                     runs_html.append(rtext)
 
                 text = ''.join(runs_html) if runs_html else _html_escape(para.text)
@@ -1580,7 +2158,7 @@ def _pptx_to_html(filepath):
 
             content = ''.join(text_parts)
             # Add padding for text shapes
-            if 'background' not in ' '.join(style_parts):
+            if 'background' not in ' '.join(style_parts) and 'background-image' not in ' '.join(style_parts):
                 style_parts.append('padding:4px 8px')
 
         # Table
@@ -1601,28 +2179,64 @@ def _pptx_to_html(filepath):
                     except Exception:
                         pass
                     cstyle = f' style="{";".join(cell_style)}"' if cell_style else ''
-                    tag = 'th' if ri == 0 else 'td'
-                    cells.append(f'<{tag}{cstyle}>{cell_text}</{tag}>')
+                    cells.append(f'<td{cstyle}>{cell_text}</td>')
                 rows_html.append(f'<tr>{"".join(cells)}</tr>')
             content = f'<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows_html)}</table>'
 
         # Fallback for shapes with no content
         if not content:
-            # Just render as a colored rectangle
-            if 'background' not in ' '.join(style_parts):
+            if 'background' not in ' '.join(style_parts) and 'background-image' not in ' '.join(style_parts):
                 content = ''
 
         style_str = ';'.join(style_parts)
-        parts.append(f'<div class="shape" style="{style_str}">{content}</div>')
+        ph_class = ' placeholder-shape' if is_placeholder else ''
+        parts.append(f'<div class="shape{ph_class}" style="{style_str}">{content}</div>')
         return ''.join(parts)
 
     # Build each slide
     slides_html = []
     for i, slide in enumerate(prs.slides):
-        bg_css = _get_slide_bg_css(slide)
+        bg_css, bg_size, bg_extra = _get_slide_bg_css(slide)
+        bg_style = f'background:{bg_css}'
+        if bg_size:
+            bg_style = f'background-image:{bg_css};background-size:{bg_size}'
 
-        # Render all shapes with absolute positioning
+        # Render all shapes including placeholders with absolute positioning
         shapes_html = []
+
+        # First render layout/master shapes that are NOT on the slide (inherited placeholders)
+        try:
+            layout = slide.slide_layout
+            if layout is not None:
+                # Get shape IDs that are already on the slide
+                slide_shape_ids = set()
+                for shape in slide.shapes:
+                    try:
+                        slide_shape_ids.add(shape.shape_id)
+                    except Exception:
+                        pass
+
+                # Render layout shapes that aren't overridden by slide shapes
+                for shape in layout.shapes:
+                    try:
+                        # Check if this is a placeholder that should be shown
+                        is_ph = False
+                        try:
+                            is_ph = shape.is_placeholder
+                        except Exception:
+                            pass
+                        if is_ph:
+                            # Only show if the slide doesn't have a shape at the same position
+                            # (i.e., the placeholder content is not overridden)
+                            shape_id = shape.shape_id
+                            if shape_id not in slide_shape_ids:
+                                shapes_html.append(_render_shape(slide, shape, is_placeholder=True))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Then render slide's own shapes
         for shape in slide.shapes:
             try:
                 shapes_html.append(_render_shape(slide, shape))
@@ -1636,7 +2250,7 @@ def _pptx_to_html(filepath):
                     pass
 
         shapes_content = '\n'.join(shapes_html)
-        slides_html.append(f'''<div class="slide" style="background:{bg_css}">
+        slides_html.append(f'''<div class="slide" style="{bg_style}">
 <div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
 <div class="slide-canvas" style="position:relative;width:{slide_w_px}px;height:{slide_h_px}px">
 {shapes_content}
@@ -1657,6 +2271,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .shape {{ box-sizing: border-box; overflow: hidden; }}
 .shape p {{ margin: 2px 0; line-height: 1.4; }}
 .shape img {{ display: block; }}
+.placeholder-shape {{ opacity: 0.6; }}
 table {{ border-collapse: collapse; width: 100%; margin: 4px 0; }}
 th,td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 13px; }}
 th {{ background: #f5f5f5; font-weight: bold; }}
@@ -1669,29 +2284,292 @@ th {{ background: #f5f5f5; font-weight: bold; }}
 
 
 def _xlsx_to_html(filepath):
-    """Convert XLSX to HTML for preview."""
+    """Convert XLSX to HTML for preview with cell styling, merged cells, and formatting."""
     from openpyxl import load_workbook
+    from openpyxl.styles import (
+        PatternFill, Font, Border, Side, Alignment, numbers
+    )
+    from openpyxl.utils import get_column_letter
 
-    wb = load_workbook(filepath, read_only=True, data_only=True)
+    wb = load_workbook(filepath, data_only=False)
     sheets_html = []
+
+    def _xlsx_color_to_css(color):
+        """Convert openpyxl Color to CSS color string."""
+        if color is None:
+            return None
+        try:
+            if color.type == 'rgb' and color.rgb and str(color.rgb) != '00000000':
+                rgb = str(color.rgb)
+                if len(rgb) == 8:
+                    # ARGB format — skip alpha for CSS
+                    return f'#{rgb[2:]}'
+                elif len(rgb) == 6:
+                    return f'#{rgb}'
+            elif color.type == 'theme':
+                # Theme colors
+                theme_map = {
+                    0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6E6',
+                    4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
+                    8: '#5B9BD5', 9: '#70AD47',
+                }
+                idx = color.theme if color.theme is not None else 0
+                base = theme_map.get(idx, '#000000')
+                # Apply tint
+                tint = color.tint if color.tint else 0
+                if tint != 0:
+                    try:
+                        base_int = int(base[1:], 16)
+                        r, g, b = (base_int >> 16) & 0xFF, (base_int >> 8) & 0xFF, base_int & 0xFF
+                        if tint > 0:
+                            # Lighten
+                            r = min(255, int(r + (255 - r) * tint))
+                            g = min(255, int(g + (255 - g) * tint))
+                            b = min(255, int(b + (255 - b) * tint))
+                        else:
+                            # Darken
+                            factor = 1 + tint
+                            r = max(0, int(r * factor))
+                            g = max(0, int(g * factor))
+                            b = max(0, int(b * factor))
+                        return f'#{r:02X}{g:02X}{b:02X}'
+                    except Exception:
+                        pass
+                return base
+            elif color.type == 'indexed':
+                # Indexed colors — simplified mapping
+                idx_colors = {
+                    0: '#000000', 1: '#FFFFFF', 2: '#FF0000', 3: '#00FF00',
+                    4: '#0000FF', 5: '#FFFF00', 6: '#FF00FF', 7: '#00FFFF',
+                    8: '#000000', 9: '#FFFFFF', 10: '#FF0000', 11: '#00FF00',
+                    12: '#0000FF', 13: '#FFFF00', 14: '#FF00FF', 15: '#00FFFF',
+                    16: '#800000', 17: '#008000', 18: '#000080', 19: '#808000',
+                    20: '#800080', 21: '#008080', 22: '#C0C0C0', 23: '#808080',
+                    24: '#9999FF', 25: '#993366', 26: '#FFFFCC', 27: '#CCFFFF',
+                    28: '#660066', 29: '#FF8080', 30: '#0066CC', 31: '#CCCCFF',
+                    32: '#000080', 33: '#FF00FF', 34: '#FFFF00', 35: '#00FFFF',
+                    36: '#800080', 37: '#800000', 38: '#008080', 39: '#0000FF',
+                    40: '#00CCFF', 41: '#CCFFFF', 42: '#CCFFCC', 43: '#FFFF99',
+                    44: '#99CCFF', 45: '#FF99CC', 46: '#CC99FF', 47: '#FFCC99',
+                    48: '#3366FF', 49: '#33CCCC', 50: '#99CC00', 51: '#FFCC00',
+                    52: '#FF9900', 53: '#FF6600', 54: '#666699', 55: '#969696',
+                    56: '#003366', 57: '#339966', 58: '#003300', 59: '#333300',
+                    60: '#993300', 61: '#993366', 62: '#333399', 63: '#333333',
+                }
+                return idx_colors.get(color.indexed, '#000000')
+        except Exception:
+            pass
+        return None
+
+    def _format_cell_value(cell):
+        """Format cell value according to its number format."""
+        if cell.value is None:
+            return ''
+
+        # If it's a string, return as-is
+        if isinstance(cell.value, str):
+            return _html_escape(cell.value)
+
+        # Try to apply number formatting
+        try:
+            fmt = cell.number_format
+            if fmt and fmt != 'General':
+                # Use openpyxl's formatting
+                try:
+                    formatted = numbers.format_number(cell.value, fmt)
+                    return _html_escape(str(formatted))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Default formatting for numbers
+        if isinstance(cell.value, float):
+            # Check if it looks like an integer
+            if cell.value == int(cell.value):
+                return _html_escape(str(int(cell.value)))
+            return _html_escape(f'{cell.value:g}')
+
+        return _html_escape(str(cell.value))
 
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
+
+        # Collect column widths
+        col_widths = {}
+        for col_idx in range(1, min(ws.max_column + 1, 51)):
+            col_letter = get_column_letter(col_idx)
+            if col_letter in ws.column_dimensions and ws.column_dimensions[col_letter].width:
+                col_widths[col_idx] = min(ws.column_dimensions[col_letter].width * 8, 400)
+            else:
+                col_widths[col_idx] = 80  # Default width
+
+        # Collect merged cell ranges
+        merged_ranges = {}
+        for merge_range in ws.merged_cells.ranges:
+            min_row = merge_range.min_row
+            min_col = merge_range.min_col
+            max_row = merge_range.max_row
+            max_col = merge_range.max_col
+            rowspan = max_row - min_row + 1
+            colspan = max_col - min_col + 1
+            merged_ranges[(min_row, min_col)] = (rowspan, colspan, max_row, max_col)
+
+        # Track cells that are part of a merge (not the top-left)
+        merged_slave = set()
+        for (r, c), (rs, cs, mr, mc) in merged_ranges.items():
+            for rr in range(r, mr + 1):
+                for cc in range(c, mc + 1):
+                    if (rr, cc) != (r, c):
+                        merged_slave.add((rr, cc))
+
         rows_html = []
-        for ri, row in enumerate(ws.iter_rows(max_row=200, max_col=50, values_only=False)):
+        max_row = min(ws.max_row, 500)
+        max_col = min(ws.max_column, 50)
+
+        for ri, row in enumerate(ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col), 1):
             cells = []
             for cell in row:
-                val = cell.value if cell.value is not None else ''
-                val_str = _html_escape(str(val))
-                tag = 'th' if ri == 0 else 'td'
-                cells.append(f'<{tag}>{val_str}</{tag}>')
+                ci = cell.column
+
+                # Skip cells that are part of a merge (not top-left)
+                if (ri, ci) in merged_slave:
+                    continue
+
+                # Format cell value
+                val_str = _format_cell_value(cell)
+
+                # Build cell style
+                cell_style_parts = []
+
+                # Cell background fill
+                try:
+                    fill = cell.fill
+                    if fill and fill.start_color and fill.patternType and fill.patternType != 'none':
+                        bg_color = _xlsx_color_to_css(fill.start_color)
+                        if bg_color:
+                            cell_style_parts.append(f'background:{bg_color}')
+                except Exception:
+                    pass
+
+                # Font color
+                try:
+                    font = cell.font
+                    if font.color:
+                        font_color = _xlsx_color_to_css(font.color)
+                        if font_color:
+                            cell_style_parts.append(f'color:{font_color}')
+                except Exception:
+                    pass
+
+                # Font bold
+                try:
+                    if cell.font.bold:
+                        cell_style_parts.append('font-weight:bold')
+                except Exception:
+                    pass
+
+                # Font italic
+                try:
+                    if cell.font.italic:
+                        cell_style_parts.append('font-style:italic')
+                except Exception:
+                    pass
+
+                # Font size
+                try:
+                    if cell.font.size:
+                        cell_style_parts.append(f'font-size:{cell.font.size}pt')
+                except Exception:
+                    pass
+
+                # Font name
+                try:
+                    if cell.font.name:
+                        cell_style_parts.append(f'font-family:"{cell.font.name}",sans-serif')
+                except Exception:
+                    pass
+
+                # Text underline
+                try:
+                    if cell.font.underline:
+                        cell_style_parts.append('text-decoration:underline')
+                except Exception:
+                    pass
+
+                # Text strikethrough
+                try:
+                    if cell.font.strikethrough:
+                        cell_style_parts.append('text-decoration:line-through')
+                except Exception:
+                    pass
+
+                # Cell alignment
+                try:
+                    alignment = cell.alignment
+                    if alignment:
+                        h_map = {
+                            'left': 'left', 'center': 'center', 'right': 'right',
+                            'fill': 'left', 'justify': 'justify', 'centerContinuous': 'center',
+                            'distributed': 'justify',
+                        }
+                        if alignment.horizontal and alignment.horizontal in h_map:
+                            cell_style_parts.append(f'text-align:{h_map[alignment.horizontal]}')
+                        elif isinstance(cell.value, (int, float)):
+                            # Numbers default to right align
+                            cell_style_parts.append('text-align:right')
+
+                        v_map = {'top': 'top', 'center': 'middle', 'bottom': 'bottom'}
+                        if alignment.vertical and alignment.vertical in v_map:
+                            cell_style_parts.append(f'vertical-align:{v_map[alignment.vertical]}')
+
+                        if alignment.wrap_text:
+                            cell_style_parts.append('white-space:normal;word-wrap:break-word')
+                except Exception:
+                    pass
+
+                # Cell borders
+                try:
+                    border = cell.border
+                    if border:
+                        for side_name, side_obj in [('border-top', border.top), ('border-right', border.right),
+                                                      ('border-bottom', border.bottom), ('border-left', border.left)]:
+                            if side_obj and side_obj.style and side_obj.style != 'none':
+                                b_color = _xlsx_color_to_css(side_obj.color) if side_obj.color else '#000'
+                                b_style_map = {
+                                    'thin': '1px solid', 'medium': '2px solid',
+                                    'thick': '3px solid', 'dotted': '1px dotted',
+                                    'dashed': '1px dashed', 'mediumDashed': '2px dashed',
+                                    'hair': '1px solid', 'double': '3px double',
+                                    'mediumDotDash': '2px dotted', 'slantDashDot': '2px dashed',
+                                }
+                                b_css = b_style_map.get(side_obj.style, '1px solid')
+                                cell_style_parts.append(f'{side_name}:{b_css} {b_color}')
+                except Exception:
+                    pass
+
+                # Column width (via min-width)
+                if ci in col_widths:
+                    cell_style_parts.append(f'min-width:{col_widths[ci]:.0f}px')
+
+                # Merge cell attributes
+                merge_attrs = ''
+                if (ri, ci) in merged_ranges:
+                    rowspan, colspan, _, _ = merged_ranges[(ri, ci)]
+                    if rowspan > 1:
+                        merge_attrs += f' rowspan="{rowspan}"'
+                    if colspan > 1:
+                        merge_attrs += f' colspan="{colspan}"'
+
+                cstyle = f' style="{";".join(cell_style_parts)}"' if cell_style_parts else ''
+                cells.append(f'<td{cstyle}{merge_attrs}>{val_str}</td>')
+
             if cells:
                 rows_html.append(f'<tr>{"".join(cells)}</tr>')
 
-        table_html = f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>'
-        sheet_label = sheet_name if sheet_name == wb.sheetnames[0] else sheet_name
+        table_html = f'<table>{"".join(rows_html)}</table>'
         sheets_html.append(f'''<div class="sheet">
-<h3 class="sheet-title">{_html_escape(sheet_label)}</h3>
+<h3 class="sheet-title">{_html_escape(sheet_name)}</h3>
 {table_html}
 </div>''')
 
@@ -1713,15 +2591,15 @@ def _xlsx_to_html(filepath):
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.4; color: #333; }}
 .sheet {{ margin: 16px 0; }}
-.sheet-title {{ margin-bottom: 8px; color: #555; }}
+.sheet-title {{ margin-bottom: 8px; color: #555; font-size: 16px; }}
 .sheet-nav {{ display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }}
 .sheet-tab {{ padding: 6px 16px; border: 1px solid #ccc; border-radius: 4px; background: #f8f8f8;
               cursor: pointer; font-size: 14px; }}
 .sheet-tab.active {{ background: #0078d4; color: white; border-color: #0078d4; }}
 table {{ border-collapse: collapse; width: 100%; margin: 0 0 1em; font-size: 13px; }}
-th,td {{ border: 1px solid #ddd; padding: 4px 8px; text-align: left; white-space: nowrap; }}
-th {{ background: #f5f5f5; font-weight: 600; }}
-tr:nth-child(even) {{ background: #fafafa; }}
+td, th {{ border: 1px solid #d0d0d0; padding: 4px 8px; text-align: left; white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis; }}
+td {{ min-width: 50px; }}
 </style></head><body>
 {nav}
 {body}
