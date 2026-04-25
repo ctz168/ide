@@ -1434,37 +1434,99 @@ const EditorManager = (() => {
         const previewEl = document.getElementById('markdown-preview');
         if (!previewEl || !editor) return;
 
-        const content = editor.getValue();
-        if (typeof marked !== 'undefined') {
-            // Configure marked with code highlighting
-            marked.setOptions({
-                gfm: true,
-                breaks: true,
-                highlight: function(code, lang) {
-                    if (typeof hljs !== 'undefined') {
-                        if (lang && hljs.getLanguage(lang)) {
-                            try { return hljs.highlight(code, { language: lang }).value; } catch(e) {}
-                        }
-                        try { return hljs.highlightAuto(code).value; } catch(e) {}
-                    }
-                    return code;
-                }
-            });
-            previewEl.innerHTML = marked.parse(content);
-            // Render math with KaTeX
-            if (typeof renderMathInElement !== 'undefined') {
-                renderMathInElement(previewEl, {
-                    delimiters: [
-                        {left: "$$", right: "$$", display: true},
-                        {left: "$", right: "$", display: false},
-                        {left: "\\(", right: "\\)", display: false},
-                        {left: "\\[", right: "\\]", display: true}
-                    ],
-                    throwOnError: false
-                });
-            }
-        } else {
+        var mdRaw = editor.getValue();
+
+        if (typeof marked === 'undefined') {
             previewEl.innerHTML = '<p style="color:var(--text-muted)">Markdown 渲染器未加载</p>';
+            return;
+        }
+
+        // --- Step 0: Protect fenced code blocks and inline code from math regex ---
+        var codeStore = [];
+        var codeIdx = 0;
+        function storeCode(match) {
+            var id = 'CODEBLK' + (codeIdx++) + 'KLBC';
+            codeStore.push({ id: id, code: match });
+            return id;
+        }
+        // Fenced code blocks (``` ... ```)
+        mdRaw = mdRaw.replace(/```[\s\S]*?```/g, storeCode);
+        // Inline code (` ... `)
+        mdRaw = mdRaw.replace(/`[^`]+`/g, storeCode);
+
+        // --- Step 1: Protect math expressions from marked processing ---
+        // marked would otherwise interpret _ as <em> and split $$ blocks across paragraphs
+        var mathStore = [];
+        var mathIdx = 0;
+        function storeMath(match) {
+            var id = 'MATHPH' + (mathIdx++) + 'XHPM';
+            mathStore.push({ id: id, math: match });
+            return id;
+        }
+        // Protect display math $$...$$ (multi-line allowed) — must be before $...$
+        mdRaw = mdRaw.replace(/\$\$([\s\S]*?)\$\$/g, function(m) { return storeMath(m); });
+        // Protect inline math $...$ (single line only, content cannot be empty)
+        mdRaw = mdRaw.replace(/\$([^\$\n]+?)\$/g, function(m) { return storeMath(m); });
+        // Protect \(...\) inline math
+        mdRaw = mdRaw.replace(/\\\(([\s\S]*?)\\\)/g, function(m) { return storeMath(m); });
+        // Protect \[...\] display math
+        mdRaw = mdRaw.replace(/\\\[([\s\S]*?)\\\]/g, function(m) { return storeMath(m); });
+
+        // --- Step 1.5: Restore code blocks so marked can process them properly ---
+        for (var ci = 0; ci < codeStore.length; ci++) {
+            mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
+        }
+
+        // --- Step 2: Configure marked v12 with custom code highlighter ---
+        var renderer = new marked.Renderer();
+        renderer.code = function(token) {
+            var lang, text;
+            if (typeof token === 'object') {
+                lang = token.lang || '';
+                text = token.text || '';
+            } else {
+                text = arguments[0] || '';
+                lang = arguments[1] || '';
+            }
+            if (typeof hljs !== 'undefined') {
+                if (lang && hljs.getLanguage(lang)) {
+                    try { return '<pre><code class="hljs language-' + lang + '">' +
+                                hljs.highlight(text, { language: lang }).value + '</code></pre>'; }
+                    catch(e) {}
+                }
+                try { return '<pre><code class="hljs">' + hljs.highlightAuto(text).value + '</code></pre>'; }
+                catch(e) {}
+            }
+            return '<pre><code>' + text + '</code></pre>';
+        };
+
+        marked.setOptions({
+            gfm: true,
+            breaks: true,
+            renderer: renderer
+        });
+
+        // --- Step 3: Parse markdown ---
+        var html = marked.parse(mdRaw);
+
+        // --- Step 4: Restore math expressions ---
+        for (var i = 0; i < mathStore.length; i++) {
+            html = html.replace(mathStore[i].id, mathStore[i].math);
+        }
+
+        previewEl.innerHTML = html;
+
+        // --- Step 5: Render math with KaTeX ---
+        if (typeof renderMathInElement !== 'undefined') {
+            renderMathInElement(previewEl, {
+                delimiters: [
+                    {left: "$$", right: "$$", display: true},
+                    {left: "$", right: "$", display: false},
+                    {left: "\\(", right: "\\)", display: false},
+                    {left: "\\[", right: "\\]", display: true}
+                ],
+                throwOnError: false
+            });
         }
     }
 
