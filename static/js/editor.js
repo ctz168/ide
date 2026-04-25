@@ -19,6 +19,18 @@ const EditorManager = (() => {
     let multiCursors = [];            // array of cursor positions {line, ch}
     let selectionRanges = [];        // array of selection ranges {anchor, head}
 
+    // ── Selection Mode State ─────────────────────────────────────────
+    let selectionMode = false;         // whether selection mode is active
+    let selHandleStart = null;         // start cursor handle DOM element
+    let selHandleEnd = null;           // end cursor handle DOM element
+    let selHandleLineStart = null;     // vertical line for start handle
+    let selHandleLineEnd = null;       // vertical line for end handle
+    let longPressTimer = null;         // long press detection timer
+    let contextMenuEl = null;          // context menu popup element
+    let selDragging = null;            // which handle is being dragged: 'start' | 'end' | null
+    let selScrollHandler = null;       // scroll event handler reference
+    let selTouchMoveHandler = null;    // touchmove handler for preventing zoom
+
     // ── Tab State ─────────────────────────────────────────────────
     let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
     let tabOrder = [];               // ordered array of open tab paths
@@ -343,6 +355,17 @@ const EditorManager = (() => {
         if (previewBtn) {
             previewBtn.addEventListener('click', previewInBrowser);
         }
+
+        // ── Selection Mode: Exit button ────────────────────────────
+        const exitSelBtn = document.getElementById('editor-exit-selection-btn');
+        if (exitSelBtn) {
+            exitSelBtn.addEventListener('click', () => {
+                exitSelectionMode();
+            });
+        }
+
+        // ── Selection Mode: Long press detection ───────────────────
+        setupSelectionModeListeners();
 
         // ── Breakpoint Gutter Click ──────────────────────────────
         editor.on('gutterClick', (cm, n, gutterId) => {
@@ -1882,6 +1905,486 @@ const EditorManager = (() => {
         return div.innerHTML;
     }
 
+    // ── Selection Mode ──────────────────────────────────────────────
+
+    /**
+     * Set up long-press detection on the CodeMirror wrapper for selection mode
+     */
+    function setupSelectionModeListeners() {
+        if (!editor) return;
+        const wrapper = editor.getWrapperElement();
+        if (!wrapper) return;
+
+        let touchStartPos = null;
+
+        wrapper.addEventListener('touchstart', (e) => {
+            // Only handle single finger
+            if (e.touches.length !== 1) return;
+            // Don't interfere if already in selection mode
+            if (selectionMode) return;
+
+            const touch = e.touches[0];
+            touchStartPos = { x: touch.clientX, y: touch.clientY };
+
+            // Clear any existing timer
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+
+            // Start long press timer (500ms)
+            longPressTimer = setTimeout(() => {
+                longPressTimer = null;
+                // Verify finger hasn't moved much
+                if (!touchStartPos) return;
+                showContextMenu(touchStartPos.x, touchStartPos.y);
+            }, 500);
+        }, { passive: true });
+
+        wrapper.addEventListener('touchmove', (e) => {
+            // Cancel long press if finger moves
+            if (longPressTimer) {
+                // Check if moved too far
+                if (e.touches.length === 1 && touchStartPos) {
+                    const touch = e.touches[0];
+                    const dx = Math.abs(touch.clientX - touchStartPos.x);
+                    const dy = Math.abs(touch.clientY - touchStartPos.y);
+                    if (dx > 10 || dy > 10) {
+                        clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                    }
+                }
+            }
+        }, { passive: true });
+
+        wrapper.addEventListener('touchend', () => {
+            touchStartPos = null;
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        }, { passive: true });
+
+        wrapper.addEventListener('touchcancel', () => {
+            touchStartPos = null;
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        }, { passive: true });
+    }
+
+    /**
+     * Show the context menu at the given screen coordinates
+     */
+    function showContextMenu(x, y) {
+        // Remove any existing context menu
+        removeContextMenu();
+
+        const menu = document.createElement('div');
+        menu.className = 'editor-context-menu';
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+
+        const item = document.createElement('button');
+        item.className = 'editor-context-menu-item';
+        item.textContent = '进入选择模式';
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            removeContextMenu();
+            // Convert screen coords to editor position
+            const pos = editor.coordsChar({ left: x, top: y }, 'window');
+            if (pos) {
+                enterSelectionMode(pos);
+            }
+        });
+
+        menu.appendChild(item);
+        document.body.appendChild(menu);
+        contextMenuEl = menu;
+
+        // Adjust position if menu overflows viewport
+        requestAnimationFrame(() => {
+            if (!contextMenuEl) return;
+            const rect = contextMenuEl.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                contextMenuEl.style.left = (window.innerWidth - rect.width - 8) + 'px';
+            }
+            if (rect.bottom > window.innerHeight) {
+                contextMenuEl.style.top = (y - rect.height) + 'px';
+            }
+        });
+
+        // Dismiss on any touch outside the menu
+        const dismissHandler = (e) => {
+            if (contextMenuEl && !contextMenuEl.contains(e.target)) {
+                removeContextMenu();
+            }
+        };
+        setTimeout(() => {
+            document.addEventListener('touchstart', dismissHandler, { once: true, passive: true });
+            document.addEventListener('mousedown', dismissHandler, { once: true });
+        }, 100);
+    }
+
+    /**
+     * Remove the context menu popup
+     */
+    function removeContextMenu() {
+        if (contextMenuEl) {
+            contextMenuEl.remove();
+            contextMenuEl = null;
+        }
+    }
+
+    /**
+     * Enter selection mode at the given CodeMirror position
+     * @param {Object} pos - {line, ch} CodeMirror position
+     */
+    function enterSelectionMode(pos) {
+        if (!editor || selectionMode) return;
+
+        selectionMode = true;
+
+        // Disable pinch-to-zoom on the editor
+        const scroller = editor.getWrapperElement().querySelector('.CodeMirror-scroller');
+        if (scroller) {
+            scroller.style.touchAction = 'none';
+        }
+
+        // Prevent default on touchmove to stop browser zoom
+        selTouchMoveHandler = (e) => {
+            if (selectionMode && e.touches.length > 1) {
+                e.preventDefault();
+            }
+        };
+        editor.getWrapperElement().addEventListener('touchmove', selTouchMoveHandler, { passive: false });
+
+        // Select the word at the given position
+        const wordRange = editor.findWordAt(pos);
+        editor.setSelection(wordRange.anchor, wordRange.head);
+
+        // Show exit button
+        const exitBtn = document.getElementById('editor-exit-selection-btn');
+        if (exitBtn) {
+            exitBtn.style.display = '';
+        }
+
+        // Create cursor handles
+        createSelectionHandles();
+
+        // Update handle positions
+        updateSelectionHandlePositions();
+
+        // Listen for editor scroll to update handle positions
+        selScrollHandler = () => {
+            requestAnimationFrame(updateSelectionHandlePositions);
+        };
+        editor.on('scroll', selScrollHandler);
+
+        // Also listen for cursorActivity to keep handles in sync
+        editor.on('cursorActivity', selScrollHandler);
+
+        console.log('Selection mode entered');
+    }
+
+    /**
+     * Exit selection mode and clean up
+     */
+    function exitSelectionMode() {
+        if (!selectionMode) return;
+
+        selectionMode = false;
+
+        // Re-enable zoom
+        const scroller = editor.getWrapperElement().querySelector('.CodeMirror-scroller');
+        if (scroller) {
+            scroller.style.touchAction = '';
+        }
+
+        // Remove touchmove handler
+        if (selTouchMoveHandler) {
+            editor.getWrapperElement().removeEventListener('touchmove', selTouchMoveHandler);
+            selTouchMoveHandler = null;
+        }
+
+        // Clear selection
+        if (editor) {
+            editor.setCursor(editor.getCursor()); // collapse selection
+        }
+
+        // Hide exit button
+        const exitBtn = document.getElementById('editor-exit-selection-btn');
+        if (exitBtn) {
+            exitBtn.style.display = 'none';
+        }
+
+        // Remove cursor handles
+        removeSelectionHandles();
+
+        // Remove scroll listener
+        if (selScrollHandler && editor) {
+            editor.off('scroll', selScrollHandler);
+            editor.off('cursorActivity', selScrollHandler);
+            selScrollHandler = null;
+        }
+
+        // Remove context menu if visible
+        removeContextMenu();
+
+        console.log('Selection mode exited');
+    }
+
+    /**
+     * Create the start and end cursor handle DOM elements
+     */
+    function createSelectionHandles() {
+        removeSelectionHandles();
+
+        const container = editor.getWrapperElement().querySelector('.CodeMirror-code');
+        if (!container) return;
+
+        // Start handle (left-pointing triangle)
+        selHandleStart = document.createElement('div');
+        selHandleStart.className = 'sel-handle sel-handle-start';
+        selHandleStart.setAttribute('data-handle', 'start');
+
+        // Start handle vertical line
+        selHandleLineStart = document.createElement('div');
+        selHandleLineStart.className = 'sel-handle-line';
+        selHandleStart.appendChild(selHandleLineStart);
+
+        // End handle (right-pointing triangle)
+        selHandleEnd = document.createElement('div');
+        selHandleEnd.className = 'sel-handle sel-handle-end';
+        selHandleEnd.setAttribute('data-handle', 'end');
+
+        // End handle vertical line
+        selHandleLineEnd = document.createElement('div');
+        selHandleLineEnd.className = 'sel-handle-line';
+        selHandleEnd.appendChild(selHandleLineEnd);
+
+        // Add handles to the CodeMirror wrapper (positioned absolutely)
+        const wrapper = editor.getWrapperElement();
+        wrapper.style.position = 'relative';
+        wrapper.appendChild(selHandleStart);
+        wrapper.appendChild(selHandleEnd);
+
+        // Set up touch drag for handles
+        setupHandleDrag(selHandleStart, 'start');
+        setupHandleDrag(selHandleEnd, 'end');
+    }
+
+    /**
+     * Remove cursor handle DOM elements
+     */
+    function removeSelectionHandles() {
+        if (selHandleStart) { selHandleStart.remove(); selHandleStart = null; }
+        if (selHandleEnd) { selHandleEnd.remove(); selHandleEnd = null; }
+        selHandleLineStart = null;
+        selHandleLineEnd = null;
+    }
+
+    /**
+     * Update positions of cursor handles based on current selection
+     */
+    function updateSelectionHandlePositions() {
+        if (!editor || !selectionMode || !selHandleStart || !selHandleEnd) return;
+
+        const sel = editor.getSelection();
+        if (!sel) {
+            // No selection, hide handles
+            selHandleStart.style.display = 'none';
+            selHandleEnd.style.display = 'none';
+            return;
+        }
+
+        selHandleStart.style.display = '';
+        selHandleEnd.style.display = '';
+
+        // Get the selection range
+        const from = editor.getCursor('from');
+        const to = editor.getCursor('to');
+
+        // Get coordinates for start and end of selection
+        const startCoords = editor.charCoords(from, 'local');
+        const endCoords = editor.charCoords(to, 'local');
+
+        // Get scroll info to adjust positions
+        const scrollInfo = editor.getScrollInfo();
+        const wrapperRect = editor.getWrapperElement().getBoundingClientRect();
+        const scrollerRect = editor.getWrapperElement().querySelector('.CodeMirror-scroller').getBoundingClientRect();
+
+        // Offset from wrapper to scroller
+        const offsetX = scrollerRect.left - wrapperRect.left;
+        const offsetY = scrollerRect.top - wrapperRect.top;
+
+        // Position start handle
+        const startY = startCoords.top - scrollInfo.top + offsetY;
+        const startX = startCoords.left - scrollInfo.left + offsetX;
+        selHandleStart.style.top = (startY - 14) + 'px'; // Above the text
+        selHandleStart.style.left = (startX - 2) + 'px';
+
+        // Start handle line extends downward
+        if (selHandleLineStart) {
+            const lineHeight = startCoords.bottom - startCoords.top;
+            selHandleLineStart.style.height = (lineHeight + 14) + 'px';
+            selHandleLineStart.style.top = '0px';
+            selHandleLineStart.style.left = '5px';
+        }
+
+        // Position end handle
+        const endY = endCoords.top - scrollInfo.top + offsetY;
+        const endX = endCoords.left - scrollInfo.left + offsetX;
+        selHandleEnd.style.top = (endY - 14) + 'px'; // Above the text
+        selHandleEnd.style.left = (endX - 10) + 'px';
+
+        // End handle line extends downward
+        if (selHandleLineEnd) {
+            const lineHeight = endCoords.bottom - endCoords.top;
+            selHandleLineEnd.style.height = (lineHeight + 14) + 'px';
+            selHandleLineEnd.style.top = '0px';
+            selHandleLineEnd.style.left = '5px';
+        }
+    }
+
+    /**
+     * Set up touch drag events for a cursor handle
+     * @param {HTMLElement} handleEl - the handle DOM element
+     * @param {string} which - 'start' or 'end'
+     */
+    function setupHandleDrag(handleEl, which) {
+        handleEl.addEventListener('touchstart', (e) => {
+            if (!selectionMode) return;
+            e.preventDefault();
+            e.stopPropagation();
+            selDragging = which;
+        }, { passive: false });
+
+        // We need to listen on the document for touchmove/touchend
+        // because the finger might move off the handle element
+    }
+
+    /**
+     * Global touch move handler for selection handle dragging
+     */
+    function handleSelectionTouchMove(e) {
+        if (!selDragging || !selectionMode || !editor) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const touch = e.touches[0];
+        if (!touch) return;
+
+        // Convert touch coordinates to editor position
+        const pos = editor.coordsChar({
+            left: touch.clientX,
+            top: touch.clientY
+        }, 'window');
+
+        if (!pos) return;
+
+        const from = editor.getCursor('from');
+        const to = editor.getCursor('to');
+
+        if (selDragging === 'start') {
+            // Dragging the start handle - update the anchor
+            // Make sure we don't cross the end
+            if (CodeMirror.cmpPos(pos, to) > 0) {
+                // Flipped: start went past end
+                editor.setSelection(to, pos);
+            } else {
+                editor.setSelection(pos, to);
+            }
+        } else if (selDragging === 'end') {
+            // Dragging the end handle - update the head
+            if (CodeMirror.cmpPos(pos, from) < 0) {
+                // Flipped: end went before start
+                editor.setSelection(pos, from);
+            } else {
+                editor.setSelection(from, pos);
+            }
+        }
+
+        updateSelectionHandlePositions();
+    }
+
+    /**
+     * Global touch end handler for selection handle dragging
+     */
+    function handleSelectionTouchEnd(e) {
+        if (!selDragging || !selectionMode) return;
+
+        selDragging = null;
+
+        // Auto-copy selected text to clipboard
+        if (editor && editor.somethingSelected()) {
+            const text = editor.getSelection();
+            copyToClipboard(text);
+            showEditorToast('已复制到剪贴板');
+        }
+    }
+
+    /**
+     * Copy text to clipboard
+     * @param {string} text
+     */
+    function copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {
+                fallbackCopyToClipboard(text);
+            });
+        } else {
+            fallbackCopyToClipboard(text);
+        }
+    }
+
+    /**
+     * Fallback copy to clipboard using textarea trick
+     * @param {string} text
+     */
+    function fallbackCopyToClipboard(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+        } catch (err) {
+            console.warn('Clipboard copy failed:', err);
+        }
+        ta.remove();
+    }
+
+    /**
+     * Show a toast notification in the editor area
+     * @param {string} message
+     */
+    function showEditorToast(message) {
+        const container = document.getElementById('editor-container');
+        if (!container) return;
+
+        const toast = document.createElement('div');
+        toast.className = 'editor-toast';
+        toast.textContent = message;
+        container.appendChild(toast);
+
+        // Auto-remove after animation completes
+        setTimeout(() => {
+            toast.remove();
+        }, 1500);
+    }
+
+    // ── Selection Mode: Global drag listeners (set up once) ─────────
+    document.addEventListener('touchmove', handleSelectionTouchMove, { passive: false });
+    document.addEventListener('touchend', handleSelectionTouchEnd, { passive: true });
+
     // ── Auto-init when DOM is ready ────────────────────────────────
 
     if (document.readyState === 'loading') {
@@ -1964,7 +2467,11 @@ const EditorManager = (() => {
         exitMultiSelect,
         addCursorAt,
         selectAllOccurrences,
-        getMultiCursors
+        getMultiCursors,
+
+        // Selection Mode API
+        enterSelectionMode,
+        exitSelectionMode
     };
 })();
 
