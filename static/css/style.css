@@ -3211,42 +3211,51 @@ button, .file-item, .search-result-item, .git-change-item {
     z-index: 50;
     touch-action: none;
     cursor: pointer;
-    /* Fully transparent — just catches touch events */
     background: transparent;
 }
 
-/* Selection cursor handles — fixed-positioned on the page */
+/* Selection cursor handles — fixed-positioned "hammer" style
+ * Layout (top to bottom):
+ *   .sel-handle-head  — SVG droplet (22×28), the "hammer head"
+ *   .sel-handle-stem  — thin blue line (2px wide), the "hammer handle"
+ * The droplet tip points DOWN to the exact char position.
+ */
 .sel-handle {
     position: fixed;
     z-index: 200;
     touch-action: none;
-    cursor: pointer;
-    /* Make the handle container 44x44 for easy touch targeting */
-    width: 44px;
-    height: 44px;
-    /* Offset so the dot is visually centered over the char */
-    margin-left: -22px;
-    margin-top: -30px;
+    cursor: grab;
+    /* The handle is positioned so droplet tip aligns with the char.
+     * No margin — JS sets left/top precisely. */
     pointer-events: auto;
 }
-/* The blue dot (circle) at the top of the handle */
-.sel-handle-dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #4a9eff;
-    margin: 0 auto;
-    position: relative;
-    top: 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+.sel-handle:active {
+    cursor: grabbing;
 }
-/* The vertical stem (line) below the dot */
+
+/* The droplet head — contains an SVG teardrop */
+.sel-handle-head {
+    width: 22px;
+    height: 28px;
+    /* Make the touch target larger than the visual droplet */
+    padding: 11px 11px 0 11px;
+    margin-left: -11px;
+    /* The visual droplet is 22×28, but the touch target is 44×28 */
+    pointer-events: auto;
+}
+.sel-handle-head svg {
+    display: block;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+}
+
+/* The vertical stem (hammer handle) below the droplet */
 .sel-handle-stem {
     width: 2px;
     background: #4a9eff;
-    margin: 0 auto;
-    position: relative;
-    top: 16px;
+    /* Center under the SVG droplet.
+     * Head has padding-left:11px, SVG is 22px wide.
+     * Stem needs to be at: 11 + 22/2 - 1 = 11 + 10 = 21px from container left */
+    margin-left: 21px;
     pointer-events: none;
 }
 

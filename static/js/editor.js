@@ -2135,38 +2135,47 @@ const EditorManager = (() => {
 
     /**
      * Create the start and end cursor handle DOM elements (fixed-positioned)
-     * Handles are appended to document.body with position:fixed so they are
-     * always visible regardless of CodeMirror's internal DOM structure.
+     * Handles use SVG teardrop/droplet shape (like iOS native selection handles).
+     * The "hammer head" is a large droplet at top, the "stem" is a thin line
+     * going down to the exact text character position.
      */
     function createSelectionHandles() {
         removeSelectionHandles();
 
-        // Start handle: blue circle above + vertical line below
+        // SVG for a teardrop/droplet shape (hammer head)
+        // The droplet points DOWN — the tip of the teardrop touches the text.
+        // Width: 22, Height: 28 (droplet) + variable stem height
+        const dropletSVG = `<svg viewBox="0 0 22 28" width="22" height="28" xmlns="http://www.w3.org/2000/svg">
+            <path d="M11 0C4.9 0 0 4.9 0 10.5c0 6 11 17.5 11 17.5s11-11.5 11-17.5C22 4.9 17.1 0 11 0z" fill="#4a9eff" stroke="#2a7adf" stroke-width="0.5"/>
+        </svg>`;
+
+        // Start handle
         selHandleStart = document.createElement('div');
         selHandleStart.className = 'sel-handle sel-handle-start';
-        const startDot = document.createElement('div');
-        startDot.className = 'sel-handle-dot';
-        selHandleStart.appendChild(startDot);
-        const startLine = document.createElement('div');
-        startLine.className = 'sel-handle-stem';
-        selHandleStart.appendChild(startLine);
+        const startHead = document.createElement('div');
+        startHead.className = 'sel-handle-head';
+        startHead.innerHTML = dropletSVG;
+        selHandleStart.appendChild(startHead);
+        const startStem = document.createElement('div');
+        startStem.className = 'sel-handle-stem';
+        selHandleStart.appendChild(startStem);
 
-        // End handle: blue circle above + vertical line below
+        // End handle
         selHandleEnd = document.createElement('div');
         selHandleEnd.className = 'sel-handle sel-handle-end';
-        const endDot = document.createElement('div');
-        endDot.className = 'sel-handle-dot';
-        selHandleEnd.appendChild(endDot);
-        const endLine = document.createElement('div');
-        endLine.className = 'sel-handle-stem';
-        selHandleEnd.appendChild(endLine);
+        const endHead = document.createElement('div');
+        endHead.className = 'sel-handle-head';
+        endHead.innerHTML = dropletSVG;
+        selHandleEnd.appendChild(endHead);
+        const endStem = document.createElement('div');
+        endStem.className = 'sel-handle-stem';
+        selHandleEnd.appendChild(endStem);
 
         // Append to body (fixed-positioned)
         document.body.appendChild(selHandleStart);
         document.body.appendChild(selHandleEnd);
 
         // ── Overlay touch handlers ──
-        // The overlay captures ALL touch events in the editor area
         if (selOverlay) {
             selOverlay.addEventListener('touchstart', onSelTouchStart, { passive: false });
             selOverlay.addEventListener('touchmove', onSelTouchMove, { passive: false });
@@ -2174,7 +2183,19 @@ const EditorManager = (() => {
             selOverlay.addEventListener('touchcancel', onSelTouchEnd, { passive: false });
         }
 
-        // Also handle direct touches on the handles themselves
+        // Direct touches on the handle heads start dragging that handle
+        startHead.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selDragging = 'start';
+        }, { passive: false });
+        endHead.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selDragging = 'end';
+        }, { passive: false });
+
+        // Also catch touches on the full handle container
         selHandleStart.addEventListener('touchstart', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -2186,8 +2207,7 @@ const EditorManager = (() => {
             selDragging = 'end';
         }, { passive: false });
 
-        // Handle touchmove/touchend on document for handle drags
-        // (finger may move off the handle while dragging)
+        // Document-level for when finger moves off handle during drag
         document.addEventListener('touchmove', onSelHandleTouchMove, { passive: false });
         document.addEventListener('touchend', onSelHandleTouchEnd, { passive: false });
     }
@@ -2207,6 +2227,16 @@ const EditorManager = (() => {
     /**
      * Update positions of cursor handles based on current selection.
      * Handles use position:fixed with window coordinates from charCoords.
+     *
+     * Layout of each handle (top to bottom):
+     *   .sel-handle-head: padding 11px left + 0 top → SVG droplet 22×28
+     *                     Touch target = 44×28 (padding expands it)
+     *   .sel-handle-stem: 2px wide blue line, height = one line of text
+     *
+     * The droplet tip (bottom-center of SVG) aligns with the char position.
+     * SVG is 22×28, with padding-left:11px on the head.
+     * So the droplet tip is at: container.left + 11 + 11 = container.left + 22 (center of 22px SVG)
+     *                           container.top + 0 + 28 = container.top + 28 (bottom of SVG)
      */
     function updateSelectionHandlePositions() {
         if (!editor || !selectionMode || !selHandleStart || !selHandleEnd) return;
@@ -2221,44 +2251,44 @@ const EditorManager = (() => {
         selHandleStart.style.display = '';
         selHandleEnd.style.display = '';
 
-        // Get the selection range
         const from = editor.getCursor('from');
         const to = editor.getCursor('to');
 
-        // Use 'window' coordinates directly — no scroll offset math needed!
+        // Use 'window' coordinates — works with position:fixed
         const startCoords = editor.charCoords(from, 'window');
         const endCoords = editor.charCoords(to, 'window');
 
-        // The handle dot is centered horizontally over the char, above the text line.
-        // The stem extends downward from the dot to the text baseline.
-        const dotSize = 12;    // diameter of the blue dot
-        const stemAbove = 10;  // how far above the text line the dot center sits
+        // Droplet dimensions & offsets
+        const svgW = 22;       // SVG viewBox width
+        const svgH = 28;       // SVG viewBox height
+        const headPadL = 11;   // CSS padding-left on .sel-handle-head
 
-        // Start handle
-        const sx = startCoords.left - dotSize / 2;
-        const sy = startCoords.top - stemAbove - dotSize / 2;
+        // ── Start handle ──
+        // Droplet tip should be at (startCoords.left, startCoords.top)
+        // Tip is at: container.left + headPadL + svgW/2, container.top + svgH
+        // So: container.left = charX - headPadL - svgW/2
+        //     container.top  = charY - svgH
+        const sx = startCoords.left - headPadL - svgW / 2;
+        const sy = startCoords.top - svgH;
         selHandleStart.style.left = sx + 'px';
         selHandleStart.style.top = sy + 'px';
 
-        // Set stem height: from dot center down to text bottom
         const startStem = selHandleStart.querySelector('.sel-handle-stem');
         if (startStem) {
             const lineHeight = startCoords.bottom - startCoords.top;
-            startStem.style.height = (lineHeight + stemAbove) + 'px';
+            startStem.style.height = lineHeight + 'px';
         }
 
-        // End handle — positioned at end char
-        // For the end position, charCoords gives the LEFT edge of the char.
-        // If selection spans multiple lines, the end position is at the end of the last line.
-        const ex = endCoords.left - dotSize / 2;
-        const ey = endCoords.top - stemAbove - dotSize / 2;
+        // ── End handle ──
+        const ex = endCoords.left - headPadL - svgW / 2;
+        const ey = endCoords.top - svgH;
         selHandleEnd.style.left = ex + 'px';
         selHandleEnd.style.top = ey + 'px';
 
         const endStem = selHandleEnd.querySelector('.sel-handle-stem');
         if (endStem) {
             const lineHeight = endCoords.bottom - endCoords.top;
-            endStem.style.height = (lineHeight + stemAbove) + 'px';
+            endStem.style.height = lineHeight + 'px';
         }
     }
 
