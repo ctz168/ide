@@ -29,6 +29,7 @@ const EditorManager = (() => {
     let selDragging = null;            // which handle is being dragged: 'start' | 'end' | null
     let selLastCopiedText = '';        // track last auto-copied text to avoid duplicate toasts
     let selAutoScrollRAF = null;       // requestAnimationFrame id for auto-scroll
+    let selContextMenuEl = null;       // selection context menu (copy/cut/paste)
 
     // ── Tab State ─────────────────────────────────────────────────
     let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
@@ -2066,7 +2067,6 @@ const EditorManager = (() => {
         if (editorContainer) {
             selOverlay = document.createElement('div');
             selOverlay.className = 'sel-overlay';
-            selOverlay.style.touchAction = 'none'; // prevent browser zoom
             editorContainer.appendChild(selOverlay);
         }
 
@@ -2129,6 +2129,7 @@ const EditorManager = (() => {
 
         // Remove context menu if visible
         removeContextMenu();
+        removeSelectionContextMenu();
 
         console.log('Selection mode exited');
     }
@@ -2299,7 +2300,14 @@ const EditorManager = (() => {
      */
     function onSelTouchStart(e) {
         if (!selectionMode || !editor) return;
-        e.preventDefault(); // prevent CodeMirror from getting the event
+
+        // Allow pinch-zoom (2+ fingers) — don't interfere
+        if (e.touches.length >= 2) return;
+
+        e.preventDefault(); // prevent CodeMirror from getting single-finger events
+
+        // Remove any visible selection context menu when starting a new drag
+        removeSelectionContextMenu();
 
         const touch = e.touches[0];
         if (!touch) return;
@@ -2419,7 +2427,7 @@ const EditorManager = (() => {
     }
 
     /**
-     * Finish a drag: stop dragging and auto-copy
+     * Finish a drag: stop dragging and show context menu
      */
     function finishDrag() {
         // Stop auto-scroll
@@ -2430,14 +2438,134 @@ const EditorManager = (() => {
 
         selDragging = null;
 
-        // Auto-copy selected text to clipboard
+        // Show context menu with copy/cut/paste options
         if (editor && editor.somethingSelected()) {
+            showSelectionContextMenu();
+        }
+    }
+
+    /**
+     * Show the selection context menu (copy/cut/paste) near the selection
+     */
+    function showSelectionContextMenu() {
+        removeSelectionContextMenu();
+
+        if (!editor || !editor.somethingSelected()) return;
+
+        // Position the menu near the end of the selection
+        const selTo = editor.getCursor('to');
+        const coords = editor.charCoords(selTo, 'window');
+
+        const menu = document.createElement('div');
+        menu.className = 'editor-context-menu sel-context-menu';
+
+        // Copy button
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'editor-context-menu-item';
+        copyBtn.textContent = '复制';
+        copyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             const text = editor.getSelection();
-            if (text && text !== selLastCopiedText) {
+            if (text) {
                 selLastCopiedText = text;
                 copyToClipboard(text);
                 showEditorToast('已复制到剪贴板');
             }
+            removeSelectionContextMenu();
+        });
+        menu.appendChild(copyBtn);
+
+        // Cut button
+        const cutBtn = document.createElement('button');
+        cutBtn.className = 'editor-context-menu-item';
+        cutBtn.textContent = '剪切';
+        cutBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = editor.getSelection();
+            if (text) {
+                selLastCopiedText = text;
+                copyToClipboard(text);
+                editor.replaceSelection('');
+                showEditorToast('已剪切到剪贴板');
+            }
+            removeSelectionContextMenu();
+            // Exit selection mode after cut since content is removed
+            exitSelectionMode();
+        });
+        menu.appendChild(cutBtn);
+
+        // Paste button
+        const pasteBtn = document.createElement('button');
+        pasteBtn.className = 'editor-context-menu-item';
+        pasteBtn.textContent = '粘贴';
+        pasteBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then((text) => {
+                    if (text) {
+                        editor.replaceSelection(text);
+                        showEditorToast('已粘贴');
+                    }
+                }).catch(() => {
+                    showEditorToast('无法访问剪贴板');
+                });
+            } else {
+                showEditorToast('浏览器不支持粘贴');
+            }
+            removeSelectionContextMenu();
+            // Exit selection mode after paste
+            exitSelectionMode();
+        });
+        menu.appendChild(pasteBtn);
+
+        document.body.appendChild(menu);
+        selContextMenuEl = menu;
+
+        // Position: place below the end of the selection
+        let menuX = coords.left;
+        let menuY = coords.bottom + 4;
+
+        // Adjust if overflows viewport
+        requestAnimationFrame(() => {
+            if (!selContextMenuEl) return;
+            const rect = selContextMenuEl.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                selContextMenuEl.style.left = Math.max(4, window.innerWidth - rect.width - 8) + 'px';
+            }
+            if (rect.bottom > window.innerHeight) {
+                // Move above the selection instead
+                const selFrom = editor.getCursor('from');
+                const fromCoords = editor.charCoords(selFrom, 'window');
+                selContextMenuEl.style.top = Math.max(4, fromCoords.top - rect.height - 4) + 'px';
+            }
+        });
+
+        menuX = Math.max(8, menuX - 40); // slightly offset left
+        menu.style.left = menuX + 'px';
+        menu.style.top = menuY + 'px';
+
+        // Dismiss on touch outside
+        const dismissHandler = (e) => {
+            if (selContextMenuEl && !selContextMenuEl.contains(e.target)) {
+                removeSelectionContextMenu();
+            }
+        };
+        setTimeout(() => {
+            document.addEventListener('touchstart', dismissHandler, { once: true, passive: true });
+            document.addEventListener('mousedown', dismissHandler, { once: true });
+        }, 100);
+    }
+
+    /**
+     * Remove the selection context menu
+     */
+    function removeSelectionContextMenu() {
+        if (selContextMenuEl) {
+            selContextMenuEl.remove();
+            selContextMenuEl = null;
         }
     }
 

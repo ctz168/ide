@@ -3209,7 +3209,8 @@ button, .file-item, .search-result-item, .git-change-item {
     right: 0;
     bottom: 0;
     z-index: 50;
-    touch-action: none;
+    /* Allow pinch-zoom — we only preventDefault single-finger touches in JS */
+    touch-action: manipulation;
     cursor: pointer;
     background: transparent;
 }
@@ -3315,6 +3316,10 @@ button, .file-item, .search-result-item, .git-change-item {
     color: var(--red) !important;
     font-weight: bold;
     margin-left: auto;
+    font-size: 11px;
+    white-space: nowrap;
+    padding: 2px 8px !important;
+    width: auto !important;
 }
 
 /* Selection mode active state — enhance selection visibility & hide cursor */
