@@ -1723,6 +1723,58 @@ const EditorManager = (() => {
     }
 
     /**
+     * Sync the CodeMirror editor scroll position based on the current
+     * scroll position in the browser preview iframe (bottom panel).
+     * Reads the iframe's scroll position and finds the corresponding
+     * data-source-line element to determine the source line.
+     */
+    function syncEditorToPreviewScroll() {
+        if (!editor || !isMarkdownFile()) return;
+
+        var iframe = document.getElementById('preview-frame');
+        if (!iframe) return;
+
+        try {
+            var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+            if (!iframeDoc) return;
+
+            var scrollTop = iframeDoc.documentElement.scrollTop || iframeDoc.body.scrollTop || 0;
+            var viewHeight = iframeDoc.documentElement.clientHeight || iframeDoc.body.clientHeight || 0;
+            var scrollMid = scrollTop + viewHeight * 0.3;
+
+            var blocks = iframeDoc.querySelectorAll('[data-source-line]');
+            if (blocks.length === 0) {
+                // Fallback: proportional mapping
+                var scrollHeight = iframeDoc.documentElement.scrollHeight || iframeDoc.body.scrollHeight || 1;
+                var ratio = scrollHeight > viewHeight ? scrollTop / (scrollHeight - viewHeight) : 0;
+                var totalLines = editor.lineCount();
+                var targetLine = Math.round(ratio * totalLines);
+                editor.setCursor({ line: Math.min(targetLine, totalLines - 1), ch: 0 });
+                editor.scrollIntoView(null, 50);
+                return;
+            }
+
+            // Find the block at the current scroll position
+            var bestLine = 0;
+            blocks.forEach(function(el) {
+                var elTop = el.getBoundingClientRect().top + (iframeDoc.documentElement.scrollTop || iframeDoc.body.scrollTop);
+                if (elTop <= scrollMid) {
+                    var elLine = parseInt(el.getAttribute('data-source-line'), 10);
+                    if (elLine >= bestLine) {
+                        bestLine = elLine;
+                    }
+                }
+            });
+
+            editor.setCursor({ line: bestLine, ch: 0 });
+            editor.scrollIntoView(null, 50);
+        } catch (e) {
+            // Cross-origin iframe — can't access, silently ignore
+            console.warn('Cannot read iframe scroll position:', e.message);
+        }
+    }
+
+    /**
      * Toggle markdown preview mode
      */
     function toggleMarkdownPreview() {
@@ -1816,22 +1868,11 @@ const EditorManager = (() => {
         // makes relative CSS/JS paths resolve correctly via /preview/<dir>/
         let previewUrl = '/preview/' + relPath;
 
-        // For Markdown files, pass scroll ratio so the preview can auto-scroll
-        // to the position corresponding to the current editor view
+        // For Markdown files, pass cursor line number so the preview can
+        // auto-scroll to the position corresponding to the editor cursor
         if (isMarkdownFile() && editor) {
-            var scrollInfo = editor.getScrollInfo();
-            var scrollRatio = 0;
-            // Calculate how far down the user has scrolled (0 = top, 1 = bottom)
-            var maxScroll = scrollInfo.height - scrollInfo.clientHeight;
-            if (maxScroll > 0) {
-                scrollRatio = scrollInfo.top / maxScroll;
-            }
-            // Also pass the cursor line for more precise positioning
             var cursorLine = editor.getCursor().line;
-            var totalLines = editor.lineCount();
-            var lineRatio = totalLines > 0 ? cursorLine / totalLines : 0;
-            // Use lineRatio as the primary position indicator (more accurate for MD mapping)
-            previewUrl += '?scroll=' + encodeURIComponent(lineRatio.toFixed(4));
+            previewUrl += '?line=' + cursorLine;
         }
 
         // Switch to the browser tab in the bottom panel
@@ -2989,6 +3030,7 @@ const EditorManager = (() => {
         isMarkdownFile,
         toggleMarkdownPreview,
         renderMarkdownPreview,
+        syncEditorToPreviewScroll,
 
         // Tab management
         openTab,

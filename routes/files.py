@@ -474,6 +474,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 <script>
 (function() {{
   var mdRaw = {md_json};
+  var originalContent = mdRaw; // keep unmodified copy for line mapping
 
   var codeStore = [];
   var codeIdx = 0;
@@ -501,16 +502,86 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
   }}
 
-  var renderer = new marked.Renderer();
-  renderer.code = function(code, lang) {{
-    if (lang && hljs.getLanguage(lang)) {{
-      try {{ return '<pre><code class="hljs language-' + lang + '">' +
-                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
-      catch(e) {{}}
+  // Build source-line mapping from lexer tokens (using original unmodified content)
+  var tokens = marked.lexer(originalContent);
+  var blockLineQueue = [];
+  var lineOffset = 0;
+  for (var ti = 0; ti < tokens.length; ti++) {{
+    var tok = tokens[ti];
+    var newLines = (tok.raw.match(/\\n/g) || []).length;
+    var startLine = lineOffset;
+    if (tok.type !== 'space') {{
+      blockLineQueue.push({{ type: tok.type, startLine: startLine }});
     }}
-    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
-    catch(e) {{}}
-    return '<pre><code>' + code + '</code></pre>';
+    lineOffset += newLines;
+  }}
+
+  var renderer = new marked.Renderer();
+  var queueIdx = 0;
+
+  function nextSourceLine(type) {{
+    if (queueIdx < blockLineQueue.length && blockLineQueue[queueIdx].type === type) {{
+      var line = blockLineQueue[queueIdx].startLine;
+      queueIdx++;
+      return line;
+    }}
+    return -1;
+  }}
+
+  function injectLine(html, line) {{
+    if (line < 0) return html;
+    return html.replace(/^<(\\w+)/, '<$1 data-source-line="' + line + '"');
+  }}
+
+  // Code renderer with highlight.js + data-source-line
+  renderer.code = function(code, lang) {{
+    var line = nextSourceLine('code');
+    var codeHtml;
+    if (lang && hljs.getLanguage(lang)) {{
+      try {{ codeHtml = '<pre><code class="hljs language-' + lang + '">' +
+                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
+      catch(e) {{ codeHtml = '<pre><code>' + code + '</code></pre>'; }}
+    }} else {{
+      try {{ codeHtml = '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
+      catch(e) {{ codeHtml = '<pre><code>' + code + '</code></pre>'; }}
+    }}
+    return injectLine(codeHtml, line);
+  }};
+
+  var origHeading = renderer.heading.bind(renderer);
+  renderer.heading = function(text, depth, raw) {{
+    var line = nextSourceLine('heading');
+    return injectLine(origHeading(text, depth, raw), line);
+  }};
+
+  var origParagraph = renderer.paragraph.bind(renderer);
+  renderer.paragraph = function(text) {{
+    var line = nextSourceLine('paragraph');
+    return injectLine(origParagraph(text), line);
+  }};
+
+  var origList = renderer.list.bind(renderer);
+  renderer.list = function(body, ordered, start) {{
+    var line = nextSourceLine('list');
+    return injectLine(origList(body, ordered, start), line);
+  }};
+
+  var origBlockquote = renderer.blockquote.bind(renderer);
+  renderer.blockquote = function(body) {{
+    var line = nextSourceLine('blockquote');
+    return injectLine(origBlockquote(body), line);
+  }};
+
+  var origTable = renderer.table.bind(renderer);
+  renderer.table = function(header, body) {{
+    var line = nextSourceLine('table');
+    return injectLine(origTable(header, body), line);
+  }};
+
+  var origHr = renderer.hr.bind(renderer);
+  renderer.hr = function() {{
+    var line = nextSourceLine('hr');
+    return injectLine(origHr(), line);
   }};
 
   marked.setOptions({{
@@ -538,16 +609,35 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   }});
 
   // Auto-scroll to the position corresponding to the editor cursor
-  var scrollParam = new URLSearchParams(window.location.search).get('scroll');
-  if (scrollParam !== null) {{
-    var ratio = parseFloat(scrollParam);
-    if (!isNaN(ratio) && ratio > 0) {{
-      // Wait for rendering to complete, then scroll proportionally
+  var cursorLineParam = new URLSearchParams(window.location.search).get('line');
+  if (cursorLineParam !== null) {{
+    var cursorLine = parseInt(cursorLineParam, 10);
+    if (!isNaN(cursorLine) && cursorLine >= 0) {{
+      // Wait for rendering (including KaTeX) to complete
       requestAnimationFrame(function() {{
         requestAnimationFrame(function() {{
-          var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-          if (maxScroll > 0) {{
-            window.scrollTo(0, Math.round(maxScroll * ratio));
+          var blocks = document.querySelectorAll('[data-source-line]');
+          if (blocks.length === 0) {{
+            // Fallback: proportional scroll
+            var totalSrcLines = originalContent.split('\\n').length;
+            var ratio = totalSrcLines > 0 ? cursorLine / totalSrcLines : 0;
+            var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+            if (maxScroll > 0) window.scrollTo(0, Math.round(maxScroll * ratio));
+            return;
+          }}
+          // Find the element whose source line is closest to (but <=) cursor line
+          var bestEl = null;
+          var bestLine = -1;
+          blocks.forEach(function(el) {{
+            var elLine = parseInt(el.getAttribute('data-source-line'), 10);
+            if (elLine <= cursorLine && elLine > bestLine) {{
+              bestLine = elLine;
+              bestEl = el;
+            }}
+          }});
+          if (bestEl) {{
+            var elTop = bestEl.getBoundingClientRect().top + window.pageYOffset;
+            window.scrollTo(0, Math.max(0, elTop - window.innerHeight * 0.1));
           }}
         }});
       }});

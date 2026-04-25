@@ -1133,6 +1133,10 @@ const AppManager = (() => {
 
         if (closeBtn) {
             closeBtn.addEventListener('click', () => {
+                // If MD file is being previewed in browser, sync scroll position back to editor
+                if (window.EditorManager && window.EditorManager.isMarkdownFile && window.EditorManager.isMarkdownFile()) {
+                    window.EditorManager.syncEditorToPreviewScroll();
+                }
                 if (window.TerminalManager) TerminalManager.hidePanel();
             });
         }
