@@ -1267,41 +1267,380 @@ img {{ max-width: 100%; }}
 
 
 def _pptx_to_html(filepath):
-    """Convert PPTX to HTML for preview."""
+    """Convert PPTX to HTML for preview with backgrounds, shapes, images, and styling."""
+    import base64
+    import io
     from pptx import Presentation
-    from pptx.util import Inches, Pt
+    from pptx.util import Inches, Pt, Emu
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.dml.color import RGBColor
+    from lxml import etree
 
     prs = Presentation(filepath)
-    slides_html = []
+    slide_width_emu = prs.slide_width
+    slide_height_emu = prs.slide_height
 
+    # EMU to px conversion (1 inch = 914400 EMU, assume 96 DPI)
+    def emu_to_px(emu):
+        if emu is None:
+            return 0
+        return round(int(emu) / 914400 * 96)
+
+    slide_w_px = emu_to_px(slide_width_emu)
+    slide_h_px = emu_to_px(slide_height_emu)
+
+    def _color_to_css(color):
+        """Convert a python-pptx color to CSS color string."""
+        if color is None:
+            return None
+        try:
+            if color.type is not None and color.type == 1:  # RGB
+                return f'#{color.rgb}'
+            elif color.type is not None and color.type == 2:  # Theme
+                # Theme colors — map to approximate CSS colors
+                theme_map = {
+                    0: '#000000',   # dk1
+                    1: '#FFFFFF',   # lt1
+                    2: '#44546A',   # dk2
+                    3: '#E7E6E6',   # lt2
+                    4: '#4472C4',   # accent1
+                    5: '#ED7D31',   # accent2
+                    6: '#A5A5A5',   # accent3
+                    7: '#FFC000',   # accent4
+                    8: '#5B9BD5',   # accent5
+                    9: '#70AD47',   # accent6
+                }
+                idx = color.theme
+                return theme_map.get(idx, '#333333')
+            elif color.type is not None and color.type == 3:  # Scheme
+                return '#333333'
+        except Exception:
+            pass
+        try:
+            if hasattr(color, 'rgb') and color.rgb:
+                return f'#{color.rgb}'
+        except Exception:
+            pass
+        return None
+
+    def _get_fill_css(fill, default_color=None):
+        """Get CSS background from a fill object."""
+        try:
+            if fill.type is None:
+                return default_color or 'transparent'
+            from pptx.oxml.ns import qn
+            # type 1 = solid
+            if fill.type == 1:  # SOLID
+                color = _color_to_css(fill.fore_color)
+                return color or default_color or 'transparent'
+            # type 2 = gradient — use first stop color
+            elif fill.type == 2:  # GRADIENT
+                try:
+                    color = _color_to_css(fill.fore_color)
+                    return color or default_color or 'transparent'
+                except Exception:
+                    return default_color or 'transparent'
+            # type 3 = patterned
+            elif fill.type == 3:
+                try:
+                    color = _color_to_css(fill.fore_color)
+                    return color or default_color or 'transparent'
+                except Exception:
+                    return default_color or 'transparent'
+            # type 5 = background (inherit)
+            elif fill.type == 5:
+                return 'transparent'
+        except Exception:
+            pass
+        return default_color or 'transparent'
+
+    def _get_slide_bg_css(slide):
+        """Get CSS background for a slide from its background fill."""
+        bg = slide.background
+        try:
+            fill = bg.fill
+            bg_css = _get_fill_css(fill)
+            if bg_css and bg_css != 'transparent':
+                return bg_css
+        except Exception:
+            pass
+
+        # Try reading XML directly for more background options
+        try:
+            nsmap = {
+                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+                'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+            }
+            cSld = slide._element.find(qn('p:cSld'))
+            if cSld is not None:
+                bg_el = cSld.find(qn('p:bg'))
+                if bg_el is not None:
+                    # Check for bgRef (reference to theme)
+                    bgRef = bg_el.find(qn('p:bgRef'))
+                    if bgRef is not None:
+                        idx = int(bgRef.get('idx', '0'))
+                        theme_map = {
+                            0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6E6',
+                            4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
+                            8: '#5B9BD5', 9: '#70AD47',
+                        }
+                        if idx in theme_map:
+                            return theme_map[idx]
+                    # Check for solid fill in bgPr
+                    bgPr = bg_el.find(qn('p:bgPr'))
+                    if bgPr is not None:
+                        solidFill = bgPr.find(qn('a:solidFill'))
+                        if solidFill is not None:
+                            srgbClr = solidFill.find(qn('a:srgbClr'))
+                            if srgbClr is not None:
+                                return f'#{srgbClr.get("val", "FFFFFF")}'
+                            schemeClr = solidFill.find(qn('a:schemeClr'))
+                            if schemeClr is not None:
+                                val = schemeClr.get('val', '')
+                                scheme_map = {
+                                    'dk1': '#000000', 'lt1': '#FFFFFF', 'dk2': '#44546A',
+                                    'lt2': '#E7E6E6', 'accent1': '#4472C4', 'accent2': '#ED7D31',
+                                    'accent3': '#A5A5A5', 'accent4': '#FFC000', 'accent5': '#5B9BD5',
+                                    'accent6': '#70AD47', 'hlink': '#0563C1',
+                                }
+                                return scheme_map.get(val, '#FFFFFF')
+                        # Check for gradient fill
+                        gradFill = bgPr.find(qn('a:gradFill'))
+                        if gradFill is not None:
+                            gsLst = gradFill.find(qn('a:gsLst'))
+                            if gsLst is not None:
+                                first_gs = gsLst.find(qn('a:gs'))
+                                if first_gs is not None:
+                                    srgb = first_gs.find(qn('a:srgbClr'))
+                                    if srgb is not None:
+                                        return f'#{srgb.get("val", "FFFFFF")}'
+        except Exception:
+            pass
+
+        return '#FFFFFF'  # Default white
+
+    def _get_image_base64(slide, rId):
+        """Extract image from PPTX by relationship ID and return base64 data URI."""
+        try:
+            part = slide.part
+            rel = part.rels[rId]
+            image_part = rel.target_part
+            image_bytes = image_part.blob
+            content_type = image_part.content_type
+            if not content_type:
+                # Guess from extension
+                ext = image_part.partname.split('.')[-1].lower()
+                ct_map = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
+                          'gif': 'image/gif', 'bmp': 'image/bmp', 'svg': 'image/svg+xml',
+                          'tiff': 'image/tiff', 'tif': 'image/tiff'}
+                content_type = ct_map.get(ext, 'image/png')
+            b64 = base64.b64encode(image_bytes).decode('ascii')
+            return f'data:{content_type};base64,{b64}'
+        except Exception:
+            return None
+
+    def _render_shape(slide, shape):
+        """Render a single shape to HTML with positioning and styling."""
+        parts = []
+
+        left_px = emu_to_px(shape.left)
+        top_px = emu_to_px(shape.top)
+        width_px = emu_to_px(shape.width)
+        height_px = emu_to_px(shape.height)
+
+        style_parts = [f'position:absolute', f'left:{left_px}px', f'top:{top_px}px',
+                       f'width:{width_px}px', f'height:{height_px}px']
+
+        # Shape fill
+        try:
+            fill = shape.fill
+            fill_css = _get_fill_css(fill)
+            if fill_css and fill_css != 'transparent':
+                style_parts.append(f'background:{fill_css}')
+        except Exception:
+            pass
+
+        # Shape border/line
+        try:
+            line = shape.line
+            if line.fill.type is not None and line.fill.type == 1:  # solid
+                line_color = _color_to_css(line.color)
+                line_width = line.width
+                if line_color and line_width:
+                    w_pt = int(line_width) / 12700  # EMU to pt
+                    style_parts.append(f'border:{w_pt:.1f}pt solid {line_color}')
+            elif line.fill.type is not None and line.fill.type == 5:  # no line
+                style_parts.append('border:none')
+        except Exception:
+            pass
+
+        # Rotation
+        try:
+            rotation = shape.rotation
+            if rotation:
+                style_parts.append(f'transform:rotate({rotation}deg)')
+        except Exception:
+            pass
+
+        # Shadow (basic)
+        try:
+            shadow = shape.shadow
+            if shadow.inherit is not None:
+                style_parts.append('box-shadow:2px 2px 6px rgba(0,0,0,0.2)')
+        except Exception:
+            pass
+
+        # Border radius for rounded shapes
+        shape_type = None
+        try:
+            shape_type = shape.shape_type
+        except Exception:
+            pass
+
+        content = ''
+
+        # Picture shape
+        if shape_type == MSO_SHAPE_TYPE.PICTURE or shape_type == MSO_SHAPE_TYPE.LINKED_PICTURE:
+            try:
+                # Get image from shape element
+                nsmap_a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+                nsmap_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+                sp = shape._element
+                blipFill = sp.find('.//' + '{http://schemas.openxmlformats.org/drawingml/2006/main}blip')
+                if blipFill is not None:
+                    rId = blipFill.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                    if rId:
+                        data_uri = _get_image_base64(slide, rId)
+                        if data_uri:
+                            content = f'<img src="{data_uri}" style="width:100%;height:100%;object-fit:contain">'
+            except Exception:
+                pass
+
+        # Group shape — recurse into children
+        elif shape_type == MSO_SHAPE_TYPE.GROUP:
+            try:
+                group_html = []
+                for child in shape.shapes:
+                    group_html.append(_render_shape(slide, child))
+                content = ''.join(group_html)
+                style_parts.append('overflow:visible')
+            except Exception:
+                pass
+
+        # Text frame
+        if not content and shape.has_text_frame:
+            text_parts = []
+            for para in shape.text_frame.paragraphs:
+                runs_html = []
+                para_style = []
+
+                # Paragraph alignment
+                try:
+                    align = para.alignment
+                    align_map = {1: 'left', 2: 'center', 3: 'right', 4: 'justify', 5: 'center', 6: 'left', 7: 'right'}
+                    if align in align_map:
+                        para_style.append(f'text-align:{align_map[align]}')
+                except Exception:
+                    pass
+
+                for run in para.runs:
+                    rtext = _html_escape(run.text)
+                    # Font color
+                    try:
+                        color_css = _color_to_css(run.font.color)
+                        if color_css:
+                            rtext = f'<span style="color:{color_css}">{rtext}</span>'
+                    except Exception:
+                        pass
+                    # Font size
+                    try:
+                        if run.font.size:
+                            sz_pt = int(run.font.size) / 12700  # EMU to pt
+                            rtext = f'<span style="font-size:{sz_pt:.0f}pt">{rtext}</span>'
+                    except Exception:
+                        pass
+                    # Bold
+                    if run.font.bold:
+                        rtext = f'<strong>{rtext}</strong>'
+                    # Italic
+                    if run.font.italic:
+                        rtext = f'<em>{rtext}</em>'
+                    # Underline
+                    try:
+                        if run.font.underline:
+                            rtext = f'<u>{rtext}</u>'
+                    except Exception:
+                        pass
+                    runs_html.append(rtext)
+
+                text = ''.join(runs_html) if runs_html else _html_escape(para.text)
+                pstyle = f' style="{";".join(para_style)}"' if para_style else ''
+                text_parts.append(f'<p{pstyle}>{text}</p>')
+
+            content = ''.join(text_parts)
+            # Add padding for text shapes
+            if 'background' not in ' '.join(style_parts):
+                style_parts.append('padding:4px 8px')
+
+        # Table
+        elif not content and shape.has_table:
+            table = shape.table
+            rows_html = []
+            for ri, row in enumerate(table.rows):
+                cells = []
+                for cell in row.cells:
+                    cell_text = _html_escape(cell.text)
+                    cell_style = []
+                    # Cell fill
+                    try:
+                        cell_fill = cell.fill
+                        cell_bg = _get_fill_css(cell_fill)
+                        if cell_bg and cell_bg != 'transparent':
+                            cell_style.append(f'background:{cell_bg}')
+                    except Exception:
+                        pass
+                    cstyle = f' style="{";".join(cell_style)}"' if cell_style else ''
+                    tag = 'th' if ri == 0 else 'td'
+                    cells.append(f'<{tag}{cstyle}>{cell_text}</{tag}>')
+                rows_html.append(f'<tr>{"".join(cells)}</tr>')
+            content = f'<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows_html)}</table>'
+
+        # Fallback for shapes with no content
+        if not content:
+            # Just render as a colored rectangle
+            if 'background' not in ' '.join(style_parts):
+                content = ''
+
+        style_str = ';'.join(style_parts)
+        parts.append(f'<div class="shape" style="{style_str}">{content}</div>')
+        return ''.join(parts)
+
+    # Build each slide
+    slides_html = []
     for i, slide in enumerate(prs.slides):
+        bg_css = _get_slide_bg_css(slide)
+
+        # Render all shapes with absolute positioning
         shapes_html = []
         for shape in slide.shapes:
-            if shape.has_text_frame:
-                for para in shape.text_frame.paragraphs:
-                    runs_html = []
-                    for run in para.runs:
-                        rtext = _html_escape(run.text)
-                        if run.font.bold:
-                            rtext = f'<strong>{rtext}</strong>'
-                        if run.font.italic:
-                            rtext = f'<em>{rtext}</em>'
-                        runs_html.append(rtext)
-                    text = ''.join(runs_html) if runs_html else _html_escape(para.text)
-                    if text.strip():
-                        shapes_html.append(f'<p>{text}</p>')
-            elif shape.has_table:
-                table = shape.table
-                rows_html = []
-                for ri, row in enumerate(table.rows):
-                    cells_str = ''.join(f'<td>{_html_escape(cell.text)}</td>' for cell in row.cells)
-                    rows_html.append(f'<tr>{cells_str}</tr>')
-                shapes_html.append(f'<table border="1" cellpadding="6" cellspacing="0">{"".join(rows_html)}</table>')
+            try:
+                shapes_html.append(_render_shape(slide, shape))
+            except Exception:
+                # Fallback: extract text at least
+                try:
+                    if shape.has_text_frame:
+                        text = _html_escape(shape.text)
+                        shapes_html.append(f'<div class="shape" style="position:absolute;left:{emu_to_px(shape.left)}px;top:{emu_to_px(shape.top)}px;width:{emu_to_px(shape.width)}px;font-size:18px">{text}</div>')
+                except Exception:
+                    pass
 
-        slide_content = '\n'.join(shapes_html) if shapes_html else '<p style="color:#999">(empty slide)</p>'
-        slides_html.append(f'''<div class="slide">
+        shapes_content = '\n'.join(shapes_html)
+        slides_html.append(f'''<div class="slide" style="background:{bg_css}">
 <div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
-<div class="slide-content">{slide_content}</div>
+<div class="slide-canvas" style="position:relative;width:{slide_w_px}px;height:{slide_h_px}px">
+{shapes_content}
+</div>
 </div>''')
 
     body = '\n'.join(slides_html)
@@ -1311,15 +1650,20 @@ def _pptx_to_html(filepath):
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        margin: 0; padding: 20px; background: #f0f0f0; color: #333; }}
-.slide {{ background: white; margin: 20px auto; max-width: 960px; padding: 40px;
-          border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); min-height: 200px; }}
-.slide-number {{ color: #999; font-size: 12px; margin-bottom: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; }}
-.slide-content {{ font-size: 18px; line-height: 1.6; }}
-.slide-content h1 {{ font-size: 28px; }}
-.slide-content h2 {{ font-size: 24px; }}
-table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
-th,td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
-th {{ background: #f5f5f5; }}
+.slide {{ margin: 20px auto; max-width: {slide_w_px + 40}px; padding: 0;
+          border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); overflow: hidden; }}
+.slide-number {{ color: rgba(255,255,255,0.7); font-size: 11px; padding: 4px 12px; text-align: right; background: rgba(0,0,0,0.3); position: relative; z-index: 10; }}
+.slide-canvas {{ transform-origin: top left; margin: 0 auto; }}
+.shape {{ box-sizing: border-box; overflow: hidden; }}
+.shape p {{ margin: 2px 0; line-height: 1.4; }}
+.shape img {{ display: block; }}
+table {{ border-collapse: collapse; width: 100%; margin: 4px 0; }}
+th,td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 13px; }}
+th {{ background: #f5f5f5; font-weight: bold; }}
+@media (max-width: 1000px) {{
+    .slide-canvas {{ transform: scale(calc((100vw - 80px) / {slide_w_px})); }}
+    .slide {{ max-width: calc(100vw - 40px); }}
+}}
 </style></head><body>{body}</body></html>'''
     return Response(html, mimetype='text/html; charset=utf-8')
 
