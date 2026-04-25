@@ -286,24 +286,17 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   }}
 
   // --- Step 2: Configure marked v12 with custom code highlighter ---
+  // In marked v12, renderer.code receives (code_string, lang_string, escaped_bool)
   var renderer = new marked.Renderer();
-  renderer.code = function(token) {{
-    var lang, text;
-    if (typeof token === 'object') {{
-      lang = token.lang || '';
-      text = token.text || '';
-    }} else {{
-      text = arguments[0] || '';
-      lang = arguments[1] || '';
-    }}
+  renderer.code = function(code, lang) {{
     if (lang && hljs.getLanguage(lang)) {{
       try {{ return '<pre><code class="hljs language-' + lang + '">' +
-                    hljs.highlight(text, {{ language: lang }}).value + '</code></pre>'; }}
+                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
       catch(e) {{}}
     }}
-    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(text).value + '</code></pre>'; }}
+    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
     catch(e) {{}}
-    return '<pre><code>' + text + '</code></pre>';
+    return '<pre><code>' + code + '</code></pre>';
   }};
 
   marked.setOptions({{
