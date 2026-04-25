@@ -236,6 +236,7 @@ ul,ol {{ padding-left: 2em; }}
 li {{ margin: 0.25em 0; }}
 input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 .katex-display {{ margin: 1em 0; overflow-x: auto; }}
+.math-inline, .math-display {{ }}
 </style>
 <script src="/vendor/marked/marked.min.js"></script>
 <script src="/vendor/katex/katex.min.js"></script>
@@ -244,32 +245,94 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 </head><body>
 <div id="content"></div>
 <script>
-// Configure marked
-marked.setOptions({{
-  gfm: true,
-  breaks: true,
-  highlight: function(code, lang) {{
-    if (lang && hljs.getLanguage(lang)) {{
-      try {{ return hljs.highlight(code, {{ language: lang }}).value; }} catch(e) {{}}
-    }}
-    try {{ return hljs.highlightAuto(code).value; }} catch(e) {{}}
-    return code;
+(function() {{
+  var mdRaw = {md_json};
+
+  // --- Step 0: Protect fenced code blocks and inline code from math regex ---
+  var codeStore = [];
+  var codeIdx = 0;
+  function storeCode(match) {{
+    var id = 'CODEBLK' + (codeIdx++) + 'KLBC';
+    codeStore.push({{ id: id, code: match }});
+    return id;
   }}
-}});
+  // Fenced code blocks (``` ... ```)
+  mdRaw = mdRaw.replace(/`{{3}}[\\s\\S]*?`{{3}}/g, storeCode);
+  // Inline code (` ... `)
+  mdRaw = mdRaw.replace(/`[^`]+`/g, storeCode);
 
-// Render markdown
-document.getElementById('content').innerHTML = marked.parse({md_json});
+  // --- Step 1: Protect math expressions from marked processing ---
+  // marked would otherwise interpret _ as <em> and split $$ blocks across paragraphs
+  var mathStore = [];
+  var mathIdx = 0;
+  function storeMath(match) {{
+    var id = 'MATHPH' + (mathIdx++) + 'XHPM';
+    mathStore.push({{ id: id, math: match }});
+    return id;
+  }}
 
-// Render math with KaTeX
-renderMathInElement(document.getElementById('content'), {{
-  delimiters: [
-    {{left: "$$", right: "$$", display: true}},
-    {{left: "$", right: "$", display: false}},
-    {{left: "\\\\(", right: "\\\\)", display: false}},
-    {{left: "\\\\[", right: "\\\\]", display: true}}
-  ],
-  throwOnError: false
-}});
+  // Protect display math $$...$$ (multi-line allowed) — must be before $...$
+  mdRaw = mdRaw.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, function(m) {{ return storeMath(m); }});
+  // Protect inline math $...$ (single line only, content cannot be empty)
+  mdRaw = mdRaw.replace(/\\$([^\\$\\n]+?)\\$/g, function(m) {{ return storeMath(m); }});
+  // Protect \\(...\\) inline math
+  mdRaw = mdRaw.replace(/\\\\\\(([\\s\\S]*?)\\\\\\)/g, function(m) {{ return storeMath(m); }});
+  // Protect \\[...\\] display math
+  mdRaw = mdRaw.replace(/\\\\\\[([\\s\\S]*?)\\\\\\]/g, function(m) {{ return storeMath(m); }});
+
+  // --- Step 1.5: Restore code blocks so marked can process them properly ---
+  for (var ci = 0; ci < codeStore.length; ci++) {{
+    mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
+  }}
+
+  // --- Step 2: Configure marked v12 with custom code highlighter ---
+  var renderer = new marked.Renderer();
+  renderer.code = function(token) {{
+    var lang, text;
+    if (typeof token === 'object') {{
+      lang = token.lang || '';
+      text = token.text || '';
+    }} else {{
+      text = arguments[0] || '';
+      lang = arguments[1] || '';
+    }}
+    if (lang && hljs.getLanguage(lang)) {{
+      try {{ return '<pre><code class="hljs language-' + lang + '">' +
+                    hljs.highlight(text, {{ language: lang }}).value + '</code></pre>'; }}
+      catch(e) {{}}
+    }}
+    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(text).value + '</code></pre>'; }}
+    catch(e) {{}}
+    return '<pre><code>' + text + '</code></pre>';
+  }};
+
+  marked.setOptions({{
+    gfm: true,
+    breaks: true,
+    renderer: renderer
+  }});
+
+  // --- Step 3: Parse markdown ---
+  var html = marked.parse(mdRaw);
+
+  // --- Step 4: Restore math expressions ---
+  for (var i = 0; i < mathStore.length; i++) {{
+    html = html.replace(mathStore[i].id, mathStore[i].math);
+  }}
+
+  document.getElementById('content').innerHTML = html;
+
+  // --- Step 5: Render math with KaTeX ---
+  renderMathInElement(document.getElementById('content'), {{
+    delimiters: [
+      {{left: "$$", right: "$$", display: true}},
+      {{left: "$", right: "$", display: false}},
+      {{left: "\\\\(", right: "\\\\)", display: false}},
+      {{left: "\\\\[", right: "\\\\]", display: true}}
+    ],
+    throwOnError: false
+  }});
+}})();
 </script>
 </body></html>'''
             return Response(html_content, mimetype='text/html; charset=utf-8')
