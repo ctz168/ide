@@ -284,12 +284,34 @@ LLM API 配置存储在 `~/.phoneide/llm_config.json`：
 
 ```json
 {
-  "provider": "openai",
-  "api_key": "sk-xxx",
-  "api_base": "https://api.openai.com/v1",
-  "model": "gpt-4o-mini",
-  "temperature": 0.7,
-  "max_tokens": 4096,
+  "models": [
+    {
+      "name": "OpenAI",
+      "provider": "openai",
+      "api_type": "openai",
+      "api_key": "sk-xxx",
+      "api_base": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "enabled": true,
+      "temperature": 0.7,
+      "max_tokens": 50000,
+      "max_context": 128000,
+      "reasoning": true
+    },
+    {
+      "name": "Anthropic",
+      "provider": "anthropic",
+      "api_type": "anthropic",
+      "api_key": "",
+      "api_base": "https://api.anthropic.com/v1",
+      "model": "claude-sonnet-4-20250514",
+      "enabled": false,
+      "temperature": 0.7,
+      "max_tokens": 50000,
+      "max_context": 200000,
+      "reasoning": true
+    }
+  ],
   "system_prompt": "You are a helpful coding assistant."
 }
 ```

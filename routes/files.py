@@ -2099,6 +2099,245 @@ def _pptx_to_html(filepath):
         except Exception:
             return None
 
+    def _render_text_frame_xml(shape):
+        """Render text frame by reading XML directly for accurate formatting.
+        
+        python-pptx's run.font only reads from <a:rPr> (run-level properties),
+        but most formatting is stored in <a:defRPr> (paragraph default run properties).
+        This function reads both and merges them for accurate rendering.
+        """
+        from pptx.oxml.ns import qn
+        sp = shape._element
+        txBody = sp.find(qn('p:txBody'))
+        if txBody is None:
+            txBody = sp.find(qn('a:txBody'))
+        if txBody is None:
+            # Fallback to API
+            return _render_text_frame_api(shape)
+
+        paragraphs_html = []
+        for p_el in txBody.findall(qn('a:p')):
+            # --- Paragraph properties ---
+            pPr = p_el.find(qn('a:pPr'))
+            para_style = []
+            
+            # Paragraph alignment
+            if pPr is not None:
+                algn = pPr.get('algn')
+                algn_map = {'l': 'left', 'ctr': 'center', 'r': 'right', 'just': 'justify', 'dist': 'justify'}
+                if algn in algn_map:
+                    para_style.append(f'text-align:{algn_map[algn]}')
+            
+            # Paragraph spacing
+            if pPr is not None:
+                spcAft = pPr.find(qn('a:spcAft'))
+                if spcAft is not None:
+                    spcPts = spcAft.find(qn('a:spcPts'))
+                    if spcPts is not None:
+                        val = int(spcPts.get('val', '0')) / 100
+                        para_style.append(f'margin-bottom:{val:.0f}pt')
+                spcBef = pPr.find(qn('a:spcBef'))
+                if spcBef is not None:
+                    spcPts = spcBef.find(qn('a:spcPts'))
+                    if spcPts is not None:
+                        val = int(spcPts.get('val', '0')) / 100
+                        para_style.append(f'margin-top:{val:.0f}pt')
+            
+            # --- Default run properties (defRPr) - inherited by runs ---
+            def_rpr = {}
+            if pPr is not None:
+                defRPr_el = pPr.find(qn('a:defRPr'))
+                if defRPr_el is not None:
+                    def_rpr = _parse_rpr(defRPr_el)
+            
+            # --- Render runs ---
+            runs_html = []
+            r_els = p_el.findall(qn('a:r'))
+            
+            if not r_els:
+                # No runs — might be an empty paragraph or end-of-text marker
+                # Check for field elements (like slide numbers ‹#›)
+                fld_els = p_el.findall(qn('a:fld'))
+                if fld_els:
+                    for fld in fld_els:
+                        t_el = fld.find(qn('a:t'))
+                        if t_el is not None and t_el.text:
+                            runs_html.append(_html_escape(t_el.text))
+                else:
+                    runs_html.append('&nbsp;')  # Empty line
+            else:
+                for r_el in r_els:
+                    t_el = r_el.find(qn('a:t'))
+                    if t_el is None:
+                        continue
+                    rtext = _html_escape(t_el.text or '')
+                    
+                    # Merge defRPr (defaults) with rPr (run overrides)
+                    run_props = dict(def_rpr)  # Start with defaults
+                    
+                    rPr_el = r_el.find(qn('a:rPr'))
+                    if rPr_el is not None:
+                        run_overrides = _parse_rpr(rPr_el)
+                        run_props.update(run_overrides)
+                    
+                    # Apply formatting
+                    run_styles = []
+                    
+                    # Color
+                    color = run_props.get('color')
+                    if color:
+                        run_styles.append(f'color:{color}')
+                    
+                    # Font size
+                    sz = run_props.get('font_size')
+                    if sz:
+                        run_styles.append(f'font-size:{sz}')
+                    
+                    # Font name
+                    fn = run_props.get('font_name')
+                    if fn:
+                        run_styles.append(f'font-family:"{fn}",sans-serif')
+                    
+                    # Bold
+                    if run_props.get('bold'):
+                        rtext = f'<strong>{rtext}</strong>'
+                    
+                    # Italic
+                    if run_props.get('italic'):
+                        rtext = f'<em>{rtext}</em>'
+                    
+                    # Underline
+                    if run_props.get('underline'):
+                        rtext = f'<u>{rtext}</u>'
+                    
+                    # Strikethrough
+                    if run_props.get('strike'):
+                        rtext = f'<s>{rtext}</s>'
+                    
+                    if run_styles:
+                        style_str = ';'.join(run_styles)
+                        rtext = f'<span style="{style_str}">{rtext}</span>'
+                    
+                    runs_html.append(rtext)
+            
+            pstyle = f' style="{";".join(para_style)}"' if para_style else ''
+            paragraphs_html.append(f'<p{pstyle}>{"".join(runs_html)}</p>')
+        
+        return ''.join(paragraphs_html)
+    
+    def _parse_rpr(rpr_el):
+        """Parse an <a:rPr> or <a:defRPr> XML element into a dict of formatting properties."""
+        from pptx.oxml.ns import qn
+        props = {}
+        
+        # Font size (sz attribute is in hundredths of a point)
+        sz = rpr_el.get('sz')
+        if sz:
+            sz_pt = int(sz) / 100
+            props['font_size'] = f'{sz_pt:.0f}pt'
+        
+        # Bold
+        b = rpr_el.get('b')
+        if b is not None:
+            props['bold'] = b != '0'
+        
+        # Italic
+        i = rpr_el.get('i')
+        if i is not None:
+            props['italic'] = i != '0'
+        
+        # Underline
+        u = rpr_el.get('u')
+        if u is not None:
+            props['underline'] = u != 'none'
+        
+        # Strike
+        strike = rpr_el.get('strike')
+        if strike is not None:
+            props['strike'] = strike != 'noStrike'
+        
+        # Font name (from latin, ea, cs elements)
+        latin = rpr_el.find(qn('a:latin'))
+        if latin is not None:
+            typeface = latin.get('typeface')
+            if typeface and typeface != '+mn-lt' and typeface != '+mj-lt':
+                props['font_name'] = typeface
+        ea = rpr_el.find(qn('a:ea'))
+        if ea is not None:
+            typeface = ea.get('typeface')
+            if typeface and typeface not in ('+mn-ea', '+mj-ea', '') and 'font_name' not in props:
+                props['font_name'] = typeface
+        
+        # Color from solidFill
+        solidFill = rpr_el.find(qn('a:solidFill'))
+        if solidFill is not None:
+            for child in solidFill:
+                color = _xml_color_to_css(child)
+                if color:
+                    props['color'] = color
+                    break
+        
+        # Color from gradFill (use first stop)
+        if 'color' not in props:
+            gradFill = rpr_el.find(qn('a:gradFill'))
+            if gradFill is not None:
+                css = _get_fill_css_from_xml(gradFill)
+                if css and css != 'transparent':
+                    props['color'] = css
+        
+        return props
+    
+    def _render_text_frame_api(shape):
+        """Fallback: render text frame using python-pptx API (less accurate)."""
+        text_parts = []
+        for para in shape.text_frame.paragraphs:
+            runs_html = []
+            para_style = []
+            try:
+                align = para.alignment
+                align_map = {1: 'left', 2: 'center', 3: 'right', 4: 'justify', 5: 'center', 6: 'left', 7: 'right'}
+                if align in align_map:
+                    para_style.append(f'text-align:{align_map[align]}')
+            except Exception:
+                pass
+            for run in para.runs:
+                rtext = _html_escape(run.text)
+                run_styles = []
+                try:
+                    color_css = _color_to_css(run.font.color)
+                    if color_css:
+                        run_styles.append(f'color:{color_css}')
+                except Exception:
+                    pass
+                try:
+                    if run.font.size:
+                        sz_pt = int(run.font.size) / 12700
+                        run_styles.append(f'font-size:{sz_pt:.0f}pt')
+                except Exception:
+                    pass
+                try:
+                    if run.font.name:
+                        run_styles.append(f'font-family:"{run.font.name}",sans-serif')
+                except Exception:
+                    pass
+                if run.font.bold:
+                    rtext = f'<strong>{rtext}</strong>'
+                if run.font.italic:
+                    rtext = f'<em>{rtext}</em>'
+                try:
+                    if run.font.underline:
+                        rtext = f'<u>{rtext}</u>'
+                except Exception:
+                    pass
+                if run_styles:
+                    style_str = ';'.join(run_styles)
+                    rtext = f'<span style="{style_str}">{rtext}</span>'
+                runs_html.append(rtext)
+            text = ''.join(runs_html) if runs_html else _html_escape(para.text)
+            pstyle = f' style="{";".join(para_style)}"' if para_style else ''
+            text_parts.append(f'<p{pstyle}>{text}</p>')
+        return ''.join(text_parts)
+
     def _render_shape(slide, shape, is_placeholder=False):
         """Render a single shape to HTML with positioning and styling."""
         from pptx.oxml.ns import qn
@@ -2129,11 +2368,8 @@ def _pptx_to_html(filepath):
                 sp = shape._element
                 spPr = sp.find(qn('p:spPr'))
                 if spPr is None:
-                    spPr = sp.find(qn('p:txBody'))
-                if spPr is None:
                     spPr = sp.find('.//' + qn('a:spPr'))
                 if spPr is not None:
-                    # Try solidFill
                     for fill_tag in ['a:solidFill', 'a:gradFill', 'a:pattFill', 'a:blipFill']:
                         fill_el = spPr.find(qn(fill_tag))
                         if fill_el is not None:
@@ -2182,15 +2418,6 @@ def _pptx_to_html(filepath):
         except Exception:
             pass
 
-        # Shadow (basic)
-        try:
-            shadow = shape.shadow
-            if shadow.inherit is not None:
-                style_parts.append('box-shadow:2px 2px 6px rgba(0,0,0,0.2)')
-        except Exception:
-            pass
-
-        # Border radius for rounded shapes
         shape_type = None
         try:
             shape_type = shape.shape_type
@@ -2224,70 +2451,10 @@ def _pptx_to_html(filepath):
             except Exception:
                 pass
 
-        # Text frame
+        # Text frame — use XML-based rendering for accurate formatting
         if not content and shape.has_text_frame:
-            text_parts = []
-            for para in shape.text_frame.paragraphs:
-                runs_html = []
-                para_style = []
-
-                # Paragraph alignment
-                try:
-                    align = para.alignment
-                    align_map = {1: 'left', 2: 'center', 3: 'right', 4: 'justify', 5: 'center', 6: 'left', 7: 'right'}
-                    if align in align_map:
-                        para_style.append(f'text-align:{align_map[align]}')
-                except Exception:
-                    pass
-
-                for run in para.runs:
-                    rtext = _html_escape(run.text)
-                    run_styles = []
-
-                    # Font color
-                    try:
-                        color_css = _color_to_css(run.font.color)
-                        if color_css:
-                            run_styles.append(f'color:{color_css}')
-                    except Exception:
-                        pass
-                    # Font size
-                    try:
-                        if run.font.size:
-                            sz_pt = int(run.font.size) / 12700  # EMU to pt
-                            run_styles.append(f'font-size:{sz_pt:.0f}pt')
-                    except Exception:
-                        pass
-                    # Font name
-                    try:
-                        if run.font.name:
-                            run_styles.append(f'font-family:"{run.font.name}",sans-serif')
-                    except Exception:
-                        pass
-                    # Bold
-                    if run.font.bold:
-                        rtext = f'<strong>{rtext}</strong>'
-                    # Italic
-                    if run.font.italic:
-                        rtext = f'<em>{rtext}</em>'
-                    # Underline
-                    try:
-                        if run.font.underline:
-                            rtext = f'<u>{rtext}</u>'
-                    except Exception:
-                        pass
-
-                    if run_styles:
-                        style_str = ';'.join(run_styles)
-                        rtext = f'<span style="{style_str}">{rtext}</span>'
-                    runs_html.append(rtext)
-
-                text = ''.join(runs_html) if runs_html else _html_escape(para.text)
-                pstyle = f' style="{";".join(para_style)}"' if para_style else ''
-                text_parts.append(f'<p{pstyle}>{text}</p>')
-
-            content = ''.join(text_parts)
-            # Add padding for text shapes
+            content = _render_text_frame_xml(shape)
+            # Add padding for text shapes without background
             if 'background' not in ' '.join(style_parts) and 'background-image' not in ' '.join(style_parts):
                 style_parts.append('padding:4px 8px')
 
@@ -2300,7 +2467,6 @@ def _pptx_to_html(filepath):
                 for cell in row.cells:
                     cell_text = _html_escape(cell.text)
                     cell_style = []
-                    # Cell fill
                     try:
                         cell_fill = cell.fill
                         cell_bg = _get_fill_css(cell_fill)
@@ -2312,11 +2478,6 @@ def _pptx_to_html(filepath):
                     cells.append(f'<td{cstyle}>{cell_text}</td>')
                 rows_html.append(f'<tr>{"".join(cells)}</tr>')
             content = f'<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows_html)}</table>'
-
-        # Fallback for shapes with no content
-        if not content:
-            if 'background' not in ' '.join(style_parts) and 'background-image' not in ' '.join(style_parts):
-                content = ''
 
         style_str = ';'.join(style_parts)
         ph_class = ' placeholder-shape' if is_placeholder else ''
@@ -2331,10 +2492,11 @@ def _pptx_to_html(filepath):
         if bg_size:
             bg_style = f'background-image:{bg_css};background-size:{bg_size}'
 
-        # Render all shapes including placeholders with absolute positioning
+        # Render all shapes with absolute positioning
         shapes_html = []
 
-        # First render layout/master shapes that are NOT on the slide (inherited placeholders)
+        # Only render layout/master shapes that are decorative backgrounds
+        # Skip placeholder shapes to avoid duplicating/interfering with slide content
         try:
             layout = slide.slide_layout
             if layout is not None:
@@ -2346,21 +2508,21 @@ def _pptx_to_html(filepath):
                     except Exception:
                         pass
 
-                # Render layout shapes that aren't overridden by slide shapes
+                # Only render non-placeholder decorative shapes from layout
+                # (backgrounds, decorative elements)
                 for shape in layout.shapes:
                     try:
-                        # Check if this is a placeholder that should be shown
                         is_ph = False
                         try:
                             is_ph = shape.is_placeholder
                         except Exception:
                             pass
+                        # Skip placeholders — they are handled by the slide's own shapes
                         if is_ph:
-                            # Only show if the slide doesn't have a shape at the same position
-                            # (i.e., the placeholder content is not overridden)
-                            shape_id = shape.shape_id
-                            if shape_id not in slide_shape_ids:
-                                shapes_html.append(_render_shape(slide, shape, is_placeholder=True))
+                            continue
+                        # Only render if it has a fill/background (decorative element)
+                        if shape.shape_id not in slide_shape_ids:
+                            shapes_html.append(_render_shape(slide, shape))
                     except Exception:
                         pass
         except Exception:
