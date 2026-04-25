@@ -955,7 +955,8 @@ def office_preview():
 def pdf_preview():
     """Render a PDF file in-browser using PDF.js for a rich reading experience.
     Provides page navigation, zoom, and text extraction — much better than
-    raw send_file which relies on the browser's built-in PDF viewer (unreliable in iframes)."""
+    raw send_file which relies on the browser's built-in PDF viewer (unreliable in iframes).
+    Uses local PDF.js files first, falls back to CDN if local files are unavailable."""
     path = request.args.get('path', '')
     config = load_config()
     base = config.get('workspace', WORKSPACE)
@@ -977,11 +978,27 @@ def pdf_preview():
     pdf_url = f'/api/files/preview?path={_url_quote(rel_path)}'
     file_name = _html_escape(os.path.basename(target))
 
+    # Check if local PDF.js files exist
+    pdfjs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'vendor', 'pdfjs')
+    local_pdfjs_available = (os.path.isfile(os.path.join(pdfjs_dir, 'pdf.min.mjs')) and
+                             os.path.isfile(os.path.join(pdfjs_dir, 'pdf.worker.min.mjs')))
+
+    # Build import URLs: local first, CDN as fallback
+    if local_pdfjs_available:
+        pdfjs_main_url = '/static/vendor/pdfjs/pdf.min.mjs'
+        pdfjs_worker_url = '/static/vendor/pdfjs/pdf.worker.min.mjs'
+        pdfjs_fallback_main = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs'
+        pdfjs_fallback_worker = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs'
+    else:
+        pdfjs_main_url = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs'
+        pdfjs_worker_url = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs'
+        pdfjs_fallback_main = ''
+        pdfjs_fallback_worker = ''
+
     html = f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{file_name} - PDF Preview</title>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs" type="module"></script>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -1001,6 +1018,9 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .page-container {{ margin: 5px 0; background: white; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }}
 .page-container canvas {{ display: block; }}
 .loading {{ color: #aaa; padding: 40px; text-align: center; font-size: 16px; }}
+.text-layer {{ position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden;
+               opacity: 0.25; line-height: 1.0; }}
+.text-layer > span {{ color: transparent; position: absolute; white-space: pre; cursor: text; }}
 </style>
 </head><body>
 <div class="toolbar">
@@ -1023,10 +1043,16 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 </div>
 <script type="module">
 const pdfUrl = "{pdf_url}";
+const pdfjsMainUrl = "{pdfjs_main_url}";
+const pdfjsWorkerUrl = "{pdfjs_worker_url}";
+const pdfjsFallbackMain = "{pdfjs_fallback_main}";
+const pdfjsFallbackWorker = "{pdfjs_fallback_worker}";
+
 let pdfDoc = null;
 let currentPage = 1;
 let scale = 1.0;
 let textMode = false;
+let rendering = false;
 
 const viewer = document.getElementById('viewer');
 const pageInfo = document.getElementById('pageInfo');
@@ -1035,10 +1061,36 @@ const btnNext = document.getElementById('btnNext');
 const zoomSelect = document.getElementById('zoomSelect');
 const btnText = document.getElementById('btnText');
 
+async function loadPdfJs(mainUrl, workerUrl) {{
+  const pdfjsLib = await import(mainUrl);
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+  return pdfjsLib;
+}}
+
 async function loadPDF() {{
+  let pdfjsLib = null;
+  // Try primary source first
   try {{
-    const pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.min.mjs');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+    pdfjsLib = await loadPdfJs(pdfjsMainUrl, pdfjsWorkerUrl);
+  }} catch(e) {{
+    console.warn('Local PDF.js failed, trying CDN fallback...', e);
+    // Try CDN fallback if available
+    if (pdfjsFallbackMain) {{
+      try {{
+        pdfjsLib = await loadPdfJs(pdfjsFallbackMain, pdfjsFallbackWorker);
+      }} catch(e2) {{
+        document.getElementById('loadingMsg').textContent =
+          'Failed to load PDF.js library. Please check your network connection.';
+        console.error('Both local and CDN PDF.js failed:', e2);
+        return;
+      }}
+    }} else {{
+      document.getElementById('loadingMsg').textContent = 'Failed to load PDF.js: ' + e.message;
+      console.error(e);
+      return;
+    }}
+  }}
+  try {{
     pdfDoc = await pdfjsLib.getDocument(pdfUrl).promise;
     document.getElementById('loadingMsg').style.display = 'none';
     updatePageInfo();
@@ -1050,44 +1102,56 @@ async function loadPDF() {{
 }}
 
 async function renderAllPages() {{
+  if (rendering) return;
+  rendering = true;
   viewer.innerHTML = '';
-  for (let i = 1; i <= pdfDoc.numPages; i++) {{
-    const page = await pdfDoc.getPage(i);
-    const viewport = page.getViewport({{ scale }});
-    const container = document.createElement('div');
-    container.className = 'page-container';
-    container.id = 'page-' + i;
-    if (textMode) {{
-      const textContent = await page.getTextContent();
-      const div = document.createElement('div');
-      div.style.cssText = 'padding:20px;max-width:900px;font-size:14px;line-height:1.8;white-space:pre-wrap;';
-      let lastY = null;
-      let lines = [];
-      let currentLine = '';
-      for (const item of textContent.items) {{
-        if (lastY !== null && Math.abs(item.transform[5] - lastY) > 5) {{
-          lines.push(currentLine);
-          currentLine = '';
+  try {{
+    for (let i = 1; i <= pdfDoc.numPages; i++) {{
+      const page = await pdfDoc.getPage(i);
+      const viewport = page.getViewport({{ scale }});
+      const container = document.createElement('div');
+      container.className = 'page-container';
+      container.id = 'page-' + i;
+      container.style.position = 'relative';
+      if (textMode) {{
+        const textContent = await page.getTextContent();
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:20px;max-width:900px;font-size:14px;line-height:1.8;white-space:pre-wrap;';
+        let lastY = null;
+        let lines = [];
+        let currentLine = '';
+        for (const item of textContent.items) {{
+          if (lastY !== null && Math.abs(item.transform[5] - lastY) > 5) {{
+            lines.push(currentLine);
+            currentLine = '';
+          }}
+          currentLine += item.str;
+          lastY = item.transform[5];
         }}
-        currentLine += item.str;
-        lastY = item.transform[5];
+        if (currentLine) lines.push(currentLine);
+        div.textContent = lines.join('\\n');
+        container.appendChild(div);
+      }} else {{
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        container.style.width = viewport.width + 'px';
+        container.style.height = viewport.height + 'px';
+        container.appendChild(canvas);
+        const ctx = canvas.getContext('2d');
+        await page.render({{ canvasContext: ctx, viewport }}).promise;
       }}
-      if (currentLine) lines.push(currentLine);
-      div.textContent = lines.join('\\n');
-      container.appendChild(div);
-    }} else {{
-      const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      container.appendChild(canvas);
-      const ctx = canvas.getContext('2d');
-      await page.render({{ canvasContext: ctx, viewport }}).promise;
+      viewer.appendChild(container);
     }}
-    viewer.appendChild(container);
+  }} catch(e) {{
+    console.error('Render error:', e);
   }}
+  rendering = false;
   // Scroll to current page
   const target = document.getElementById('page-' + currentPage);
   if (target) target.scrollIntoView({{ behavior: 'auto' }});
+  // Re-observe pages
+  observePages();
 }}
 
 function updatePageInfo() {{
@@ -1125,15 +1189,13 @@ const observer = new IntersectionObserver((entries) => {{
     }}
   }}
 }}, {{ root: viewer, threshold: 0.3 }});
-// Re-observe after render
-const origRender = renderAllPages;
-renderAllPages = async function() {{
-  await origRender();
+function observePages() {{
+  if (!pdfDoc) return;
   for (let i = 1; i <= pdfDoc.numPages; i++) {{
     const el = document.getElementById('page-' + i);
     if (el) observer.observe(el);
   }}
-}};
+}}
 loadPDF();
 </script>
 </body></html>'''
@@ -1141,29 +1203,87 @@ loadPDF();
 
 
 def _pdf_to_html(filepath):
-    """Convert PDF to HTML for preview (text extraction mode).
-    Uses PyPDF2 to extract text content from each page and renders
-    it as a styled HTML document with page separators."""
-    from PyPDF2 import PdfReader
+    """Convert PDF to HTML for preview (fallback when PDF.js is unavailable).
+    Uses pypdf/PyPDF2 for text extraction with position-aware formatting,
+    and optionally pdf2image for page image rendering."""
+    import base64
+    import io
+
+    # Try pypdf first (newer), fall back to PyPDF2
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        from PyPDF2 import PdfReader
 
     reader = PdfReader(filepath)
     pages_html = []
     total_pages = len(reader.pages)
 
+    # Try to use pdf2image for high-quality page rendering
+    pdf2image_available = False
+    try:
+        from pdf2image import convert_from_path
+        pdf2image_available = True
+    except ImportError:
+        pass
+
+    # Page size info for aspect ratio
+    page_width_pt = 612  # default letter size
+    page_height_pt = 792
+    try:
+        first_page = reader.pages[0]
+        mediabox = first_page.mediabox
+        page_width_pt = float(mediabox.width)
+        page_height_pt = float(mediabox.height)
+    except Exception:
+        pass
+
     for i, page in enumerate(reader.pages):
+        # Method 1: Render page as image using pdf2image (best quality)
+        if pdf2image_available:
+            try:
+                images = convert_from_path(filepath, first_page=i + 1, last_page=i + 1, dpi=150)
+                if images:
+                    buf = io.BytesIO()
+                    images[0].save(buf, format='PNG', optimize=True)
+                    b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+                    aspect = page_height_pt / page_width_pt * 100 if page_width_pt > 0 else 130
+                    pages_html.append(f'''<div class="page">
+<div class="page-header">Page {i + 1} of {total_pages}</div>
+<div class="page-image" style="position:relative;padding-bottom:{aspect:.1f}%;">
+<img src="data:image/png;base64,{b64}" style="position:absolute;top:0;left:0;width:100%;height:auto;" alt="Page {i + 1}">
+</div>
+</div>''')
+                    continue
+            except Exception:
+                pass
+
+        # Method 2: Extract text with position-aware formatting
         try:
             text = page.extract_text() or ''
         except Exception:
-            text = '(text extraction failed for this page)'
-
-        # Escape HTML entities
-        text = _html_escape(text)
+            text = ''
 
         if text.strip():
-            # Preserve line breaks from PDF text extraction
+            text = _html_escape(text)
             formatted_text = text.replace('\n', '<br/>\n')
         else:
-            formatted_text = '<p style="color:#999;font-style:italic">(This page has no extractable text — it may contain only images or scanned content)</p>'
+            # Check if page has images (can't render them in fallback mode)
+            has_images = False
+            try:
+                if hasattr(page, 'images') and len(page.images) > 0:
+                    has_images = True
+                elif hasattr(page, '/Resources') and hasattr(page['/Resources'], 'get'):
+                    xobject = page['/Resources'].get('/XObject', {})
+                    if xobject:
+                        has_images = True
+            except Exception:
+                pass
+
+            if has_images:
+                formatted_text = '<p style="color:#999;font-style:italic">(This page contains images that cannot be rendered in fallback mode. Please use the full viewer for best results.)</p>'
+            else:
+                formatted_text = '<p style="color:#999;font-style:italic">(This page has no extractable text.)</p>'
 
         pages_html.append(f'''<div class="page">
 <div class="page-header">Page {i + 1} of {total_pages}</div>
@@ -1171,6 +1291,17 @@ def _pdf_to_html(filepath):
 </div>''')
 
     body = '\n'.join(pages_html)
+
+    # Get the download link
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    try:
+        rel_path = os.path.relpath(filepath, os.path.realpath(base)).replace(os.sep, '/')
+    except Exception:
+        rel_path = ''
+
+    mode_label = "Image Mode (pdf2image)" if pdf2image_available else "Text Extraction Mode (fallback)"
+
     html = f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1182,19 +1313,18 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
 .page-header {{ color: #999; font-size: 11px; text-align: center; margin-bottom: 20px;
                border-bottom: 1px solid #eee; padding-bottom: 8px; }}
 .page-content {{ font-size: 13px; line-height: 1.8; white-space: pre-wrap; word-wrap: break-word; }}
-.page-nav {{ position: fixed; bottom: 20px; right: 20px; display: flex; gap: 8px; z-index: 100; }}
-.page-nav button {{ background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 4px;
-                    padding: 8px 14px; cursor: pointer; font-size: 13px; }}
-.page-nav button:hover {{ background: rgba(0,0,0,0.8); }}
-.page-nav span {{ color: white; font-size: 13px; line-height: 36px; }}
+.page-image {{ background: #f5f5f5; }}
+.page-image img {{ display: block; }}
 .info-bar {{ background: #323639; color: #aaa; padding: 8px 16px; font-size: 12px;
              text-align: center; position: sticky; top: 0; z-index: 50; }}
 .info-bar a {{ color: #6db3f2; text-decoration: none; }}
 .info-bar a:hover {{ text-decoration: underline; }}
+.info-bar .mode {{ color: #888; font-style: italic; margin-left: 12px; }}
 </style></head><body>
 <div class="info-bar">
   PDF Document &mdash; {total_pages} page{"s" if total_pages != 1 else ""} &mdash;
-  <a href="/api/files/preview?path={_html_escape(os.path.relpath(filepath, os.path.realpath(load_config().get('workspace', WORKSPACE))).replace(os.sep, '/'))}">Download Original PDF</a>
+  <a href="/api/files/preview?path={_html_escape(rel_path)}">Download Original PDF</a>
+  <span class="mode">{mode_label}</span>
 </div>
 {body}
 </body></html>'''
