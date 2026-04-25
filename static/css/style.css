@@ -3322,6 +3322,82 @@ button, .file-item, .search-result-item, .git-change-item {
     width: auto !important;
 }
 
+/* Paste dialog — modal with textarea for native paste */
+.sel-paste-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.sel-paste-dialog {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 100%;
+    max-width: 340px;
+    padding: 16px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.sel-paste-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+.sel-paste-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+.sel-paste-input {
+    width: 100%;
+    min-height: 80px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: var(--font-mono);
+    resize: vertical;
+    outline: none;
+    -webkit-appearance: none;
+}
+.sel-paste-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(232, 133, 61, 0.2);
+}
+.sel-paste-btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+}
+.sel-paste-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+.sel-paste-btn:active {
+    transform: scale(0.96);
+}
+.sel-paste-btn-cancel {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+.sel-paste-btn-confirm {
+    background: var(--accent);
+    color: var(--bg-primary);
+    font-weight: 600;
+}
+
 /* Selection mode active state — enhance selection visibility & hide cursor */
 .CodeMirror.sel-mode-active .CodeMirror-selected {
     background: rgba(74, 158, 255, 0.35) !important;

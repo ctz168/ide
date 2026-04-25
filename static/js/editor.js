@@ -2496,28 +2496,15 @@ const EditorManager = (() => {
         });
         menu.appendChild(cutBtn);
 
-        // Paste button
+        // Paste button — uses a dialog with textarea for native paste
         const pasteBtn = document.createElement('button');
         pasteBtn.className = 'editor-context-menu-item';
         pasteBtn.textContent = '粘贴';
         pasteBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (navigator.clipboard && navigator.clipboard.readText) {
-                navigator.clipboard.readText().then((text) => {
-                    if (text) {
-                        editor.replaceSelection(text);
-                        showEditorToast('已粘贴');
-                    }
-                }).catch(() => {
-                    showEditorToast('无法访问剪贴板');
-                });
-            } else {
-                showEditorToast('浏览器不支持粘贴');
-            }
             removeSelectionContextMenu();
-            // Exit selection mode after paste
-            exitSelectionMode();
+            showPasteDialog();
         });
         menu.appendChild(pasteBtn);
 
@@ -2567,6 +2554,84 @@ const EditorManager = (() => {
             selContextMenuEl.remove();
             selContextMenuEl = null;
         }
+    }
+
+    /**
+     * Show a paste dialog with a textarea for native browser paste.
+     * On mobile, navigator.clipboard.readText() is often blocked by security
+     * restrictions, so we use a textarea where the user can long-press → paste
+     * using the browser's native clipboard functionality.
+     */
+    function showPasteDialog() {
+        if (!editor) return;
+
+        // Save current selection range so we can replace it after paste
+        const selFrom = editor.getCursor('from');
+        const selTo = editor.getCursor('to');
+
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'sel-paste-overlay';
+
+        // Create dialog
+        const dialog = document.createElement('div');
+        dialog.className = 'sel-paste-dialog';
+
+        // Title
+        const title = document.createElement('div');
+        title.className = 'sel-paste-title';
+        title.textContent = '粘贴';
+        dialog.appendChild(title);
+
+        // Hint
+        const hint = document.createElement('div');
+        hint.className = 'sel-paste-hint';
+        hint.textContent = '长按下方输入框粘贴内容';
+        dialog.appendChild(hint);
+
+        // Textarea for paste input
+        const textarea = document.createElement('textarea');
+        textarea.className = 'sel-paste-input';
+        textarea.placeholder = '在此处粘贴...';
+        textarea.rows = 4;
+        dialog.appendChild(textarea);
+
+        // Button row
+        const btnRow = document.createElement('div');
+        btnRow.className = 'sel-paste-btn-row';
+
+        // Cancel button
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'sel-paste-btn sel-paste-btn-cancel';
+        cancelBtn.textContent = '取消';
+        cancelBtn.addEventListener('click', () => {
+            overlay.remove();
+        });
+        btnRow.appendChild(cancelBtn);
+
+        // Confirm button
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'sel-paste-btn sel-paste-btn-confirm';
+        confirmBtn.textContent = '粘贴';
+        confirmBtn.addEventListener('click', () => {
+            const text = textarea.value;
+            if (text) {
+                // Replace selection with pasted content
+                editor.setSelection(selFrom, selTo);
+                editor.replaceSelection(text);
+                showEditorToast('已粘贴');
+            }
+            overlay.remove();
+            exitSelectionMode();
+        });
+        btnRow.appendChild(confirmBtn);
+
+        dialog.appendChild(btnRow);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        // Focus the textarea after a small delay (for mobile keyboard)
+        setTimeout(() => textarea.focus(), 100);
     }
 
     /**
