@@ -2236,7 +2236,7 @@ def _tool_run_command(args):
 
 def _tool_git_status(args):
     repo_path = args.get('repo_path', None) or _get_effective_cwd()
-    r = git_cmd('status --porcelain -b', cwd=repo_path)
+    r = git_cmd('-c core.quotePath=false status --porcelain -b', cwd=repo_path)
     if not r['ok']:
         return f'Error: {r["stderr"]}'
     return r['stdout'] or 'Clean working tree (no changes)'
@@ -2245,7 +2245,7 @@ def _tool_git_diff(args):
     repo_path = args.get('repo_path', None) or _get_effective_cwd()
     staged = args.get('staged', False)
     file_path = args.get('file_path', '')
-    cmd = 'diff --cached' if staged else 'diff'
+    cmd = '-c core.quotePath=false diff --cached' if staged else '-c core.quotePath=false diff'
     if file_path:
         cmd += f' -- {shlex_quote(file_path)}'
     r = git_cmd(cmd, cwd=repo_path)

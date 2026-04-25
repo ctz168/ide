@@ -73,7 +73,10 @@ def git_cmd(args, cwd=None, timeout=60):
                 text=True, timeout=timeout, encoding='utf-8', errors='replace'
             )
         else:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout, encoding='utf-8', errors='replace'
+            )
         return {'ok': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr, 'code': result.returncode}
     except subprocess.TimeoutExpired:
         return {'ok': False, 'stdout': '', 'stderr': 'Command timed out', 'code': -1}
@@ -162,7 +165,7 @@ def git_status():
             'error': 'Not a git repository',
         })
 
-    r = git_cmd('status --porcelain -b', cwd=cwd)
+    r = git_cmd('-c core.quotePath=false status --porcelain -b', cwd=cwd)
     if not r['ok']:
         return jsonify({'error': r['stderr']}), 500
     lines = r['stdout'].strip().split('\n') if r['stdout'].strip() else []
@@ -493,7 +496,7 @@ def git_diff():
     staged = request.args.get('staged', 'false').lower() == 'true'
     filepath = request.args.get('file', request.args.get('filepath', ''))
     cwd = resolve_cwd()
-    cmd = 'diff --cached' if staged else 'diff'
+    cmd = '-c core.quotePath=false diff --cached' if staged else '-c core.quotePath=false diff'
     if filepath:
         cmd += f' -- {shlex_quote(filepath)}'
     r = git_cmd(cmd, cwd=cwd)
@@ -567,7 +570,7 @@ def git_commit_diff():
     if filepath:
         # Get diff for a specific file in this commit
         r = git_cmd(
-            f'show {shlex_quote(ref)} -- {shlex_quote(filepath)}',
+            f'-c core.quotePath=false show {shlex_quote(ref)} -- {shlex_quote(filepath)}',
             cwd=cwd, timeout=30
         )
         return jsonify({
@@ -578,7 +581,7 @@ def git_commit_diff():
     else:
         # Get file list with stat (names + change summary)
         r_stat = git_cmd(
-            f'show {shlex_quote(ref)} --stat --format=""',
+            f'-c core.quotePath=false show {shlex_quote(ref)} --stat --format=""',
             cwd=cwd, timeout=30
         )
         files = []

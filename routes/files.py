@@ -1712,33 +1712,31 @@ def _pptx_to_html(filepath):
     slide_w_px = emu_to_px(slide_width_emu)
     slide_h_px = emu_to_px(slide_height_emu)
 
-    # Theme color map (Office default theme)
+    # ---- Theme color extraction ----
+    # Default Office theme colors (fallback)
     _SCHEME_MAP = {
         'dk1': '#000000', 'lt1': '#FFFFFF', 'dk2': '#44546A', 'lt2': '#E7E6E6',
         'accent1': '#4472C4', 'accent2': '#ED7D31', 'accent3': '#A5A5A5',
         'accent4': '#FFC000', 'accent5': '#5B9BD5', 'accent6': '#70AD47',
         'hlink': '#0563C1', 'folHlink': '#954F72',
     }
-    _THEME_IDX_MAP = {
-        0: '#000000', 1: '#FFFFFF', 2: '#44546A', 3: '#E7E6E6',
-        4: '#4472C4', 5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000',
-        8: '#5B9BD5', 9: '#70AD47',
-    }
+    # Theme index to key name mapping (python-pptx uses 0-based index)
+    _THEME_KEYS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+                   'accent3', 'accent4', 'accent5', 'accent6']
 
-    # Try to extract actual theme colors from the presentation
+    # Extract actual theme colors from the PPTX file
     _pptx_theme_colors = {}
     try:
         from pptx.oxml.ns import qn
         for sm in prs.slide_masters:
             try:
-                theme_el = sm.slide_master.element.find('.//' + qn('a:theme'))
-                if theme_el is None:
-                    # Try through the relationship
-                    for rel in sm.part.rels.values():
-                        if 'theme' in rel.reltype:
-                            theme_part = rel.target_part
-                            theme_el = etree.fromstring(theme_part.blob)
-                            break
+                theme_el = None
+                # Try to find theme through relationships
+                for rel in sm.part.rels.values():
+                    if 'theme' in rel.reltype:
+                        theme_part = rel.target_part
+                        theme_el = etree.fromstring(theme_part.blob)
+                        break
                 if theme_el is not None:
                     clrScheme = theme_el.find('.//' + qn('a:clrScheme'))
                     if clrScheme is not None:
@@ -1747,7 +1745,9 @@ def _pptx_to_html(filepath):
                             for sub in child:
                                 sub_tag = sub.tag.split('}')[-1] if '}' in sub.tag else sub.tag
                                 if sub_tag == 'srgbClr':
-                                    _pptx_theme_colors[tag] = f'#{sub.get("val", "")}'
+                                    val = sub.get('val', '')
+                                    if val:
+                                        _pptx_theme_colors[tag] = f'#{val}'
                                 elif sub_tag == 'sysClr':
                                     val = sub.get('lastClr', sub.get('val', ''))
                                     if val:
@@ -1759,107 +1759,102 @@ def _pptx_to_html(filepath):
         pass
 
     def _resolve_scheme_color(val):
-        """Resolve a scheme color name to CSS color."""
+        """Resolve a scheme color name (e.g. 'dk1', 'accent1') to CSS hex color."""
         if val in _pptx_theme_colors:
             return _pptx_theme_colors[val]
-        return _SCHEME_MAP.get(val, '#333333')
+        return _SCHEME_MAP.get(val, None)
 
-    def _color_to_css(color):
-        """Convert a python-pptx color to CSS color string."""
-        if color is None:
-            return None
+    def _apply_lum_mods(color_hex, el):
+        """Apply luminance modifications (tint/shade/lumMod/lumOff) to a color."""
+        from pptx.oxml.ns import qn
+        if el is None:
+            return color_hex
+        tint = el.find(qn('a:tint'))
+        shade = el.find(qn('a:shade'))
+        lumMod = el.find(qn('a:lumMod'))
+        lumOff = el.find(qn('a:lumOff'))
+        if tint is None and shade is None and lumMod is None and lumOff is None:
+            return color_hex
         try:
-            if color.type is not None and color.type == 1:  # RGB
-                return f'#{color.rgb}'
-            elif color.type is not None and color.type == 2:  # Theme
-                idx = color.theme
-                # First check if we have actual theme colors
-                theme_keys = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
-                              'accent3', 'accent4', 'accent5', 'accent6']
-                if idx < len(theme_keys):
-                    key = theme_keys[idx]
-                    if key in _pptx_theme_colors:
-                        return _pptx_theme_colors[key]
-                return _THEME_IDX_MAP.get(idx, '#333333')
-            elif color.type is not None and color.type == 3:  # Scheme
-                return '#333333'
+            base = int(color_hex[1:], 16)
+            r, g, b = (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF
+            # Convert to HSL for more accurate tint/shade
+            r1, g1, b1 = r / 255.0, g / 255.0, b / 255.0
+            cmax, cmin = max(r1, g1, b1), min(r1, g1, b1)
+            l = (cmax + cmin) / 2.0
+            if lumMod is not None:
+                factor = int(lumMod.get('val', '100000')) / 100000
+                l = l * factor
+            if lumOff is not None:
+                offset = int(lumOff.get('val', '0')) / 100000
+                l = l + offset
+            if tint is not None:
+                # tint = mix with white; val/100000 = amount of white
+                factor = int(tint.get('val', '100000')) / 100000
+                r = int(r + (255 - r) * factor)
+                g = int(g + (255 - g) * factor)
+                b = int(b + (255 - b) * factor)
+                return f'#{r:02X}{g:02X}{b:02X}'
+            if shade is not None:
+                # shade = mix with black; val/100000 = amount of black kept
+                factor = int(shade.get('val', '100000')) / 100000
+                r = int(r * factor)
+                g = int(g * factor)
+                b = int(b * factor)
+                return f'#{r:02X}{g:02X}{b:02X}'
+            # Fallback: simple lumMod/lumOff via RGB scaling
+            r = min(255, max(0, int(r1 * 255)))
+            g = min(255, max(0, int(g1 * 255)))
+            b = min(255, max(0, int(b1 * 255)))
+            return f'#{r:02X}{g:02X}{b:02X}'
         except Exception:
-            pass
-        try:
-            if hasattr(color, 'rgb') and color.rgb:
-                return f'#{color.rgb}'
-        except Exception:
-            pass
-        return None
+            return color_hex
 
     def _xml_color_to_css(el):
-        """Convert an XML color element (srgbClr, schemeClr, etc.) to CSS color."""
+        """Convert an XML color element (srgbClr, schemeClr, prstClr) to CSS hex color."""
         if el is None:
             return None
         from pptx.oxml.ns import qn
         tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
         if tag == 'srgbClr':
-            return f'#{el.get("val", "000000")}'
+            val = el.get('val', '000000')
+            return _apply_lum_mods(f'#{val}', el)
         elif tag == 'schemeClr':
             val = el.get('val', '')
             color = _resolve_scheme_color(val)
-            # Check for tint/shade modifications
-            tint = el.find(qn('a:tint'))
-            shade = el.find(qn('a:shade'))
-            lumMod = el.find(qn('a:lumMod'))
-            lumOff = el.find(qn('a:lumOff'))
-            if tint is not None or shade is not None or lumMod is not None or lumOff is not None:
-                # Apply luminance modifications approximately
-                try:
-                    base = int(color[1:], 16)
-                    r, g, b = (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF
-                    if lumMod is not None:
-                        factor = int(lumMod.get('val', '100000')) / 100000
-                        r = min(255, int(r * factor))
-                        g = min(255, int(g * factor))
-                        b = min(255, int(b * factor))
-                    if lumOff is not None:
-                        offset = int(lumOff.get('val', '0')) / 100000 * 255
-                        r = min(255, int(r + offset))
-                        g = min(255, int(g + offset))
-                        b = min(255, int(b + offset))
-                    return f'#{r:02X}{g:02X}{b:02X}'
-                except Exception:
-                    pass
-            return color
+            if color:
+                return _apply_lum_mods(color, el)
+            return None
         elif tag == 'prstClr':
-            # Preset colors - common mapping
             name = el.get('val', 'black').lower()
             prst_map = {
                 'black': '#000000', 'white': '#FFFFFF', 'red': '#FF0000',
                 'green': '#008000', 'blue': '#0000FF', 'yellow': '#FFFF00',
-                'cyan': '#00FFFF', 'magenta': '#FF00FF', 'gray': '#808080',
-                'grey': '#808080', 'darkgray': '#404040', 'lightgray': '#C0C0C0',
+                'cyan': '#00FFFF', 'magenta': '#FF00FF',
             }
-            return prst_map.get(name, '#333333')
+            color = prst_map.get(name)
+            if color:
+                return _apply_lum_mods(color, el)
+            return None
         return None
 
     def _get_fill_css_from_xml(fill_el, default_color=None):
-        """Get CSS background from a fill XML element (a:solidFill, a:gradFill, etc.)."""
+        """Get CSS background from a fill XML element (solidFill, gradFill, pattFill)."""
         from pptx.oxml.ns import qn
         if fill_el is None:
             return default_color or 'transparent'
-
         tag = fill_el.tag.split('}')[-1] if '}' in fill_el.tag else fill_el.tag
-
         if tag == 'solidFill':
             for child in fill_el:
                 color = _xml_color_to_css(child)
                 if color:
                     return color
-
         elif tag == 'gradFill':
-            # Build full CSS gradient
             gsLst = fill_el.find(qn('a:gsLst'))
             if gsLst is not None:
                 stops = []
                 for gs in gsLst.findall(qn('a:gs')):
-                    pos = int(gs.get('pos', '0')) / 1000  # pos is in 1/1000 percent
+                    pos = int(gs.get('pos', '0')) / 1000
                     color = None
                     for child in gs:
                         color = _xml_color_to_css(child)
@@ -1868,52 +1863,69 @@ def _pptx_to_html(filepath):
                     if color:
                         stops.append(f'{color} {pos}%')
                 if stops:
-                    # Determine gradient direction
                     lin = fill_el.find(qn('a:lin'))
                     if lin is not None:
                         ang = int(lin.get('ang', '0'))
-                        # Convert OOXML angle (54000 = vertical top-bottom) to CSS
                         css_ang = (ang / 60000) % 360
                         direction = f'{css_ang:.0f}deg'
                     else:
                         direction = 'to bottom'
                     return f'linear-gradient({direction}, {", ".join(stops)})'
-
-            # Fallback: first stop color
-            try:
-                first_gs = gsLst.find(qn('a:gs'))
-                if first_gs is not None:
-                    for child in first_gs:
-                        color = _xml_color_to_css(child)
-                        if color:
-                            return color
-            except Exception:
-                pass
-
         elif tag == 'pattFill':
-            # Pattern fill - use foreground color
             fgClr = fill_el.find(qn('a:fgClr'))
             if fgClr is not None:
                 for child in fgClr:
                     color = _xml_color_to_css(child)
                     if color:
                         return color
-
         return default_color or 'transparent'
+
+    def _get_fill_first_color(fill_el):
+        """Get the first solid color from a fill XML element (for text color use)."""
+        from pptx.oxml.ns import qn
+        if fill_el is None:
+            return None
+        tag = fill_el.tag.split('}')[-1] if '}' in fill_el.tag else fill_el.tag
+        if tag == 'solidFill':
+            for child in fill_el:
+                color = _xml_color_to_css(child)
+                if color:
+                    return color
+        elif tag == 'gradFill':
+            # For text color, just use the first gradient stop color
+            gsLst = fill_el.find(qn('a:gsLst'))
+            if gsLst is not None:
+                for gs in gsLst.findall(qn('a:gs')):
+                    for child in gs:
+                        color = _xml_color_to_css(child)
+                        if color:
+                            return color
+        return None
 
     def _get_fill_css(fill, default_color=None):
         """Get CSS background from a python-pptx fill object."""
         try:
             if fill.type is None:
                 return default_color or 'transparent'
-            # type 1 = solid
             if fill.type == 1:  # SOLID
-                color = _color_to_css(fill.fore_color)
-                return color or default_color or 'transparent'
-            # type 2 = gradient — build CSS gradient
+                try:
+                    color_css = _color_to_css(fill.fore_color)
+                    if color_css:
+                        return color_css
+                except Exception:
+                    pass
+                # Try XML fallback
+                try:
+                    fill_el = fill._fill
+                    if fill_el is not None:
+                        css = _get_fill_css_from_xml(fill_el)
+                        if css and css != 'transparent':
+                            return css
+                except Exception:
+                    pass
+                return default_color or 'transparent'
             elif fill.type == 2:  # GRADIENT
                 try:
-                    # Try to read gradient stops from XML
                     fill_el = fill._fill
                     if fill_el is not None:
                         css = _get_fill_css_from_xml(fill_el, default_color)
@@ -1921,72 +1933,91 @@ def _pptx_to_html(filepath):
                             return css
                 except Exception:
                     pass
-                # Fallback: use first stop color
                 try:
-                    color = _color_to_css(fill.fore_color)
-                    return color or default_color or 'transparent'
+                    color_css = _color_to_css(fill.fore_color)
+                    if color_css:
+                        return color_css
                 except Exception:
-                    return default_color or 'transparent'
-            # type 3 = patterned
-            elif fill.type == 3:
+                    pass
+                return default_color or 'transparent'
+            elif fill.type == 3:  # PATTERN
                 try:
-                    color = _color_to_css(fill.fore_color)
-                    return color or default_color or 'transparent'
+                    color_css = _color_to_css(fill.fore_color)
+                    if color_css:
+                        return color_css
                 except Exception:
-                    return default_color or 'transparent'
-            # type 5 = background (inherit)
-            elif fill.type == 5:
+                    pass
+                return default_color or 'transparent'
+            elif fill.type == 5:  # BACKGROUND (inherit)
                 return 'transparent'
         except Exception:
             pass
         return default_color or 'transparent'
+
+    def _color_to_css(color):
+        """Convert a python-pptx color object to CSS hex color string."""
+        if color is None:
+            return None
+        try:
+            # Try RGB first
+            if hasattr(color, 'rgb') and color.rgb:
+                rgb_str = str(color.rgb)
+                if rgb_str and rgb_str != '000000ZZ':
+                    return f'#{rgb_str}'
+        except Exception:
+            pass
+        try:
+            # Try theme color
+            if hasattr(color, 'theme') and color.theme is not None:
+                idx = color.theme
+                if idx < len(_THEME_KEYS):
+                    key = _THEME_KEYS[idx]
+                    resolved = _resolve_scheme_color(key)
+                    if resolved:
+                        # Try to apply brightness from color object
+                        try:
+                            brightness = color.brightness
+                            if brightness:
+                                # brightness is a float 0-1; mix with white
+                                base = int(resolved[1:], 16)
+                                r, g, b = (base >> 16) & 0xFF, (base >> 8) & 0xFF, base & 0xFF
+                                r = int(r + (255 - r) * brightness)
+                                g = int(g + (255 - g) * brightness)
+                                b = int(b + (255 - b) * brightness)
+                                return f'#{r:02X}{g:02X}{b:02X}'
+                        except Exception:
+                            pass
+                        return resolved
+        except Exception:
+            pass
+        return None
 
     def _get_bg_from_xml_element(bg_el):
         """Get CSS background from a p:bg XML element."""
         from pptx.oxml.ns import qn
         if bg_el is None:
             return None
-
-        # Check for bgRef (reference to theme)
+        # bgRef — reference to theme
         bgRef = bg_el.find(qn('p:bgRef'))
         if bgRef is not None:
             idx = int(bgRef.get('idx', '0'))
-            # idx < 1000 means use theme color at that index
-            if idx < 1000:
-                theme_keys = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
-                              'accent3', 'accent4', 'accent5', 'accent6']
-                if idx < len(theme_keys):
-                    return _resolve_scheme_color(theme_keys[idx])
-                return _THEME_IDX_MAP.get(idx, '#FFFFFF')
+            if idx < 1000 and idx < len(_THEME_KEYS):
+                resolved = _resolve_scheme_color(_THEME_KEYS[idx])
+                if resolved:
+                    return resolved
             return '#FFFFFF'
-
-        # Check for bgPr (background properties)
+        # bgPr — background properties
         bgPr = bg_el.find(qn('p:bgPr'))
         if bgPr is not None:
-            # Solid fill
-            solidFill = bgPr.find(qn('a:solidFill'))
-            if solidFill is not None:
-                css = _get_fill_css_from_xml(solidFill)
-                if css and css != 'transparent':
-                    return css
-
-            # Gradient fill
-            gradFill = bgPr.find(qn('a:gradFill'))
-            if gradFill is not None:
-                css = _get_fill_css_from_xml(gradFill)
-                if css and css != 'transparent':
-                    return css
-
-            # Pattern fill
-            pattFill = bgPr.find(qn('a:pattFill'))
-            if pattFill is not None:
-                css = _get_fill_css_from_xml(pattFill)
-                if css and css != 'transparent':
-                    return css
-
+            for fill_tag in ['a:solidFill', 'a:gradFill', 'a:pattFill']:
+                fill_el = bgPr.find(qn(fill_tag))
+                if fill_el is not None:
+                    css = _get_fill_css_from_xml(fill_el)
+                    if css and css != 'transparent':
+                        return css
         return None
 
-    def _get_bg_image_css(bg_el, slide):
+    def _get_bg_image_css(bg_el, part):
         """Get CSS for background image if present."""
         from pptx.oxml.ns import qn
         if bg_el is None:
@@ -2003,10 +2034,9 @@ def _pptx_to_html(filepath):
         rId = blip.get(qn('r:embed'))
         if not rId:
             return None, None
-        data_uri = _get_image_base64(slide, rId)
+        data_uri = _get_image_base64(part, rId)
         if not data_uri:
             return None, None
-        # Determine fill mode
         stretch = blipFill.find(qn('a:stretch'))
         tile = blipFill.find(qn('a:tile'))
         if stretch is not None:
@@ -2020,31 +2050,28 @@ def _pptx_to_html(filepath):
         """Get CSS background for a slide, checking slide -> layout -> master chain."""
         from pptx.oxml.ns import qn
 
-        # 1. Check slide's own background
-        bg = slide.background
+        # 1. Check slide's own background via API
         try:
-            fill = bg.fill
+            fill = slide.background.fill
             bg_css = _get_fill_css(fill)
             if bg_css and bg_css != 'transparent':
                 return bg_css, None, None
         except Exception:
             pass
 
-        # Try reading XML directly for slide background
+        # 2. Check slide's own background via XML
         cSld = slide._element.find(qn('p:cSld'))
         if cSld is not None:
             bg_el = cSld.find(qn('p:bg'))
             if bg_el is not None:
-                # Check for background image first
-                img_css, img_size = _get_bg_image_css(bg_el, slide)
+                img_css, img_size = _get_bg_image_css(bg_el, slide.part)
                 if img_css:
                     return img_css, img_size, None
-                # Then other fill types
                 bg_css = _get_bg_from_xml_element(bg_el)
                 if bg_css and bg_css != 'transparent':
                     return bg_css, None, None
 
-        # 2. Check slide layout background
+        # 3. Check slide layout background
         try:
             layout = slide.slide_layout
             if layout is not None:
@@ -2052,7 +2079,7 @@ def _pptx_to_html(filepath):
                 if cSld_layout is not None:
                     bg_el = cSld_layout.find(qn('p:bg'))
                     if bg_el is not None:
-                        img_css, img_size = _get_bg_image_css(bg_el, slide)
+                        img_css, img_size = _get_bg_image_css(bg_el, slide.part)
                         if img_css:
                             return img_css, img_size, None
                         bg_css = _get_bg_from_xml_element(bg_el)
@@ -2061,7 +2088,7 @@ def _pptx_to_html(filepath):
         except Exception:
             pass
 
-        # 3. Check slide master background
+        # 4. Check slide master background
         try:
             master = slide.slide_layout.slide_master
             if master is not None:
@@ -2069,7 +2096,7 @@ def _pptx_to_html(filepath):
                 if cSld_master is not None:
                     bg_el = cSld_master.find(qn('p:bg'))
                     if bg_el is not None:
-                        img_css, img_size = _get_bg_image_css(bg_el, slide)
+                        img_css, img_size = _get_bg_image_css(bg_el, slide.part)
                         if img_css:
                             return img_css, img_size, None
                         bg_css = _get_bg_from_xml_element(bg_el)
@@ -2080,10 +2107,9 @@ def _pptx_to_html(filepath):
 
         return '#FFFFFF', None, None  # Default white
 
-    def _get_image_base64(slide, rId):
+    def _get_image_base64(part, rId):
         """Extract image from PPTX by relationship ID and return base64 data URI."""
         try:
-            part = slide.part
             rel = part.rels[rId]
             image_part = rel.target_part
             image_bytes = image_part.blob
@@ -2099,35 +2125,35 @@ def _pptx_to_html(filepath):
         except Exception:
             return None
 
-    def _render_text_frame_xml(shape):
-        """Render text frame by reading XML directly for accurate formatting.
+    def _render_text_frame(shape):
+        """Render text frame from a shape, reading XML for accurate formatting.
         
-        python-pptx's run.font only reads from <a:rPr> (run-level properties),
-        but most formatting is stored in <a:defRPr> (paragraph default run properties).
-        This function reads both and merges them for accurate rendering.
+        Reads <a:defRPr> (paragraph default run properties) and <a:rPr> (run-level
+        overrides) and merges them, since python-pptx's API only exposes run-level
+        properties, missing the inherited defaults.
         """
         from pptx.oxml.ns import qn
+
+        # Try XML-based rendering first for accuracy
         sp = shape._element
         txBody = sp.find(qn('p:txBody'))
         if txBody is None:
             txBody = sp.find(qn('a:txBody'))
         if txBody is None:
-            # Fallback to API
             return _render_text_frame_api(shape)
 
         paragraphs_html = []
         for p_el in txBody.findall(qn('a:p')):
-            # --- Paragraph properties ---
             pPr = p_el.find(qn('a:pPr'))
             para_style = []
-            
+
             # Paragraph alignment
             if pPr is not None:
                 algn = pPr.get('algn')
                 algn_map = {'l': 'left', 'ctr': 'center', 'r': 'right', 'just': 'justify', 'dist': 'justify'}
                 if algn in algn_map:
                     para_style.append(f'text-align:{algn_map[algn]}')
-            
+
             # Paragraph spacing
             if pPr is not None:
                 spcAft = pPr.find(qn('a:spcAft'))
@@ -2142,21 +2168,20 @@ def _pptx_to_html(filepath):
                     if spcPts is not None:
                         val = int(spcPts.get('val', '0')) / 100
                         para_style.append(f'margin-top:{val:.0f}pt')
-            
-            # --- Default run properties (defRPr) - inherited by runs ---
+
+            # Default run properties (defRPr) — inherited by all runs in this paragraph
             def_rpr = {}
             if pPr is not None:
                 defRPr_el = pPr.find(qn('a:defRPr'))
                 if defRPr_el is not None:
                     def_rpr = _parse_rpr(defRPr_el)
-            
-            # --- Render runs ---
+
+            # Render runs
             runs_html = []
             r_els = p_el.findall(qn('a:r'))
-            
+
             if not r_els:
-                # No runs — might be an empty paragraph or end-of-text marker
-                # Check for field elements (like slide numbers ‹#›)
+                # Check for field elements (slide numbers, dates, etc.)
                 fld_els = p_el.findall(qn('a:fld'))
                 if fld_els:
                     for fld in fld_els:
@@ -2164,111 +2189,106 @@ def _pptx_to_html(filepath):
                         if t_el is not None and t_el.text:
                             runs_html.append(_html_escape(t_el.text))
                 else:
-                    runs_html.append('&nbsp;')  # Empty line
+                    runs_html.append('&nbsp;')  # Empty line placeholder
             else:
                 for r_el in r_els:
                     t_el = r_el.find(qn('a:t'))
                     if t_el is None:
                         continue
                     rtext = _html_escape(t_el.text or '')
-                    
+
                     # Merge defRPr (defaults) with rPr (run overrides)
-                    run_props = dict(def_rpr)  # Start with defaults
-                    
+                    run_props = dict(def_rpr)
                     rPr_el = r_el.find(qn('a:rPr'))
                     if rPr_el is not None:
                         run_overrides = _parse_rpr(rPr_el)
                         run_props.update(run_overrides)
-                    
-                    # Apply formatting
+
+                    # Build inline styles
                     run_styles = []
-                    
-                    # Color
+
+                    # Color — only set if explicitly specified
                     color = run_props.get('color')
                     if color:
                         run_styles.append(f'color:{color}')
-                    
+
                     # Font size
                     sz = run_props.get('font_size')
                     if sz:
                         run_styles.append(f'font-size:{sz}')
-                    
+
                     # Font name
                     fn = run_props.get('font_name')
                     if fn:
                         run_styles.append(f'font-family:"{fn}",sans-serif')
-                    
-                    # Bold
+
+                    # Bold / Italic / Underline / Strikethrough
                     if run_props.get('bold'):
                         rtext = f'<strong>{rtext}</strong>'
-                    
-                    # Italic
                     if run_props.get('italic'):
                         rtext = f'<em>{rtext}</em>'
-                    
-                    # Underline
                     if run_props.get('underline'):
                         rtext = f'<u>{rtext}</u>'
-                    
-                    # Strikethrough
                     if run_props.get('strike'):
                         rtext = f'<s>{rtext}</s>'
-                    
+
                     if run_styles:
                         style_str = ';'.join(run_styles)
                         rtext = f'<span style="{style_str}">{rtext}</span>'
-                    
+
                     runs_html.append(rtext)
-            
+
             pstyle = f' style="{";".join(para_style)}"' if para_style else ''
             paragraphs_html.append(f'<p{pstyle}>{"".join(runs_html)}</p>')
-        
+
         return ''.join(paragraphs_html)
-    
+
     def _parse_rpr(rpr_el):
-        """Parse an <a:rPr> or <a:defRPr> XML element into a dict of formatting properties."""
+        """Parse an <a:rPr> or <a:defRPr> element into a dict of formatting properties."""
         from pptx.oxml.ns import qn
         props = {}
-        
-        # Font size (sz attribute is in hundredths of a point)
+
+        # Font size (sz is in hundredths of a point, e.g. 1800 = 18pt)
         sz = rpr_el.get('sz')
         if sz:
             sz_pt = int(sz) / 100
             props['font_size'] = f'{sz_pt:.0f}pt'
-        
+
         # Bold
         b = rpr_el.get('b')
         if b is not None:
             props['bold'] = b != '0'
-        
+
         # Italic
         i = rpr_el.get('i')
         if i is not None:
             props['italic'] = i != '0'
-        
+
         # Underline
         u = rpr_el.get('u')
         if u is not None:
             props['underline'] = u != 'none'
-        
-        # Strike
+
+        # Strikethrough
         strike = rpr_el.get('strike')
         if strike is not None:
             props['strike'] = strike != 'noStrike'
-        
-        # Font name (from latin, ea, cs elements)
+
+        # Font name — from latin/ea/cs elements
+        # Skip theme font references like +mn-lt, +mj-lt (major/minor theme fonts)
         latin = rpr_el.find(qn('a:latin'))
         if latin is not None:
-            typeface = latin.get('typeface')
-            if typeface and typeface != '+mn-lt' and typeface != '+mj-lt':
+            typeface = latin.get('typeface', '')
+            if typeface and not typeface.startswith('+'):
                 props['font_name'] = typeface
-        ea = rpr_el.find(qn('a:ea'))
-        if ea is not None:
-            typeface = ea.get('typeface')
-            if typeface and typeface not in ('+mn-ea', '+mj-ea', '') and 'font_name' not in props:
-                props['font_name'] = typeface
-        
-        # Color from solidFill
+        if 'font_name' not in props:
+            ea = rpr_el.find(qn('a:ea'))
+            if ea is not None:
+                typeface = ea.get('typeface', '')
+                if typeface and not typeface.startswith('+'):
+                    props['font_name'] = typeface
+
+        # Text color — from solidFill only (gradient fill is not a valid CSS color)
         solidFill = rpr_el.find(qn('a:solidFill'))
         if solidFill is not None:
             for child in solidFill:
@@ -2276,19 +2296,14 @@ def _pptx_to_html(filepath):
                 if color:
                     props['color'] = color
                     break
-        
-        # Color from gradFill (use first stop)
-        if 'color' not in props:
-            gradFill = rpr_el.find(qn('a:gradFill'))
-            if gradFill is not None:
-                css = _get_fill_css_from_xml(gradFill)
-                if css and css != 'transparent':
-                    props['color'] = css
-        
+
+        # NOTE: Do NOT use gradFill as text color — CSS color property doesn't
+        # support gradients. If needed, extract the first stop color only.
+
         return props
-    
+
     def _render_text_frame_api(shape):
-        """Fallback: render text frame using python-pptx API (less accurate)."""
+        """Fallback: render text frame using python-pptx API."""
         text_parts = []
         for para in shape.text_frame.paragraphs:
             runs_html = []
@@ -2338,21 +2353,43 @@ def _pptx_to_html(filepath):
             text_parts.append(f'<p{pstyle}>{text}</p>')
         return ''.join(text_parts)
 
-    def _render_shape(slide, shape, is_placeholder=False):
+    def _render_shape(slide, shape):
         """Render a single shape to HTML with positioning and styling."""
         from pptx.oxml.ns import qn
-        parts = []
 
-        left_px = emu_to_px(shape.left)
-        top_px = emu_to_px(shape.top)
-        width_px = emu_to_px(shape.width)
-        height_px = emu_to_px(shape.height)
+        # Skip shapes with no position or zero-size
+        try:
+            left = shape.left
+            top = shape.top
+            width = shape.width
+            height = shape.height
+            if left is None or top is None or width is None or height is None:
+                return ''
+        except Exception:
+            return ''
 
-        style_parts = [f'position:absolute', f'left:{left_px}px', f'top:{top_px}px',
-                       f'width:{width_px}px', f'height:{height_px}px']
+        left_px = emu_to_px(left)
+        top_px = emu_to_px(top)
+        width_px = emu_to_px(width)
+        height_px = emu_to_px(height)
 
-        # Shape fill — try both API and XML for richer results
+        # Skip zero-size shapes
+        if width_px <= 0 or height_px <= 0:
+            return ''
+
+        style_parts = [
+            f'position:absolute',
+            f'left:{left_px}px',
+            f'top:{top_px}px',
+            f'width:{width_px}px',
+            f'height:{height_px}px',
+            f'box-sizing:border-box',
+            f'overflow:hidden',
+        ]
+
+        # ---- Shape fill ----
         fill_rendered = False
+        # Try python-pptx API first
         try:
             fill = shape.fill
             fill_css = _get_fill_css(fill)
@@ -2362,10 +2399,11 @@ def _pptx_to_html(filepath):
         except Exception:
             pass
 
-        # If API fill didn't work, try XML directly
+        # Try XML directly if API didn't work
         if not fill_rendered:
             try:
                 sp = shape._element
+                # Look for spPr (shape properties) which contains fill info
                 spPr = sp.find(qn('p:spPr'))
                 if spPr is None:
                     spPr = sp.find('.//' + qn('a:spPr'))
@@ -2378,7 +2416,7 @@ def _pptx_to_html(filepath):
                                 if blip is not None:
                                     rId = blip.get(qn('r:embed'))
                                     if rId:
-                                        data_uri = _get_image_base64(slide, rId)
+                                        data_uri = _get_image_base64(slide.part, rId)
                                         if data_uri:
                                             style_parts.append(f'background-image:url("{data_uri}")')
                                             style_parts.append('background-size:cover')
@@ -2394,23 +2432,24 @@ def _pptx_to_html(filepath):
             except Exception:
                 pass
 
-        # Shape border/line
+        # ---- Shape border/line ----
         try:
             line = shape.line
-            if line.fill.type is not None and line.fill.type == 1:  # solid
-                line_color = _color_to_css(line.color)
-                line_width = line.width
-                if line_color and line_width:
-                    w_pt = int(line_width) / 12700  # EMU to pt
-                    style_parts.append(f'border:{w_pt:.1f}pt solid {line_color}')
-                elif line_color:
-                    style_parts.append(f'border:1pt solid {line_color}')
-            elif line.fill.type is not None and line.fill.type == 5:  # no line
-                style_parts.append('border:none')
+            if line.fill.type is not None:
+                if line.fill.type == 1:  # solid
+                    line_color = _color_to_css(line.color)
+                    line_width = line.width
+                    if line_color and line_width:
+                        w_pt = int(line_width) / 12700
+                        style_parts.append(f'border:{w_pt:.1f}pt solid {line_color}')
+                    elif line_color:
+                        style_parts.append(f'border:1pt solid {line_color}')
+                elif line.fill.type == 5:  # no line
+                    style_parts.append('border:none')
         except Exception:
             pass
 
-        # Rotation
+        # ---- Rotation ----
         try:
             rotation = shape.rotation
             if rotation:
@@ -2418,6 +2457,7 @@ def _pptx_to_html(filepath):
         except Exception:
             pass
 
+        # ---- Determine shape type and render content ----
         shape_type = None
         try:
             shape_type = shape.shape_type
@@ -2434,7 +2474,7 @@ def _pptx_to_html(filepath):
                 if blipFill_el is not None:
                     rId = blipFill_el.get(qn('r:embed'))
                     if rId:
-                        data_uri = _get_image_base64(slide, rId)
+                        data_uri = _get_image_base64(slide.part, rId)
                         if data_uri:
                             content = f'<img src="{data_uri}" style="width:100%;height:100%;object-fit:contain">'
             except Exception:
@@ -2453,9 +2493,9 @@ def _pptx_to_html(filepath):
 
         # Text frame — use XML-based rendering for accurate formatting
         if not content and shape.has_text_frame:
-            content = _render_text_frame_xml(shape)
+            content = _render_text_frame(shape)
             # Add padding for text shapes without background
-            if 'background' not in ' '.join(style_parts) and 'background-image' not in ' '.join(style_parts):
+            if not fill_rendered:
                 style_parts.append('padding:4px 8px')
 
         # Table
@@ -2480,73 +2520,46 @@ def _pptx_to_html(filepath):
             content = f'<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px">{"".join(rows_html)}</table>'
 
         style_str = ';'.join(style_parts)
-        ph_class = ' placeholder-shape' if is_placeholder else ''
-        parts.append(f'<div class="shape{ph_class}" style="{style_str}">{content}</div>')
-        return ''.join(parts)
+        return f'<div class="shape" style="{style_str}">{content}</div>'
 
-    # Build each slide
+    # ---- Build each slide ----
     slides_html = []
     for i, slide in enumerate(prs.slides):
-        bg_css, bg_size, bg_extra = _get_slide_bg_css(slide)
+        bg_css, bg_size, _ = _get_slide_bg_css(slide)
         bg_style = f'background:{bg_css}'
         if bg_size:
             bg_style = f'background-image:{bg_css};background-size:{bg_size}'
 
-        # Render all shapes with absolute positioning
+        # Render ONLY the slide's own shapes (not layout/master shapes)
+        # Layout/master decorative shapes are often placeholders or visual elements
+        # that get inherited through the background chain — rendering them separately
+        # causes overlap and duplication issues.
         shapes_html = []
-
-        # Only render layout/master shapes that are decorative backgrounds
-        # Skip placeholder shapes to avoid duplicating/interfering with slide content
-        try:
-            layout = slide.slide_layout
-            if layout is not None:
-                # Get shape IDs that are already on the slide
-                slide_shape_ids = set()
-                for shape in slide.shapes:
-                    try:
-                        slide_shape_ids.add(shape.shape_id)
-                    except Exception:
-                        pass
-
-                # Only render non-placeholder decorative shapes from layout
-                # (backgrounds, decorative elements)
-                for shape in layout.shapes:
-                    try:
-                        is_ph = False
-                        try:
-                            is_ph = shape.is_placeholder
-                        except Exception:
-                            pass
-                        # Skip placeholders — they are handled by the slide's own shapes
-                        if is_ph:
-                            continue
-                        # Only render if it has a fill/background (decorative element)
-                        if shape.shape_id not in slide_shape_ids:
-                            shapes_html.append(_render_shape(slide, shape))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        # Then render slide's own shapes
         for shape in slide.shapes:
             try:
-                shapes_html.append(_render_shape(slide, shape))
+                rendered = _render_shape(slide, shape)
+                if rendered:
+                    shapes_html.append(rendered)
             except Exception:
                 # Fallback: extract text at least
                 try:
                     if shape.has_text_frame:
                         text = _html_escape(shape.text)
-                        shapes_html.append(f'<div class="shape" style="position:absolute;left:{emu_to_px(shape.left)}px;top:{emu_to_px(shape.top)}px;width:{emu_to_px(shape.width)}px;font-size:18px">{text}</div>')
+                        shapes_html.append(
+                            f'<div class="shape" style="position:absolute;'
+                            f'left:{emu_to_px(shape.left)}px;top:{emu_to_px(shape.top)}px;'
+                            f'width:{emu_to_px(shape.width)}px;font-size:18px">'
+                            f'{text}</div>'
+                        )
                 except Exception:
                     pass
 
         shapes_content = '\n'.join(shapes_html)
         slides_html.append(f'''<div class="slide" style="{bg_style}">
-<div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
-<div class="slide-canvas" style="position:relative;width:{slide_w_px}px;height:{slide_h_px}px">
+<div class="slide-canvas" style="position:relative;width:{slide_w_px}px;height:{slide_h_px}px;overflow:hidden">
 {shapes_content}
 </div>
+<div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
 </div>''')
 
     body = '\n'.join(slides_html)
@@ -2558,12 +2571,11 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans
        margin: 0; padding: 20px; background: #f0f0f0; color: #333; }}
 .slide {{ margin: 20px auto; max-width: {slide_w_px + 40}px; padding: 0;
           border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); overflow: hidden; }}
-.slide-number {{ color: rgba(255,255,255,0.7); font-size: 11px; padding: 4px 12px; text-align: right; background: rgba(0,0,0,0.3); position: relative; z-index: 10; }}
+.slide-number {{ color: rgba(0,0,0,0.5); font-size: 11px; padding: 6px 12px; text-align: center; }}
 .slide-canvas {{ transform-origin: top left; margin: 0 auto; }}
-.shape {{ box-sizing: border-box; overflow: hidden; }}
-.shape p {{ margin: 2px 0; line-height: 1.4; }}
+.shape {{ box-sizing: border-box; overflow: hidden; word-wrap: break-word; }}
+.shape p {{ margin: 2px 0; line-height: 1.3; word-wrap: break-word; }}
 .shape img {{ display: block; }}
-.placeholder-shape {{ opacity: 0.6; }}
 table {{ border-collapse: collapse; width: 100%; margin: 4px 0; }}
 th,td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 13px; }}
 th {{ background: #f5f5f5; font-weight: bold; }}
