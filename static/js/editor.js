@@ -317,11 +317,9 @@ const EditorManager = (() => {
             document.dispatchEvent(new CustomEvent('editor:change'));
             // Live markdown preview update (re-render + sync scroll to cursor)
             if (mdPreviewMode && isMarkdownFile()) {
+                _mdLastCursorLine = editor.getCursor().line;
                 clearTimeout(window._mdPreviewTimer);
-                window._mdPreviewTimer = setTimeout(function() {
-                    renderMarkdownPreview();
-                    scrollPreviewToCursor();
-                }, 300);
+                window._mdPreviewTimer = setTimeout(function() { renderMarkdownPreview(); }, 300);
             }
         });
 
@@ -1440,6 +1438,8 @@ const EditorManager = (() => {
 
     // ── Markdown Preview ─────────────────────────────────────────
     let mdPreviewMode = false;
+    // Last known source line for scroll sync (used during live re-render)
+    let _mdLastCursorLine = 0;
 
     /**
      * Check if the current file is a markdown file
@@ -1451,14 +1451,268 @@ const EditorManager = (() => {
     }
 
     /**
-     * Render markdown content into the preview div
+     * Build a mapping from token queue index → source line number
+     * by walking the original source line-by-line and matching token.raw text.
+     * Returns an array: [{type, sourceLine}, ...] in the same order as the
+     * top-level tokens from marked.lexer().
      */
-    function renderMarkdownPreview() {
+    function buildTokenLineMap(tokens, sourceLines) {
+        var map = [];
+        var srcIdx = 0; // current search position in sourceLines (0-based)
+
+        for (var t = 0; t < tokens.length; t++) {
+            var tok = tokens[t];
+            var raw = tok.raw || '';
+            if (!raw) {
+                map.push({ type: tok.type, sourceLine: srcIdx });
+                continue;
+            }
+            // Count how many newlines are in token.raw to know its span
+            var rawLines = raw.split('\n');
+            var rawFirstLine = rawLines[0];
+
+            // Find where this token starts in the source by scanning forward
+            var found = -1;
+            for (var s = srcIdx; s < sourceLines.length; s++) {
+                if (sourceLines[s] === rawFirstLine ||
+                    sourceLines[s].indexOf(rawFirstLine) === 0 ||
+                    rawFirstLine.indexOf(sourceLines[s]) === 0) {
+                    found = s;
+                    break;
+                }
+            }
+            if (found === -1) {
+                // Fallback: use current srcIdx
+                found = srcIdx;
+            }
+            map.push({ type: tok.type, sourceLine: found });
+            // Advance past the lines this token occupies
+            srcIdx = found + rawLines.length - 1;
+            if (srcIdx < found) srcIdx = found;
+        }
+        return map;
+    }
+
+    /**
+     * Inject data-source-line attributes into block-level HTML elements.
+     * We do this by post-processing the rendered HTML string.
+     * For each block tag (h1-h6, p, pre, blockquote, ul, ol, li, table, hr, img),
+     * we inject data-source-line="N" where N is the 0-based source line.
+     *
+     * Strategy: Walk tokens and their line map, render each token individually
+     * with marked.parse([token]), then prepend the attribute to the first
+     * block element in the rendered output.
+     */
+    function renderMarkdownWithLineNumbers(mdRaw, renderer) {
+        var sourceLines = mdRaw.split('\n');
+
+        // Tokenize
+        var tokens;
+        try {
+            tokens = marked.lexer(mdRaw, { gfm: true, breaks: true });
+        } catch(e) {
+            tokens = [];
+        }
+
+        // Build line map
+        var lineMap = buildTokenLineMap(tokens, sourceLines);
+
+        // Create a parser instance for rendering individual tokens
+        function renderToken(tok) {
+            try {
+                var parser = new marked.Parser({ renderer: renderer });
+                return parser.parse([tok]);
+            } catch(e) {
+                return '';
+            }
+        }
+
+        // We'll render each top-level token individually and inject data-source-line
+        var resultHtml = '';
+        for (var t = 0; t < tokens.length; t++) {
+            var tok = tokens[t];
+            var srcLine = (lineMap[t] && lineMap[t].sourceLine !== undefined) ? lineMap[t].sourceLine : 0;
+            var tokenHtml = '';
+
+            // Skip space tokens (they produce no output)
+            if (tok.type === 'space') {
+                continue;
+            }
+
+            if (tok.type === 'list') {
+                tokenHtml = renderListTokenWithLines(tok, renderer);
+            } else {
+                tokenHtml = renderToken(tok);
+                if (!tokenHtml) {
+                    // Fallback: use raw text
+                    tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
+                }
+            }
+
+            // Inject data-source-line into the first block-level element
+            tokenHtml = injectSourceLine(tokenHtml, srcLine);
+            resultHtml += tokenHtml;
+        }
+
+        return resultHtml;
+    }
+
+    /**
+     * Recursively render a list token with data-source-line on each <li>
+     */
+    function renderListTokenWithLines(listToken, renderer) {
+        function renderToken(tok) {
+            try {
+                var parser = new marked.Parser({ renderer: renderer });
+                return parser.parse([tok]);
+            } catch(e) {
+                return tok.raw || '';
+            }
+        }
+
+        var tag = listToken.ordered ? 'ol' : 'ul';
+        var startAttr = listToken.start && listToken.start !== 1 ? ' start="' + listToken.start + '"' : '';
+        var html = '<' + tag + startAttr + '>';
+        if (listToken.items) {
+            for (var i = 0; i < listToken.items.length; i++) {
+                var item = listToken.items[i];
+                // Estimate source line for this item
+                var itemLine = 0;
+                if (item.raw) {
+                    var itemFirstLine = item.raw.split('\n')[0];
+                    itemLine = _findSourceLineForText(itemFirstLine);
+                }
+                html += '<li data-source-line="' + itemLine + '">';
+                // Render item body (may contain sub-paragraphs, sub-lists)
+                if (item.tokens) {
+                    for (var j = 0; j < item.tokens.length; j++) {
+                        var subTok = item.tokens[j];
+                        if (subTok.type === 'list') {
+                            html += renderListTokenWithLines(subTok, renderer);
+                        } else if (subTok.type === 'text') {
+                            // text inside list item — render inline tokens
+                            html += renderToken(subTok);
+                        } else {
+                            html += renderToken(subTok);
+                        }
+                    }
+                }
+                html += '</li>';
+            }
+        }
+        html += '</' + tag + '>';
+        return html;
+    }
+
+    /**
+     * Global temp storage for source line lookup (used by renderListTokenWithLines)
+     */
+    var _mdSourceLines = [];
+    function _findSourceLineForText(text) {
+        if (!text) return 0;
+        for (var i = 0; i < _mdSourceLines.length; i++) {
+            if (_mdSourceLines[i] === text || _mdSourceLines[i].indexOf(text) === 0) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Inject data-source-line="N" into the first block-level element in an HTML string.
+     */
+    function injectSourceLine(html, line) {
+        // Match the first opening block-level tag and add the attribute
+        var blockTags = 'h1|h2|h3|h4|h5|h6|p|pre|blockquote|ul|ol|li|table|hr|img|div|section|article|header|footer';
+        var re = new RegExp('<(' + blockTags + ')\\b', 'i');
+        return html.replace(re, '<$1 data-source-line="' + line + '"');
+    }
+
+    /**
+     * Scroll the preview to the element corresponding to the given source line.
+     * Finds the element whose data-source-line is closest to (but ≤) targetLine.
+     */
+    function scrollPreviewToLine(targetLine) {
+        var previewEl = document.getElementById('markdown-preview');
+        if (!previewEl) return;
+
+        var elements = previewEl.querySelectorAll('[data-source-line]');
+        if (!elements.length) return;
+
+        // Find the element with the largest data-source-line that is <= targetLine
+        var bestEl = null;
+        var bestLine = -1;
+        for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            var sl = parseInt(el.getAttribute('data-source-line'), 10);
+            if (isNaN(sl)) continue;
+            if (sl <= targetLine && sl > bestLine) {
+                bestLine = sl;
+                bestEl = el;
+            }
+        }
+
+        if (bestEl) {
+            // Scroll the element into view, aligned to the top of the preview area
+            requestAnimationFrame(function() {
+                var previewRect = previewEl.getBoundingClientRect();
+                var elRect = bestEl.getBoundingClientRect();
+                var offset = elRect.top - previewRect.top + previewEl.scrollTop;
+                previewEl.scrollTop = Math.max(0, offset - 10); // 10px margin
+            });
+        }
+    }
+
+    /**
+     * Get the source line corresponding to the current preview scroll position.
+     * Finds the element near the top of the preview viewport and returns its data-source-line.
+     */
+    function getSourceLineFromPreviewScroll() {
+        var previewEl = document.getElementById('markdown-preview');
+        if (!previewEl) return 0;
+
+        var elements = previewEl.querySelectorAll('[data-source-line]');
+        if (!elements.length) return 0;
+
+        var previewRect = previewEl.getBoundingClientRect();
+        var viewportTop = previewRect.top + 30; // 30px grace area
+
+        // Find the element closest to the top of the viewport
+        var bestEl = null;
+        var bestDist = Infinity;
+        for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            var elRect = el.getBoundingClientRect();
+            var dist = Math.abs(elRect.top - viewportTop);
+            // Prefer elements that are at or just past the viewport top
+            if (elRect.top <= viewportTop + 20) {
+                // Element is at or above viewport top - good candidate
+                if (dist < bestDist || bestEl === null) {
+                    bestDist = dist;
+                    bestEl = el;
+                }
+            }
+        }
+
+        // If no element found above viewport, use the first one
+        if (!bestEl && elements.length) {
+            bestEl = elements[0];
+        }
+
+        if (bestEl) {
+            var sl = parseInt(bestEl.getAttribute('data-source-line'), 10);
+            return isNaN(sl) ? 0 : sl;
+        }
+        return 0;
+    }
+
+    /**
+     * Render markdown content into the preview div
+     * @param {number} [scrollToLine] - If provided, scroll preview to this source line after render
+     */
+    function renderMarkdownPreview(scrollToLine) {
         const previewEl = document.getElementById('markdown-preview');
         if (!previewEl || !editor) return;
-
-        // Save current scroll position before re-rendering (for live updates)
-        var savedScrollTop = previewEl.scrollTop;
 
         var mdRaw = editor.getValue();
         var originalContent = editor.getValue(); // unmodified content for line mapping
@@ -1468,23 +1722,10 @@ const EditorManager = (() => {
             return;
         }
 
-        // --- Step 0: Build source-line mapping from lexer tokens ---
-        // We lex the ORIGINAL content (before math/code protection) to get
-        // accurate line numbers for each block-level token.
-        var tokens = marked.lexer(originalContent);
-        var blockLineQueue = [];
-        var lineOffset = 0;
-        for (var ti = 0; ti < tokens.length; ti++) {
-            var token = tokens[ti];
-            var newLines = (token.raw.match(/\n/g) || []).length;
-            var startLine = lineOffset;
-            if (token.type !== 'space') {
-                blockLineQueue.push({ type: token.type, startLine: startLine });
-            }
-            lineOffset += newLines;
-        }
+        // Store source lines for line number lookup
+        _mdSourceLines = mdRaw.split('\n');
 
-        // --- Step 0.5: Protect fenced code blocks and inline code from math regex ---
+        // --- Step 0: Protect fenced code blocks and inline code from math regex ---
         var codeStore = [];
         var codeIdx = 0;
         function storeCode(match) {
@@ -1498,7 +1739,6 @@ const EditorManager = (() => {
         mdRaw = mdRaw.replace(/`[^`]+`/g, storeCode);
 
         // --- Step 1: Protect math expressions from marked processing ---
-        // marked would otherwise interpret _ as <em> and split $$ blocks across paragraphs
         var mathStore = [];
         var mathIdx = 0;
         function storeMath(match) {
@@ -1520,8 +1760,7 @@ const EditorManager = (() => {
             mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
         }
 
-        // --- Step 2: Configure marked v12 with custom code highlighter + data-source-line ---
-        // In marked v12, renderer.code receives (code_string, lang_string, escaped_bool)
+        // --- Step 2: Configure marked v12 with custom code highlighter ---
         var renderer = new marked.Renderer();
         var queueIdx = 0;
 
@@ -1608,8 +1847,14 @@ const EditorManager = (() => {
             renderer: renderer
         });
 
-        // --- Step 3: Parse markdown ---
-        var html = marked.parse(mdRaw);
+        // --- Step 3: Parse markdown with source line tracking ---
+        var html;
+        try {
+            html = renderMarkdownWithLineNumbers(mdRaw, renderer);
+        } catch(e) {
+            // Fallback to simple parse without line numbers
+            html = marked.parse(mdRaw);
+        }
 
         // --- Step 4: Restore math expressions ---
         for (var i = 0; i < mathStore.length; i++) {
@@ -1631,146 +1876,12 @@ const EditorManager = (() => {
             });
         }
 
-        // --- Step 6: Restore scroll position after re-render ---
-        // This is now handled by scrollPreviewToCursor() called after renderMarkdownPreview(),
-        // so we skip the old savedScrollTop logic here.
-    }
-
-    /**
-     * Scroll the preview to the position corresponding to the current
-     * cursor line in the CodeMirror editor.
-     */
-    function scrollPreviewToCursor() {
-        var previewEl = document.getElementById('markdown-preview');
-        if (!previewEl || !editor) return;
-
-        var cursorLine = editor.getCursor().line;
-
-        // Find all elements with data-source-line
-        var blocks = previewEl.querySelectorAll('[data-source-line]');
-        if (blocks.length === 0) {
-            // No line annotations — fall back to proportional scroll
-            var totalLines = editor.lineCount();
-            var ratio = totalLines > 0 ? cursorLine / totalLines : 0;
-            previewEl.scrollTop = ratio * (previewEl.scrollHeight - previewEl.clientHeight);
-            return;
-        }
-
-        // Find the block whose source line is closest to (but <=) the cursor line
-        var bestEl = null;
-        var bestLine = -1;
-        blocks.forEach(function(el) {
-            var elLine = parseInt(el.getAttribute('data-source-line'), 10);
-            if (elLine <= cursorLine && elLine > bestLine) {
-                bestLine = elLine;
-                bestEl = el;
-            }
-        });
-
-        if (bestEl) {
-            // Scroll the element into view, near the top of the preview pane
-            var elTop = bestEl.offsetTop;
-            var viewHeight = previewEl.clientHeight;
-            previewEl.scrollTop = Math.max(0, elTop - viewHeight * 0.1);
-        } else {
-            previewEl.scrollTop = 0;
-        }
-    }
-
-    /**
-     * Scroll the CodeMirror editor to the source line corresponding
-     * to the current scroll position in the preview.
-     */
-    function scrollEditorToPreviewPosition() {
-        var previewEl = document.getElementById('markdown-preview');
-        if (!previewEl || !editor) return;
-
-        var scrollTop = previewEl.scrollTop;
-        var viewHeight = previewEl.clientHeight;
-        var scrollMid = scrollTop + viewHeight * 0.3; // use 30% from top as reference
-
-        // Find all elements with data-source-line
-        var blocks = previewEl.querySelectorAll('[data-source-line]');
-        if (blocks.length === 0) {
-            // Fall back to proportional mapping
-            var ratio = previewEl.scrollHeight > previewEl.clientHeight
-                ? scrollTop / (previewEl.scrollHeight - previewEl.clientHeight)
-                : 0;
-            var totalLines = editor.lineCount();
-            var targetLine = Math.round(ratio * totalLines);
-            editor.setCursor({ line: Math.min(targetLine, totalLines - 1), ch: 0 });
-            editor.scrollIntoView(null, 50);
-            return;
-        }
-
-        // Find the block at the current scroll position
-        var bestEl = null;
-        var bestLine = 0;
-        blocks.forEach(function(el) {
-            if (el.offsetTop <= scrollMid) {
-                var elLine = parseInt(el.getAttribute('data-source-line'), 10);
-                if (elLine >= bestLine) {
-                    bestLine = elLine;
-                    bestEl = el;
-                }
-            }
-        });
-
-        if (bestEl) {
-            editor.setCursor({ line: bestLine, ch: 0 });
-            editor.scrollIntoView(null, 50);
-        }
-    }
-
-    /**
-     * Sync the CodeMirror editor scroll position based on the current
-     * scroll position in the browser preview iframe (bottom panel).
-     * Reads the iframe's scroll position and finds the corresponding
-     * data-source-line element to determine the source line.
-     */
-    function syncEditorToPreviewScroll() {
-        if (!editor || !isMarkdownFile()) return;
-
-        var iframe = document.getElementById('preview-frame');
-        if (!iframe) return;
-
-        try {
-            var iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-            if (!iframeDoc) return;
-
-            var scrollTop = iframeDoc.documentElement.scrollTop || iframeDoc.body.scrollTop || 0;
-            var viewHeight = iframeDoc.documentElement.clientHeight || iframeDoc.body.clientHeight || 0;
-            var scrollMid = scrollTop + viewHeight * 0.3;
-
-            var blocks = iframeDoc.querySelectorAll('[data-source-line]');
-            if (blocks.length === 0) {
-                // Fallback: proportional mapping
-                var scrollHeight = iframeDoc.documentElement.scrollHeight || iframeDoc.body.scrollHeight || 1;
-                var ratio = scrollHeight > viewHeight ? scrollTop / (scrollHeight - viewHeight) : 0;
-                var totalLines = editor.lineCount();
-                var targetLine = Math.round(ratio * totalLines);
-                editor.setCursor({ line: Math.min(targetLine, totalLines - 1), ch: 0 });
-                editor.scrollIntoView(null, 50);
-                return;
-            }
-
-            // Find the block at the current scroll position
-            var bestLine = 0;
-            blocks.forEach(function(el) {
-                var elTop = el.getBoundingClientRect().top + (iframeDoc.documentElement.scrollTop || iframeDoc.body.scrollTop);
-                if (elTop <= scrollMid) {
-                    var elLine = parseInt(el.getAttribute('data-source-line'), 10);
-                    if (elLine >= bestLine) {
-                        bestLine = elLine;
-                    }
-                }
-            });
-
-            editor.setCursor({ line: bestLine, ch: 0 });
-            editor.scrollIntoView(null, 50);
-        } catch (e) {
-            // Cross-origin iframe — can't access, silently ignore
-            console.warn('Cannot read iframe scroll position:', e.message);
+        // --- Step 6: Scroll to the target position ---
+        if (typeof scrollToLine === 'number' && scrollToLine >= 0) {
+            scrollPreviewToLine(scrollToLine);
+        } else if (_mdLastCursorLine > 0) {
+            // Live update: scroll to cursor position
+            scrollPreviewToLine(_mdLastCursorLine);
         }
     }
 
@@ -1786,19 +1897,28 @@ const EditorManager = (() => {
         const toggleBtn = document.getElementById('btn-md-toggle');
 
         if (mdPreviewMode) {
-            // Entering preview: render, then scroll to cursor position
-            renderMarkdownPreview();
+            // Get the current cursor line (0-based) for scroll sync
+            var cursorLine = editor ? editor.getCursor().line : 0;
+            _mdLastCursorLine = cursorLine;
+
+            renderMarkdownPreview(cursorLine);
             if (cmWrapper) cmWrapper.style.display = 'none';
             if (previewEl) previewEl.style.display = '';
             if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '切换编辑'; }
-            // Scroll preview to where the cursor is in the source code
-            requestAnimationFrame(function() { scrollPreviewToCursor(); });
         } else {
-            // Exiting preview: scroll editor to the position visible in preview
-            scrollEditorToPreviewPosition();
+            // Before closing preview, get the corresponding source line
+            var sourceLine = getSourceLineFromPreviewScroll();
+
             if (cmWrapper) cmWrapper.style.display = '';
             if (previewEl) previewEl.style.display = 'none';
             if (toggleBtn) { toggleBtn.textContent = '📖'; toggleBtn.title = '切换预览'; }
+
+            // Scroll the editor to the corresponding source line
+            if (editor && sourceLine > 0) {
+                requestAnimationFrame(function() {
+                    editor.scrollTo(0, editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top - 10);
+                });
+            }
             setTimeout(() => resize(), 50);
         }
     }
@@ -1868,11 +1988,11 @@ const EditorManager = (() => {
         // makes relative CSS/JS paths resolve correctly via /preview/<dir>/
         let previewUrl = '/preview/' + relPath;
 
-        // For Markdown files, pass cursor line number so the preview can
-        // auto-scroll to the position corresponding to the editor cursor
+        // For Markdown files, pass cursor line so the preview can auto-scroll
+        // to the position corresponding to the current editor cursor
         if (isMarkdownFile() && editor) {
-            var cursorLine = editor.getCursor().line;
-            previewUrl += '?line=' + cursorLine;
+            var cursorLine = editor.getCursor().line; // 0-based
+            previewUrl += '?line=' + encodeURIComponent(String(cursorLine));
         }
 
         // Switch to the browser tab in the bottom panel

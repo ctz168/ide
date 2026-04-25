@@ -305,8 +305,114 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     renderer: renderer
   }});
 
-  // --- Step 3: Parse markdown ---
-  var html = marked.parse(mdRaw);
+  // --- Step 3: Parse markdown with source line tracking ---
+  var sourceLines = mdRaw.split('\\n');
+  var tokens;
+  try {{
+    tokens = marked.lexer(mdRaw, {{ gfm: true, breaks: true }});
+  }} catch(e) {{
+    tokens = [];
+  }}
+
+  // Build line map: token index → source line number
+  var lineMap = [];
+  var srcIdx = 0;
+  for (var t = 0; t < tokens.length; t++) {{
+    var tok = tokens[t];
+    var raw = tok.raw || '';
+    if (!raw) {{
+      lineMap.push(srcIdx);
+      continue;
+    }}
+    var rawLines = raw.split('\\n');
+    var rawFirstLine = rawLines[0];
+    var found = -1;
+    for (var s = srcIdx; s < sourceLines.length; s++) {{
+      if (sourceLines[s] === rawFirstLine ||
+          sourceLines[s].indexOf(rawFirstLine) === 0 ||
+          rawFirstLine.indexOf(sourceLines[s]) === 0) {{
+        found = s;
+        break;
+      }}
+    }}
+    if (found === -1) found = srcIdx;
+    lineMap.push(found);
+    srcIdx = found + rawLines.length - 1;
+    if (srcIdx < found) srcIdx = found;
+  }}
+
+  // Render each token individually, injecting data-source-line
+  function renderSingleToken(tok) {{
+    try {{
+      var parser = new marked.Parser({{ renderer: renderer }});
+      return parser.parse([tok]);
+    }} catch(e) {{
+      return '';
+    }}
+  }}
+
+  var resultHtml = '';
+  for (var t = 0; t < tokens.length; t++) {{
+    var tok = tokens[t];
+    var srcLine = lineMap[t] || 0;
+    var tokenHtml = '';
+
+    if (tok.type === 'space') continue;
+
+    if (tok.type === 'list') {{
+      tokenHtml = renderListWithLines(tok);
+    }} else {{
+      tokenHtml = renderSingleToken(tok);
+      if (!tokenHtml) {{
+        tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
+      }}
+    }}
+    // Inject data-source-line into the first block-level element
+    var blockRe = /<(h[1-6]|p|pre|blockquote|ul|ol|li|table|hr|img|div)\\b/i;
+    tokenHtml = tokenHtml.replace(blockRe, '<$1 data-source-line="' + srcLine + '"');
+    resultHtml += tokenHtml;
+  }}
+
+  function renderListWithLines(listToken) {{
+    var tag = listToken.ordered ? 'ol' : 'ul';
+    var startAttr = listToken.start && listToken.start !== 1 ? ' start="' + listToken.start + '"' : '';
+    var h = '<' + tag + startAttr + '>';
+    if (listToken.items) {{
+      for (var i = 0; i < listToken.items.length; i++) {{
+        var item = listToken.items[i];
+        var itemLine = 0;
+        if (item.raw) {{
+          var itemFirstLine = item.raw.split('\\n')[0];
+          for (var s = 0; s < sourceLines.length; s++) {{
+            if (sourceLines[s] === itemFirstLine || sourceLines[s].indexOf(itemFirstLine) === 0) {{
+              itemLine = s;
+              break;
+            }}
+          }}
+        }}
+        h += '<li data-source-line="' + itemLine + '">';
+        if (item.tokens) {{
+          for (var j = 0; j < item.tokens.length; j++) {{
+            var sub = item.tokens[j];
+            try {{
+              if (sub.type === 'list') {{
+                h += renderListWithLines(sub);
+              }} else {{
+                h += renderSingleToken(sub);
+              }}
+            }} catch(e2) {{
+              h += sub.raw || '';
+            }}
+          }}
+        }}
+        h += '</li>';
+      }}
+    }}
+    h += '</' + tag + '>';
+    return h;
+  }}
+
+  var html = resultHtml;
 
   // --- Step 4: Restore math expressions ---
   for (var i = 0; i < mathStore.length; i++) {{
@@ -326,17 +432,26 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     throwOnError: false
   }});
 
-  // Auto-scroll to the position corresponding to the editor cursor
-  var scrollParam = new URLSearchParams(window.location.search).get('scroll');
-  if (scrollParam !== null) {{
-    var ratio = parseFloat(scrollParam);
-    if (!isNaN(ratio) && ratio > 0) {{
-      // Wait for rendering to complete, then scroll proportionally
+  // Auto-scroll to the element corresponding to the editor cursor line
+  var lineParam = new URLSearchParams(window.location.search).get('line');
+  if (lineParam !== null) {{
+    var targetLine = parseInt(lineParam, 10);
+    if (!isNaN(targetLine)) {{
+      // Wait for rendering (including KaTeX) to complete
       requestAnimationFrame(function() {{
         requestAnimationFrame(function() {{
-          var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-          if (maxScroll > 0) {{
-            window.scrollTo(0, Math.round(maxScroll * ratio));
+          var elements = document.querySelectorAll('[data-source-line]');
+          var bestEl = null;
+          var bestLine = -1;
+          for (var i = 0; i < elements.length; i++) {{
+            var sl = parseInt(elements[i].getAttribute('data-source-line'), 10);
+            if (!isNaN(sl) && sl <= targetLine && sl > bestLine) {{
+              bestLine = sl;
+              bestEl = elements[i];
+            }}
+          }}
+          if (bestEl) {{
+            bestEl.scrollIntoView({{ block: 'start', behavior: 'instant' }});
           }}
         }});
       }});
@@ -592,6 +707,115 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 
   var html = marked.parse(mdRaw);
 
+  // --- Step 3: Parse markdown with source line tracking ---
+  var sourceLines = mdRaw.split('\\n');
+  var tokens;
+  try {{
+    tokens = marked.lexer(mdRaw, {{ gfm: true, breaks: true }});
+  }} catch(e) {{
+    tokens = [];
+  }}
+
+  // Build line map: token index → source line number
+  var lineMap = [];
+  var srcIdx = 0;
+  for (var t = 0; t < tokens.length; t++) {{
+    var tok = tokens[t];
+    var raw = tok.raw || '';
+    if (!raw) {{
+      lineMap.push(srcIdx);
+      continue;
+    }}
+    var rawLines = raw.split('\\n');
+    var rawFirstLine = rawLines[0];
+    var found = -1;
+    for (var s = srcIdx; s < sourceLines.length; s++) {{
+      if (sourceLines[s] === rawFirstLine ||
+          sourceLines[s].indexOf(rawFirstLine) === 0 ||
+          rawFirstLine.indexOf(sourceLines[s]) === 0) {{
+        found = s;
+        break;
+      }}
+    }}
+    if (found === -1) found = srcIdx;
+    lineMap.push(found);
+    srcIdx = found + rawLines.length - 1;
+    if (srcIdx < found) srcIdx = found;
+  }}
+
+  // Render each token individually, injecting data-source-line
+  function renderSingleToken2(tok) {{
+    try {{
+      var parser = new marked.Parser({{ renderer: renderer }});
+      return parser.parse([tok]);
+    }} catch(e) {{
+      return '';
+    }}
+  }}
+
+  var resultHtml = '';
+  for (var t = 0; t < tokens.length; t++) {{
+    var tok = tokens[t];
+    var srcLine = lineMap[t] || 0;
+    var tokenHtml = '';
+
+    if (tok.type === 'space') continue;
+
+    if (tok.type === 'list') {{
+      tokenHtml = renderListWithLines(tok);
+    }} else {{
+      tokenHtml = renderSingleToken2(tok);
+      if (!tokenHtml) {{
+        tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
+      }}
+    }}
+    // Inject data-source-line into the first block-level element
+    var blockRe = /<(h[1-6]|p|pre|blockquote|ul|ol|li|table|hr|img|div)\\b/i;
+    tokenHtml = tokenHtml.replace(blockRe, '<$1 data-source-line="' + srcLine + '"');
+    resultHtml += tokenHtml;
+  }}
+
+  function renderListWithLines(listToken) {{
+    var tag = listToken.ordered ? 'ol' : 'ul';
+    var startAttr = listToken.start && listToken.start !== 1 ? ' start="' + listToken.start + '"' : '';
+    var h = '<' + tag + startAttr + '>';
+    if (listToken.items) {{
+      for (var i = 0; i < listToken.items.length; i++) {{
+        var item = listToken.items[i];
+        var itemLine = 0;
+        if (item.raw) {{
+          var itemFirstLine = item.raw.split('\\n')[0];
+          for (var s = 0; s < sourceLines.length; s++) {{
+            if (sourceLines[s] === itemFirstLine || sourceLines[s].indexOf(itemFirstLine) === 0) {{
+              itemLine = s;
+              break;
+            }}
+          }}
+        }}
+        h += '<li data-source-line="' + itemLine + '">';
+        if (item.tokens) {{
+          for (var j = 0; j < item.tokens.length; j++) {{
+            var sub = item.tokens[j];
+            try {{
+              if (sub.type === 'list') {{
+                h += renderListWithLines(sub);
+              }} else {{
+                h += renderSingleToken2(sub);
+              }}
+            }} catch(e2) {{
+              h += sub.raw || '';
+            }}
+          }}
+        }}
+        h += '</li>';
+      }}
+    }}
+    h += '</' + tag + '>';
+    return h;
+  }}
+
+  html = resultHtml;
+
   for (var i = 0; i < mathStore.length; i++) {{
     html = html.replace(mathStore[i].id, mathStore[i].math);
   }}
@@ -608,36 +832,25 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     throwOnError: false
   }});
 
-  // Auto-scroll to the position corresponding to the editor cursor
-  var cursorLineParam = new URLSearchParams(window.location.search).get('line');
-  if (cursorLineParam !== null) {{
-    var cursorLine = parseInt(cursorLineParam, 10);
-    if (!isNaN(cursorLine) && cursorLine >= 0) {{
-      // Wait for rendering (including KaTeX) to complete
+  // Auto-scroll to the element corresponding to the editor cursor line
+  var lineParam = new URLSearchParams(window.location.search).get('line');
+  if (lineParam !== null) {{
+    var targetLine = parseInt(lineParam, 10);
+    if (!isNaN(targetLine)) {{
       requestAnimationFrame(function() {{
         requestAnimationFrame(function() {{
-          var blocks = document.querySelectorAll('[data-source-line]');
-          if (blocks.length === 0) {{
-            // Fallback: proportional scroll
-            var totalSrcLines = originalContent.split('\\n').length;
-            var ratio = totalSrcLines > 0 ? cursorLine / totalSrcLines : 0;
-            var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-            if (maxScroll > 0) window.scrollTo(0, Math.round(maxScroll * ratio));
-            return;
-          }}
-          // Find the element whose source line is closest to (but <=) cursor line
+          var elements = document.querySelectorAll('[data-source-line]');
           var bestEl = null;
           var bestLine = -1;
-          blocks.forEach(function(el) {{
-            var elLine = parseInt(el.getAttribute('data-source-line'), 10);
-            if (elLine <= cursorLine && elLine > bestLine) {{
-              bestLine = elLine;
-              bestEl = el;
+          for (var i = 0; i < elements.length; i++) {{
+            var sl = parseInt(elements[i].getAttribute('data-source-line'), 10);
+            if (!isNaN(sl) && sl <= targetLine && sl > bestLine) {{
+              bestLine = sl;
+              bestEl = elements[i];
             }}
-          }});
+          }}
           if (bestEl) {{
-            var elTop = bestEl.getBoundingClientRect().top + window.pageYOffset;
-            window.scrollTo(0, Math.max(0, elTop - window.innerHeight * 0.1));
+            bestEl.scrollIntoView({{ block: 'start', behavior: 'instant' }});
           }}
         }});
       }});
