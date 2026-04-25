@@ -21,17 +21,14 @@ const EditorManager = (() => {
 
     // ── Selection Mode State ─────────────────────────────────────────
     let selectionMode = false;         // whether selection mode is active
-    let selHandleStart = null;         // start cursor handle DOM element
-    let selHandleEnd = null;           // end cursor handle DOM element
-    let selHandleLineStart = null;     // vertical line for start handle
-    let selHandleLineEnd = null;       // vertical line for end handle
+    let selHandleStart = null;         // start cursor handle DOM element (fixed-positioned)
+    let selHandleEnd = null;           // end cursor handle DOM element (fixed-positioned)
+    let selOverlay = null;             // transparent overlay that captures all touches
     let longPressTimer = null;         // long press detection timer
     let contextMenuEl = null;          // context menu popup element
     let selDragging = null;            // which handle is being dragged: 'start' | 'end' | null
-    let selScrollHandler = null;       // scroll event handler reference
-    let selTouchMoveHandler = null;    // touchmove handler for preventing zoom
-    let selCaptureStart = null;        // capture-phase touchstart handler on wrapper
     let selLastCopiedText = '';        // track last auto-copied text to avoid duplicate toasts
+    let selAutoScrollRAF = null;       // requestAnimationFrame id for auto-scroll
 
     // ── Tab State ─────────────────────────────────────────────────
     let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
@@ -2050,112 +2047,38 @@ const EditorManager = (() => {
         selectionMode = true;
         selLastCopiedText = '';
 
-        // Set editor to readOnly so CodeMirror doesn't try to handle touch events itself
-        editor.setOption('readOnly', true);
-
-        // Add CSS class for selection mode visual styles
-        const wrapper = editor.getWrapperElement();
-        if (wrapper) wrapper.classList.add('sel-mode-active');
-
-        // Disable pinch-to-zoom on the editor
-        const scroller = wrapper.querySelector('.CodeMirror-scroller');
-        if (scroller) {
-            scroller.style.touchAction = 'none';
-        }
-
-        // Disable CodeMirror's hidden textarea to prevent virtual keyboard popup
-        const cmTextarea = editor.getInputField();
-        if (cmTextarea) {
-            cmTextarea.setAttribute('readonly', 'readonly');
-            cmTextarea.style.pointerEvents = 'none';
-        }
-
-        // Prevent default on touchmove to stop browser zoom
-        selTouchMoveHandler = (e) => {
-            if (selectionMode && e.touches.length > 1) {
-                e.preventDefault();
-            }
-        };
-        editor.getWrapperElement().addEventListener('touchmove', selTouchMoveHandler, { passive: false });
-
         // Select the word at the given position
         const wordRange = editor.findWordAt(pos);
         editor.setSelection(wordRange.anchor, wordRange.head);
 
         // Show exit button
         const exitBtn = document.getElementById('editor-exit-selection-btn');
-        if (exitBtn) {
-            exitBtn.style.display = '';
+        if (exitBtn) exitBtn.style.display = '';
+
+        // Add CSS class for enhanced selection visibility
+        const wrapper = editor.getWrapperElement();
+        if (wrapper) wrapper.classList.add('sel-mode-active');
+
+        // ── Create transparent overlay on top of editor ──
+        // This overlay captures ALL touch events, preventing CodeMirror from
+        // handling them. This is more reliable than capture-phase interception.
+        const editorContainer = document.getElementById('editor-container');
+        if (editorContainer) {
+            selOverlay = document.createElement('div');
+            selOverlay.className = 'sel-overlay';
+            selOverlay.style.touchAction = 'none'; // prevent browser zoom
+            editorContainer.appendChild(selOverlay);
         }
 
-        // Create cursor handles
+        // ── Create fixed-position handles ──
         createSelectionHandles();
 
-        // Update handle positions
+        // ── Update handle positions (initial) ──
         updateSelectionHandlePositions();
 
-        // Listen for editor scroll to update handle positions
-        selScrollHandler = () => {
-            requestAnimationFrame(updateSelectionHandlePositions);
-        };
-        editor.on('scroll', selScrollHandler);
-
-        // Also listen for cursorActivity to keep handles in sync
-        editor.on('cursorActivity', selScrollHandler);
-
-        // ── Capture-phase touch handler on the CodeMirror wrapper ──
-        // This intercepts ALL touch events BEFORE CodeMirror can process them.
-        // When the user touches the editor in selection mode, we determine which
-        // handle (start/end) is closest to the touch point and start dragging it.
-        selCaptureStart = (e) => {
-            if (!selectionMode) return;
-            if (e.touches.length !== 1) return;
-
-            const touch = e.touches[0];
-            const touchPos = editor.coordsChar({
-                left: touch.clientX,
-                top: touch.clientY
-            }, 'window');
-
-            if (!touchPos) return;
-
-            // Determine which end of the selection is closer to the touch point
-            const from = editor.getCursor('from');
-            const to = editor.getCursor('to');
-
-            // Calculate distance to start and end of selection
-            const distToFrom = Math.abs(touchPos.line - from.line) * 1000 + Math.abs(touchPos.ch - from.ch);
-            const distToTo = Math.abs(touchPos.line - to.line) * 1000 + Math.abs(touchPos.ch - to.ch);
-
-            // Select the closest handle to drag
-            selDragging = distToFrom <= distToTo ? 'start' : 'end';
-
-            // Immediately move that handle to the touch position
-            if (selDragging === 'start') {
-                if (CodeMirror.cmpPos(touchPos, to) > 0) {
-                    editor.setSelection(to, touchPos);
-                    selDragging = 'end'; // flipped
-                } else {
-                    editor.setSelection(touchPos, to);
-                }
-            } else {
-                if (CodeMirror.cmpPos(touchPos, from) < 0) {
-                    editor.setSelection(touchPos, from);
-                    selDragging = 'start'; // flipped
-                } else {
-                    editor.setSelection(from, touchPos);
-                }
-            }
-
-            updateSelectionHandlePositions();
-
-            // Prevent CodeMirror from handling this touch
-            e.preventDefault();
-            e.stopPropagation();
-        };
-
-        // Register in capture phase so it fires before CodeMirror's handlers
-        editor.getWrapperElement().addEventListener('touchstart', selCaptureStart, { capture: true, passive: false });
+        // ── Listen for editor scroll to update handle positions ──
+        editor.on('scroll', updateSelectionHandlePositions);
+        editor.on('cursorActivity', updateSelectionHandlePositions);
 
         console.log('Selection mode entered');
     }
@@ -2170,36 +2093,20 @@ const EditorManager = (() => {
         selDragging = null;
         selLastCopiedText = '';
 
-        // Restore editor to editable
-        editor.setOption('readOnly', false);
-
         // Remove selection mode CSS class
         const wrapper = editor.getWrapperElement();
         if (wrapper) wrapper.classList.remove('sel-mode-active');
 
-        // Restore CodeMirror's hidden textarea
-        const cmTextarea = editor.getInputField();
-        if (cmTextarea) {
-            cmTextarea.removeAttribute('readonly');
-            cmTextarea.style.pointerEvents = '';
+        // Remove overlay
+        if (selOverlay) {
+            selOverlay.remove();
+            selOverlay = null;
         }
 
-        // Re-enable zoom
-        const scroller = editor.getWrapperElement().querySelector('.CodeMirror-scroller');
-        if (scroller) {
-            scroller.style.touchAction = '';
-        }
-
-        // Remove touchmove handler
-        if (selTouchMoveHandler) {
-            editor.getWrapperElement().removeEventListener('touchmove', selTouchMoveHandler);
-            selTouchMoveHandler = null;
-        }
-
-        // Remove capture-phase touchstart handler
-        if (selCaptureStart) {
-            editor.getWrapperElement().removeEventListener('touchstart', selCaptureStart, { capture: true });
-            selCaptureStart = null;
+        // Cancel auto-scroll
+        if (selAutoScrollRAF) {
+            cancelAnimationFrame(selAutoScrollRAF);
+            selAutoScrollRAF = null;
         }
 
         // Clear selection
@@ -2209,18 +2116,15 @@ const EditorManager = (() => {
 
         // Hide exit button
         const exitBtn = document.getElementById('editor-exit-selection-btn');
-        if (exitBtn) {
-            exitBtn.style.display = 'none';
-        }
+        if (exitBtn) exitBtn.style.display = 'none';
 
         // Remove cursor handles
         removeSelectionHandles();
 
-        // Remove scroll listener
-        if (selScrollHandler && editor) {
-            editor.off('scroll', selScrollHandler);
-            editor.off('cursorActivity', selScrollHandler);
-            selScrollHandler = null;
+        // Remove scroll/cursorActivity listeners
+        if (editor) {
+            editor.off('scroll', updateSelectionHandlePositions);
+            editor.off('cursorActivity', updateSelectionHandlePositions);
         }
 
         // Remove context menu if visible
@@ -2230,64 +2134,85 @@ const EditorManager = (() => {
     }
 
     /**
-     * Create the start and end cursor handle DOM elements
+     * Create the start and end cursor handle DOM elements (fixed-positioned)
+     * Handles are appended to document.body with position:fixed so they are
+     * always visible regardless of CodeMirror's internal DOM structure.
      */
     function createSelectionHandles() {
         removeSelectionHandles();
 
-        const container = editor.getWrapperElement().querySelector('.CodeMirror-code');
-        if (!container) return;
-
-        // Start handle (left-pointing triangle)
+        // Start handle: blue circle above + vertical line below
         selHandleStart = document.createElement('div');
         selHandleStart.className = 'sel-handle sel-handle-start';
-        selHandleStart.setAttribute('data-handle', 'start');
+        const startDot = document.createElement('div');
+        startDot.className = 'sel-handle-dot';
+        selHandleStart.appendChild(startDot);
+        const startLine = document.createElement('div');
+        startLine.className = 'sel-handle-stem';
+        selHandleStart.appendChild(startLine);
 
-        // Start handle vertical line
-        selHandleLineStart = document.createElement('div');
-        selHandleLineStart.className = 'sel-handle-line';
-        selHandleStart.appendChild(selHandleLineStart);
-
-        // End handle (right-pointing triangle)
+        // End handle: blue circle above + vertical line below
         selHandleEnd = document.createElement('div');
         selHandleEnd.className = 'sel-handle sel-handle-end';
-        selHandleEnd.setAttribute('data-handle', 'end');
+        const endDot = document.createElement('div');
+        endDot.className = 'sel-handle-dot';
+        selHandleEnd.appendChild(endDot);
+        const endLine = document.createElement('div');
+        endLine.className = 'sel-handle-stem';
+        selHandleEnd.appendChild(endLine);
 
-        // End handle vertical line
-        selHandleLineEnd = document.createElement('div');
-        selHandleLineEnd.className = 'sel-handle-line';
-        selHandleEnd.appendChild(selHandleLineEnd);
+        // Append to body (fixed-positioned)
+        document.body.appendChild(selHandleStart);
+        document.body.appendChild(selHandleEnd);
 
-        // Add handles to the CodeMirror wrapper (positioned absolutely)
-        const wrapper = editor.getWrapperElement();
-        wrapper.style.position = 'relative';
-        wrapper.appendChild(selHandleStart);
-        wrapper.appendChild(selHandleEnd);
+        // ── Overlay touch handlers ──
+        // The overlay captures ALL touch events in the editor area
+        if (selOverlay) {
+            selOverlay.addEventListener('touchstart', onSelTouchStart, { passive: false });
+            selOverlay.addEventListener('touchmove', onSelTouchMove, { passive: false });
+            selOverlay.addEventListener('touchend', onSelTouchEnd, { passive: false });
+            selOverlay.addEventListener('touchcancel', onSelTouchEnd, { passive: false });
+        }
 
-        // Set up touch drag for handles
-        setupHandleDrag(selHandleStart, 'start');
-        setupHandleDrag(selHandleEnd, 'end');
+        // Also handle direct touches on the handles themselves
+        selHandleStart.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selDragging = 'start';
+        }, { passive: false });
+        selHandleEnd.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selDragging = 'end';
+        }, { passive: false });
+
+        // Handle touchmove/touchend on document for handle drags
+        // (finger may move off the handle while dragging)
+        document.addEventListener('touchmove', onSelHandleTouchMove, { passive: false });
+        document.addEventListener('touchend', onSelHandleTouchEnd, { passive: false });
     }
 
     /**
-     * Remove cursor handle DOM elements
+     * Remove cursor handle DOM elements and touch listeners
      */
     function removeSelectionHandles() {
+        // Remove document-level touch handlers for handles
+        document.removeEventListener('touchmove', onSelHandleTouchMove, { passive: false });
+        document.removeEventListener('touchend', onSelHandleTouchEnd, { passive: false });
+
         if (selHandleStart) { selHandleStart.remove(); selHandleStart = null; }
         if (selHandleEnd) { selHandleEnd.remove(); selHandleEnd = null; }
-        selHandleLineStart = null;
-        selHandleLineEnd = null;
     }
 
     /**
-     * Update positions of cursor handles based on current selection
+     * Update positions of cursor handles based on current selection.
+     * Handles use position:fixed with window coordinates from charCoords.
      */
     function updateSelectionHandlePositions() {
         if (!editor || !selectionMode || !selHandleStart || !selHandleEnd) return;
 
         const sel = editor.getSelection();
         if (!sel) {
-            // No selection, hide handles
             selHandleStart.style.display = 'none';
             selHandleEnd.style.display = 'none';
             return;
@@ -2300,109 +2225,86 @@ const EditorManager = (() => {
         const from = editor.getCursor('from');
         const to = editor.getCursor('to');
 
-        // Get coordinates for start and end of selection
-        const startCoords = editor.charCoords(from, 'local');
-        const endCoords = editor.charCoords(to, 'local');
+        // Use 'window' coordinates directly — no scroll offset math needed!
+        const startCoords = editor.charCoords(from, 'window');
+        const endCoords = editor.charCoords(to, 'window');
 
-        // Get scroll info to adjust positions
-        const scrollInfo = editor.getScrollInfo();
-        const wrapperRect = editor.getWrapperElement().getBoundingClientRect();
-        const scrollerRect = editor.getWrapperElement().querySelector('.CodeMirror-scroller').getBoundingClientRect();
+        // The handle dot is centered horizontally over the char, above the text line.
+        // The stem extends downward from the dot to the text baseline.
+        const dotSize = 12;    // diameter of the blue dot
+        const stemAbove = 10;  // how far above the text line the dot center sits
 
-        // Offset from wrapper to scroller
-        const offsetX = scrollerRect.left - wrapperRect.left;
-        const offsetY = scrollerRect.top - wrapperRect.top;
+        // Start handle
+        const sx = startCoords.left - dotSize / 2;
+        const sy = startCoords.top - stemAbove - dotSize / 2;
+        selHandleStart.style.left = sx + 'px';
+        selHandleStart.style.top = sy + 'px';
 
-        // Handle size (44x44) — center the visual triangle over the char position
-        const handleW = 44;
-        const handleH = 44;
-        const triOffsetTop = 6;  // padding-top in CSS
-
-        // Position start handle — triangle centered at the start char
-        const startY = startCoords.top - scrollInfo.top + offsetY;
-        const startX = startCoords.left - scrollInfo.left + offsetX;
-        selHandleStart.style.top = (startY - triOffsetTop - 4) + 'px'; // Place triangle tip near the char top
-        selHandleStart.style.left = (startX - handleW / 2) + 'px';
-
-        // Start handle line extends downward from bottom of triangle area
-        if (selHandleLineStart) {
+        // Set stem height: from dot center down to text bottom
+        const startStem = selHandleStart.querySelector('.sel-handle-stem');
+        if (startStem) {
             const lineHeight = startCoords.bottom - startCoords.top;
-            selHandleLineStart.style.height = (lineHeight + triOffsetTop + 4) + 'px';
-            selHandleLineStart.style.top = (triOffsetTop + 4) + 'px';
-            selHandleLineStart.style.left = (handleW / 2) + 'px';
+            startStem.style.height = (lineHeight + stemAbove) + 'px';
         }
 
-        // Position end handle — triangle centered at the end char
-        const endY = endCoords.top - scrollInfo.top + offsetY;
-        const endX = endCoords.left - scrollInfo.left + offsetX;
-        selHandleEnd.style.top = (endY - triOffsetTop - 4) + 'px';
-        selHandleEnd.style.left = (endX - handleW / 2) + 'px';
+        // End handle — positioned at end char
+        // For the end position, charCoords gives the LEFT edge of the char.
+        // If selection spans multiple lines, the end position is at the end of the last line.
+        const ex = endCoords.left - dotSize / 2;
+        const ey = endCoords.top - stemAbove - dotSize / 2;
+        selHandleEnd.style.left = ex + 'px';
+        selHandleEnd.style.top = ey + 'px';
 
-        // End handle line extends downward
-        if (selHandleLineEnd) {
+        const endStem = selHandleEnd.querySelector('.sel-handle-stem');
+        if (endStem) {
             const lineHeight = endCoords.bottom - endCoords.top;
-            selHandleLineEnd.style.height = (lineHeight + triOffsetTop + 4) + 'px';
-            selHandleLineEnd.style.top = (triOffsetTop + 4) + 'px';
-            selHandleLineEnd.style.left = (handleW / 2) + 'px';
+            endStem.style.height = (lineHeight + stemAbove) + 'px';
         }
     }
 
-    /**
-     * Set up touch drag events for a cursor handle
-     * NOTE: The main drag logic is handled by the capture-phase touchstart on
-     * the CodeMirror wrapper (in enterSelectionMode) + global touchmove/touchend.
-     * This function is kept for backward compat but handles are no longer the
-     * primary touch targets — the whole editor area is.
-     * @param {HTMLElement} handleEl - the handle DOM element
-     * @param {string} which - 'start' or 'end'
-     */
-    function setupHandleDrag(handleEl, which) {
-        // Handles are visual-only now; dragging is initiated by touching anywhere
-        // in the editor. The capture-phase handler in enterSelectionMode decides
-        // which handle to drag based on proximity.
-        // We still add a basic touchstart on handles for direct handle interaction.
-        handleEl.addEventListener('touchstart', (e) => {
-            if (!selectionMode) return;
-            e.preventDefault();
-            e.stopPropagation();
-            // Override: even if capture-phase already ran, explicitly set this handle
-            selDragging = which;
-
-            // Immediately update selection to handle position
-            const touch = e.touches[0];
-            if (touch) {
-                const pos = editor.coordsChar({
-                    left: touch.clientX,
-                    top: touch.clientY
-                }, 'window');
-                if (pos) {
-                    const from = editor.getCursor('from');
-                    const to = editor.getCursor('to');
-                    if (which === 'start') {
-                        editor.setSelection(pos, to);
-                    } else {
-                        editor.setSelection(from, pos);
-                    }
-                    updateSelectionHandlePositions();
-                }
-            }
-        }, { passive: false });
-    }
+    // ── Overlay touch event handlers ──────────────────────────────
 
     /**
-     * Global touch move handler for selection handle dragging
+     * Overlay touchstart: determine which handle to drag and start dragging
      */
-    function handleSelectionTouchMove(e) {
-        if (!selDragging || !selectionMode || !editor) return;
-
-        // Prevent CodeMirror scrolling and browser zoom during drag
-        e.preventDefault();
-        e.stopPropagation();
+    function onSelTouchStart(e) {
+        if (!selectionMode || !editor) return;
+        e.preventDefault(); // prevent CodeMirror from getting the event
 
         const touch = e.touches[0];
         if (!touch) return;
 
-        // Convert touch coordinates to editor position
+        // Convert touch to editor position
+        const touchPos = editor.coordsChar({
+            left: touch.clientX,
+            top: touch.clientY
+        }, 'window');
+
+        if (!touchPos) return;
+
+        // Determine which end of the selection is closer to the touch point
+        const from = editor.getCursor('from');
+        const to = editor.getCursor('to');
+
+        const distToFrom = Math.abs(touchPos.line - from.line) * 1000 + Math.abs(touchPos.ch - from.ch);
+        const distToTo = Math.abs(touchPos.line - to.line) * 1000 + Math.abs(touchPos.ch - to.ch);
+
+        selDragging = distToFrom <= distToTo ? 'start' : 'end';
+
+        // Move that handle to the touch position immediately
+        applyDragPosition(touchPos);
+    }
+
+    /**
+     * Overlay touchmove: update selection as finger moves
+     */
+    function onSelTouchMove(e) {
+        if (!selDragging || !selectionMode || !editor) return;
+        e.preventDefault();
+
+        const touch = e.touches[0];
+        if (!touch) return;
+
         const pos = editor.coordsChar({
             left: touch.clientX,
             top: touch.clientY
@@ -2410,22 +2312,72 @@ const EditorManager = (() => {
 
         if (!pos) return;
 
+        applyDragPosition(pos);
+
+        // Auto-scroll when finger is near the edge
+        startAutoScroll(touch.clientY);
+    }
+
+    /**
+     * Overlay touchend: stop dragging and auto-copy
+     */
+    function onSelTouchEnd(e) {
+        e.preventDefault();
+        finishDrag();
+    }
+
+    /**
+     * Document-level touchmove for when user drags directly on a handle
+     * (finger may move off the handle while dragging)
+     */
+    function onSelHandleTouchMove(e) {
+        if (!selDragging || !selectionMode || !editor) return;
+        e.preventDefault();
+
+        const touch = e.touches[0];
+        if (!touch) return;
+
+        const pos = editor.coordsChar({
+            left: touch.clientX,
+            top: touch.clientY
+        }, 'window');
+
+        if (!pos) return;
+
+        applyDragPosition(pos);
+        startAutoScroll(touch.clientY);
+    }
+
+    /**
+     * Document-level touchend for handle drags
+     */
+    function onSelHandleTouchEnd(e) {
+        if (!selDragging || !selectionMode) return;
+        e.preventDefault();
+        finishDrag();
+    }
+
+    /**
+     * Apply the drag position to the selection
+     * @param {Object} pos - CodeMirror {line, ch} position
+     */
+    function applyDragPosition(pos) {
+        if (!selDragging || !editor) return;
+
         const from = editor.getCursor('from');
         const to = editor.getCursor('to');
 
         if (selDragging === 'start') {
-            // Dragging the start handle - update the anchor
             if (CodeMirror.cmpPos(pos, to) > 0) {
-                // Flipped: start went past end — swap dragging to 'end'
+                // Flipped: start went past end
                 editor.setSelection(to, pos);
                 selDragging = 'end';
             } else {
                 editor.setSelection(pos, to);
             }
-        } else if (selDragging === 'end') {
-            // Dragging the end handle - update the head
+        } else {
             if (CodeMirror.cmpPos(pos, from) < 0) {
-                // Flipped: end went before start — swap dragging to 'start'
+                // Flipped: end went before start
                 editor.setSelection(pos, from);
                 selDragging = 'start';
             } else {
@@ -2434,27 +2386,17 @@ const EditorManager = (() => {
         }
 
         updateSelectionHandlePositions();
-
-        // Auto-scroll if touch is near the edge of the editor viewport
-        const wrapperRect = editor.getWrapperElement().getBoundingClientRect();
-        const edgeMargin = 40;
-        const scrollInfo = editor.getScrollInfo();
-        const scrollStep = editor.defaultTextHeight();
-
-        if (touch.clientY < wrapperRect.top + edgeMargin) {
-            // Scroll up
-            editor.scrollTo(null, scrollInfo.top - scrollStep);
-        } else if (touch.clientY > wrapperRect.bottom - edgeMargin) {
-            // Scroll down
-            editor.scrollTo(null, scrollInfo.top + scrollStep);
-        }
     }
 
     /**
-     * Global touch end handler for selection handle dragging
+     * Finish a drag: stop dragging and auto-copy
      */
-    function handleSelectionTouchEnd(e) {
-        if (!selDragging || !selectionMode) return;
+    function finishDrag() {
+        // Stop auto-scroll
+        if (selAutoScrollRAF) {
+            cancelAnimationFrame(selAutoScrollRAF);
+            selAutoScrollRAF = null;
+        }
 
         selDragging = null;
 
@@ -2466,6 +2408,36 @@ const EditorManager = (() => {
                 copyToClipboard(text);
                 showEditorToast('已复制到剪贴板');
             }
+        }
+    }
+
+    /**
+     * Start auto-scrolling when the touch is near the edge of the editor
+     * @param {number} clientY - the Y coordinate of the touch
+     */
+    function startAutoScroll(clientY) {
+        if (selAutoScrollRAF) {
+            cancelAnimationFrame(selAutoScrollRAF);
+            selAutoScrollRAF = null;
+        }
+
+        if (!editor || !selDragging) return;
+
+        const wrapperRect = editor.getWrapperElement().getBoundingClientRect();
+        const edgeMargin = 50;
+
+        if (clientY < wrapperRect.top + edgeMargin || clientY > wrapperRect.bottom - edgeMargin) {
+            const scrollInfo = editor.getScrollInfo();
+            const step = editor.defaultTextHeight();
+            const direction = clientY < wrapperRect.top + edgeMargin ? -step : step;
+
+            const doScroll = () => {
+                if (!selDragging || !selectionMode) return;
+                editor.scrollTo(null, editor.getScrollInfo().top + direction);
+                updateSelectionHandlePositions();
+                selAutoScrollRAF = requestAnimationFrame(doScroll);
+            };
+            selAutoScrollRAF = requestAnimationFrame(doScroll);
         }
     }
 
@@ -2523,10 +2495,8 @@ const EditorManager = (() => {
         }, 1500);
     }
 
-    // ── Selection Mode: Global drag listeners (set up once) ─────────
-    // Use capture phase to intercept events before CodeMirror can process them
-    document.addEventListener('touchmove', handleSelectionTouchMove, { capture: true, passive: false });
-    document.addEventListener('touchend', handleSelectionTouchEnd, { capture: true, passive: true });
+    // ── Selection Mode: No global listeners needed ──────────────
+    // All touch handling is done via the overlay and handle elements.
 
     // ── Auto-init when DOM is ready ────────────────────────────────
 

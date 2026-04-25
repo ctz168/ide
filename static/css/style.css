@@ -3201,52 +3201,52 @@ button, .file-item, .search-result-item, .git-change-item {
 
 /* ==================== Selection Mode ==================== */
 
-/* Selection cursor handles */
-.sel-handle {
+/* Transparent overlay that covers the editor during selection mode */
+.sel-overlay {
     position: absolute;
-    width: 44px;
-    height: 44px;
-    z-index: 100;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
     touch-action: none;
     cursor: pointer;
-    /* Transparent background for larger touch area */
+    /* Fully transparent — just catches touch events */
     background: transparent;
-    /* Use flexbox to center the visual indicator */
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
 }
-.sel-handle-start {
-    /* Left-pointing blue triangle — positioned at top-center of the 44x44 touch area */
-    align-items: flex-start;
-    padding-top: 6px;
+
+/* Selection cursor handles — fixed-positioned on the page */
+.sel-handle {
+    position: fixed;
+    z-index: 200;
+    touch-action: none;
+    cursor: pointer;
+    /* Make the handle container 44x44 for easy touch targeting */
+    width: 44px;
+    height: 44px;
+    /* Offset so the dot is visually centered over the char */
+    margin-left: -22px;
+    margin-top: -30px;
+    pointer-events: auto;
 }
-.sel-handle-start::after {
-    content: '';
-    display: block;
-    width: 14px;
-    height: 10px;
+/* The blue dot (circle) at the top of the handle */
+.sel-handle-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
     background: #4a9eff;
-    clip-path: polygon(0 0, 100% 50%, 0 100%);
+    margin: 0 auto;
+    position: relative;
+    top: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
-.sel-handle-end {
-    /* Right-pointing blue triangle */
-    align-items: flex-start;
-    padding-top: 6px;
-}
-.sel-handle-end::after {
-    content: '';
-    display: block;
-    width: 14px;
-    height: 10px;
-    background: #4a9eff;
-    clip-path: polygon(0 50%, 100% 0, 100% 100%);
-}
-.sel-handle-line {
-    /* Vertical line below the handle */
-    position: absolute;
+/* The vertical stem (line) below the dot */
+.sel-handle-stem {
     width: 2px;
     background: #4a9eff;
+    margin: 0 auto;
+    position: relative;
+    top: 16px;
     pointer-events: none;
 }
 
@@ -3314,10 +3314,4 @@ button, .file-item, .search-result-item, .git-change-item {
 }
 .CodeMirror.sel-mode-active .CodeMirror-cursor {
     display: none !important;
-}
-/* In selection mode, disable CodeMirror's own textarea to prevent IME popup */
-.CodeMirror.sel-mode-active .CodeMirror-code {
-    touch-action: none;
-    -webkit-user-select: none;
-    user-select: none;
 }
