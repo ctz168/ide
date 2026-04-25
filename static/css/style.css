@@ -3204,19 +3204,41 @@ button, .file-item, .search-result-item, .git-change-item {
 /* Selection cursor handles */
 .sel-handle {
     position: absolute;
-    width: 12px;
-    height: 12px;
+    width: 44px;
+    height: 44px;
     z-index: 100;
     touch-action: none;
     cursor: pointer;
+    /* Transparent background for larger touch area */
+    background: transparent;
+    /* Use flexbox to center the visual indicator */
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
 }
 .sel-handle-start {
-    /* Left-pointing blue triangle at top of start cursor */
+    /* Left-pointing blue triangle — positioned at top-center of the 44x44 touch area */
+    align-items: flex-start;
+    padding-top: 6px;
+}
+.sel-handle-start::after {
+    content: '';
+    display: block;
+    width: 14px;
+    height: 10px;
     background: #4a9eff;
     clip-path: polygon(0 0, 100% 50%, 0 100%);
 }
 .sel-handle-end {
-    /* Right-pointing blue triangle at top of end cursor */
+    /* Right-pointing blue triangle */
+    align-items: flex-start;
+    padding-top: 6px;
+}
+.sel-handle-end::after {
+    content: '';
+    display: block;
+    width: 14px;
+    height: 10px;
     background: #4a9eff;
     clip-path: polygon(0 50%, 100% 0, 100% 100%);
 }
@@ -3284,4 +3306,18 @@ button, .file-item, .search-result-item, .git-change-item {
     color: var(--red) !important;
     font-weight: bold;
     margin-left: auto;
+}
+
+/* Selection mode active state — enhance selection visibility & hide cursor */
+.CodeMirror.sel-mode-active .CodeMirror-selected {
+    background: rgba(74, 158, 255, 0.35) !important;
+}
+.CodeMirror.sel-mode-active .CodeMirror-cursor {
+    display: none !important;
+}
+/* In selection mode, disable CodeMirror's own textarea to prevent IME popup */
+.CodeMirror.sel-mode-active .CodeMirror-code {
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
 }

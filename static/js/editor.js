@@ -30,6 +30,8 @@ const EditorManager = (() => {
     let selDragging = null;            // which handle is being dragged: 'start' | 'end' | null
     let selScrollHandler = null;       // scroll event handler reference
     let selTouchMoveHandler = null;    // touchmove handler for preventing zoom
+    let selCaptureStart = null;        // capture-phase touchstart handler on wrapper
+    let selLastCopiedText = '';        // track last auto-copied text to avoid duplicate toasts
 
     // ── Tab State ─────────────────────────────────────────────────
     let tabs = {};                   // path -> { name, content, mode, cursor, scroll, history }
@@ -2046,11 +2048,26 @@ const EditorManager = (() => {
         if (!editor || selectionMode) return;
 
         selectionMode = true;
+        selLastCopiedText = '';
+
+        // Set editor to readOnly so CodeMirror doesn't try to handle touch events itself
+        editor.setOption('readOnly', true);
+
+        // Add CSS class for selection mode visual styles
+        const wrapper = editor.getWrapperElement();
+        if (wrapper) wrapper.classList.add('sel-mode-active');
 
         // Disable pinch-to-zoom on the editor
-        const scroller = editor.getWrapperElement().querySelector('.CodeMirror-scroller');
+        const scroller = wrapper.querySelector('.CodeMirror-scroller');
         if (scroller) {
             scroller.style.touchAction = 'none';
+        }
+
+        // Disable CodeMirror's hidden textarea to prevent virtual keyboard popup
+        const cmTextarea = editor.getInputField();
+        if (cmTextarea) {
+            cmTextarea.setAttribute('readonly', 'readonly');
+            cmTextarea.style.pointerEvents = 'none';
         }
 
         // Prevent default on touchmove to stop browser zoom
@@ -2086,6 +2103,60 @@ const EditorManager = (() => {
         // Also listen for cursorActivity to keep handles in sync
         editor.on('cursorActivity', selScrollHandler);
 
+        // ── Capture-phase touch handler on the CodeMirror wrapper ──
+        // This intercepts ALL touch events BEFORE CodeMirror can process them.
+        // When the user touches the editor in selection mode, we determine which
+        // handle (start/end) is closest to the touch point and start dragging it.
+        selCaptureStart = (e) => {
+            if (!selectionMode) return;
+            if (e.touches.length !== 1) return;
+
+            const touch = e.touches[0];
+            const touchPos = editor.coordsChar({
+                left: touch.clientX,
+                top: touch.clientY
+            }, 'window');
+
+            if (!touchPos) return;
+
+            // Determine which end of the selection is closer to the touch point
+            const from = editor.getCursor('from');
+            const to = editor.getCursor('to');
+
+            // Calculate distance to start and end of selection
+            const distToFrom = Math.abs(touchPos.line - from.line) * 1000 + Math.abs(touchPos.ch - from.ch);
+            const distToTo = Math.abs(touchPos.line - to.line) * 1000 + Math.abs(touchPos.ch - to.ch);
+
+            // Select the closest handle to drag
+            selDragging = distToFrom <= distToTo ? 'start' : 'end';
+
+            // Immediately move that handle to the touch position
+            if (selDragging === 'start') {
+                if (CodeMirror.cmpPos(touchPos, to) > 0) {
+                    editor.setSelection(to, touchPos);
+                    selDragging = 'end'; // flipped
+                } else {
+                    editor.setSelection(touchPos, to);
+                }
+            } else {
+                if (CodeMirror.cmpPos(touchPos, from) < 0) {
+                    editor.setSelection(touchPos, from);
+                    selDragging = 'start'; // flipped
+                } else {
+                    editor.setSelection(from, touchPos);
+                }
+            }
+
+            updateSelectionHandlePositions();
+
+            // Prevent CodeMirror from handling this touch
+            e.preventDefault();
+            e.stopPropagation();
+        };
+
+        // Register in capture phase so it fires before CodeMirror's handlers
+        editor.getWrapperElement().addEventListener('touchstart', selCaptureStart, { capture: true, passive: false });
+
         console.log('Selection mode entered');
     }
 
@@ -2096,6 +2167,22 @@ const EditorManager = (() => {
         if (!selectionMode) return;
 
         selectionMode = false;
+        selDragging = null;
+        selLastCopiedText = '';
+
+        // Restore editor to editable
+        editor.setOption('readOnly', false);
+
+        // Remove selection mode CSS class
+        const wrapper = editor.getWrapperElement();
+        if (wrapper) wrapper.classList.remove('sel-mode-active');
+
+        // Restore CodeMirror's hidden textarea
+        const cmTextarea = editor.getInputField();
+        if (cmTextarea) {
+            cmTextarea.removeAttribute('readonly');
+            cmTextarea.style.pointerEvents = '';
+        }
 
         // Re-enable zoom
         const scroller = editor.getWrapperElement().querySelector('.CodeMirror-scroller');
@@ -2107,6 +2194,12 @@ const EditorManager = (() => {
         if (selTouchMoveHandler) {
             editor.getWrapperElement().removeEventListener('touchmove', selTouchMoveHandler);
             selTouchMoveHandler = null;
+        }
+
+        // Remove capture-phase touchstart handler
+        if (selCaptureStart) {
+            editor.getWrapperElement().removeEventListener('touchstart', selCaptureStart, { capture: true });
+            selCaptureStart = null;
         }
 
         // Clear selection
@@ -2220,50 +2313,80 @@ const EditorManager = (() => {
         const offsetX = scrollerRect.left - wrapperRect.left;
         const offsetY = scrollerRect.top - wrapperRect.top;
 
-        // Position start handle
+        // Handle size (44x44) — center the visual triangle over the char position
+        const handleW = 44;
+        const handleH = 44;
+        const triOffsetTop = 6;  // padding-top in CSS
+
+        // Position start handle — triangle centered at the start char
         const startY = startCoords.top - scrollInfo.top + offsetY;
         const startX = startCoords.left - scrollInfo.left + offsetX;
-        selHandleStart.style.top = (startY - 14) + 'px'; // Above the text
-        selHandleStart.style.left = (startX - 2) + 'px';
+        selHandleStart.style.top = (startY - triOffsetTop - 4) + 'px'; // Place triangle tip near the char top
+        selHandleStart.style.left = (startX - handleW / 2) + 'px';
 
-        // Start handle line extends downward
+        // Start handle line extends downward from bottom of triangle area
         if (selHandleLineStart) {
             const lineHeight = startCoords.bottom - startCoords.top;
-            selHandleLineStart.style.height = (lineHeight + 14) + 'px';
-            selHandleLineStart.style.top = '0px';
-            selHandleLineStart.style.left = '5px';
+            selHandleLineStart.style.height = (lineHeight + triOffsetTop + 4) + 'px';
+            selHandleLineStart.style.top = (triOffsetTop + 4) + 'px';
+            selHandleLineStart.style.left = (handleW / 2) + 'px';
         }
 
-        // Position end handle
+        // Position end handle — triangle centered at the end char
         const endY = endCoords.top - scrollInfo.top + offsetY;
         const endX = endCoords.left - scrollInfo.left + offsetX;
-        selHandleEnd.style.top = (endY - 14) + 'px'; // Above the text
-        selHandleEnd.style.left = (endX - 10) + 'px';
+        selHandleEnd.style.top = (endY - triOffsetTop - 4) + 'px';
+        selHandleEnd.style.left = (endX - handleW / 2) + 'px';
 
         // End handle line extends downward
         if (selHandleLineEnd) {
             const lineHeight = endCoords.bottom - endCoords.top;
-            selHandleLineEnd.style.height = (lineHeight + 14) + 'px';
-            selHandleLineEnd.style.top = '0px';
-            selHandleLineEnd.style.left = '5px';
+            selHandleLineEnd.style.height = (lineHeight + triOffsetTop + 4) + 'px';
+            selHandleLineEnd.style.top = (triOffsetTop + 4) + 'px';
+            selHandleLineEnd.style.left = (handleW / 2) + 'px';
         }
     }
 
     /**
      * Set up touch drag events for a cursor handle
+     * NOTE: The main drag logic is handled by the capture-phase touchstart on
+     * the CodeMirror wrapper (in enterSelectionMode) + global touchmove/touchend.
+     * This function is kept for backward compat but handles are no longer the
+     * primary touch targets — the whole editor area is.
      * @param {HTMLElement} handleEl - the handle DOM element
      * @param {string} which - 'start' or 'end'
      */
     function setupHandleDrag(handleEl, which) {
+        // Handles are visual-only now; dragging is initiated by touching anywhere
+        // in the editor. The capture-phase handler in enterSelectionMode decides
+        // which handle to drag based on proximity.
+        // We still add a basic touchstart on handles for direct handle interaction.
         handleEl.addEventListener('touchstart', (e) => {
             if (!selectionMode) return;
             e.preventDefault();
             e.stopPropagation();
+            // Override: even if capture-phase already ran, explicitly set this handle
             selDragging = which;
-        }, { passive: false });
 
-        // We need to listen on the document for touchmove/touchend
-        // because the finger might move off the handle element
+            // Immediately update selection to handle position
+            const touch = e.touches[0];
+            if (touch) {
+                const pos = editor.coordsChar({
+                    left: touch.clientX,
+                    top: touch.clientY
+                }, 'window');
+                if (pos) {
+                    const from = editor.getCursor('from');
+                    const to = editor.getCursor('to');
+                    if (which === 'start') {
+                        editor.setSelection(pos, to);
+                    } else {
+                        editor.setSelection(from, pos);
+                    }
+                    updateSelectionHandlePositions();
+                }
+            }
+        }, { passive: false });
     }
 
     /**
@@ -2272,6 +2395,7 @@ const EditorManager = (() => {
     function handleSelectionTouchMove(e) {
         if (!selDragging || !selectionMode || !editor) return;
 
+        // Prevent CodeMirror scrolling and browser zoom during drag
         e.preventDefault();
         e.stopPropagation();
 
@@ -2291,24 +2415,39 @@ const EditorManager = (() => {
 
         if (selDragging === 'start') {
             // Dragging the start handle - update the anchor
-            // Make sure we don't cross the end
             if (CodeMirror.cmpPos(pos, to) > 0) {
-                // Flipped: start went past end
+                // Flipped: start went past end — swap dragging to 'end'
                 editor.setSelection(to, pos);
+                selDragging = 'end';
             } else {
                 editor.setSelection(pos, to);
             }
         } else if (selDragging === 'end') {
             // Dragging the end handle - update the head
             if (CodeMirror.cmpPos(pos, from) < 0) {
-                // Flipped: end went before start
+                // Flipped: end went before start — swap dragging to 'start'
                 editor.setSelection(pos, from);
+                selDragging = 'start';
             } else {
                 editor.setSelection(from, pos);
             }
         }
 
         updateSelectionHandlePositions();
+
+        // Auto-scroll if touch is near the edge of the editor viewport
+        const wrapperRect = editor.getWrapperElement().getBoundingClientRect();
+        const edgeMargin = 40;
+        const scrollInfo = editor.getScrollInfo();
+        const scrollStep = editor.defaultTextHeight();
+
+        if (touch.clientY < wrapperRect.top + edgeMargin) {
+            // Scroll up
+            editor.scrollTo(null, scrollInfo.top - scrollStep);
+        } else if (touch.clientY > wrapperRect.bottom - edgeMargin) {
+            // Scroll down
+            editor.scrollTo(null, scrollInfo.top + scrollStep);
+        }
     }
 
     /**
@@ -2322,8 +2461,11 @@ const EditorManager = (() => {
         // Auto-copy selected text to clipboard
         if (editor && editor.somethingSelected()) {
             const text = editor.getSelection();
-            copyToClipboard(text);
-            showEditorToast('已复制到剪贴板');
+            if (text && text !== selLastCopiedText) {
+                selLastCopiedText = text;
+                copyToClipboard(text);
+                showEditorToast('已复制到剪贴板');
+            }
         }
     }
 
@@ -2382,8 +2524,9 @@ const EditorManager = (() => {
     }
 
     // ── Selection Mode: Global drag listeners (set up once) ─────────
-    document.addEventListener('touchmove', handleSelectionTouchMove, { passive: false });
-    document.addEventListener('touchend', handleSelectionTouchEnd, { passive: true });
+    // Use capture phase to intercept events before CodeMirror can process them
+    document.addEventListener('touchmove', handleSelectionTouchMove, { capture: true, passive: false });
+    document.addEventListener('touchend', handleSelectionTouchEnd, { capture: true, passive: true });
 
     // ── Auto-init when DOM is ready ────────────────────────────────
 
