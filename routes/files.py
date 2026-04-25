@@ -325,6 +325,23 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     ],
     throwOnError: false
   }});
+
+  // Auto-scroll to the position corresponding to the editor cursor
+  var scrollParam = new URLSearchParams(window.location.search).get('scroll');
+  if (scrollParam !== null) {{
+    var ratio = parseFloat(scrollParam);
+    if (!isNaN(ratio) && ratio > 0) {{
+      // Wait for rendering to complete, then scroll proportionally
+      requestAnimationFrame(function() {{
+        requestAnimationFrame(function() {{
+          var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+          if (maxScroll > 0) {{
+            window.scrollTo(0, Math.round(maxScroll * ratio));
+          }}
+        }});
+      }});
+    }}
+  }}
 }})();
 </script>
 </body></html>'''
@@ -519,6 +536,23 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     ],
     throwOnError: false
   }});
+
+  // Auto-scroll to the position corresponding to the editor cursor
+  var scrollParam = new URLSearchParams(window.location.search).get('scroll');
+  if (scrollParam !== null) {{
+    var ratio = parseFloat(scrollParam);
+    if (!isNaN(ratio) && ratio > 0) {{
+      // Wait for rendering to complete, then scroll proportionally
+      requestAnimationFrame(function() {{
+        requestAnimationFrame(function() {{
+          var maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+          if (maxScroll > 0) {{
+            window.scrollTo(0, Math.round(maxScroll * ratio));
+          }}
+        }});
+      }});
+    }}
+  }}
 }})();
 </script>
 </body></html>'''

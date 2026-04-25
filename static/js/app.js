@@ -631,6 +631,13 @@ const AppManager = (() => {
         const compiler = document.getElementById('compiler-select');
         const compilerVal = compiler ? compiler.value : detect.compiler || 'python3';
 
+        // Update the run button title to show the detected project type
+        const runBtn = document.getElementById('btn-run');
+        if (runBtn) {
+            const typeLabel = detect.label || detect.type || '';
+            runBtn.title = typeLabel ? `运行 (${typeLabel})` : '运行';
+        }
+
         // ── Node.js Project ──
         if (detect.type === 'node' && detect.scripts && Object.keys(detect.scripts).length > 0) {
             const scriptNames = Object.keys(detect.scripts);
@@ -1626,13 +1633,32 @@ const AppManager = (() => {
      */
     async function _updateVenvButtonsForProjectType() {
         let projectType = 'unknown';
+        let detectedCompiler = 'python3';
         try {
             const resp = await fetch('/api/run/detect');
             if (resp.ok) {
                 const data = await resp.json();
                 projectType = data.type || 'unknown';
+                detectedCompiler = data.compiler || 'python3';
             }
         } catch (_e) {}
+
+        // Update compiler select based on detected project type
+        const compilerSelect = document.getElementById('compiler-select');
+        if (compilerSelect && detectedCompiler) {
+            const options = Array.from(compilerSelect.options).map(o => o.value);
+            if (options.includes(detectedCompiler)) {
+                compilerSelect.value = detectedCompiler;
+            }
+        }
+
+        // Update run button title
+        const runBtn = document.getElementById('btn-run');
+        if (runBtn) {
+            const detect = await detectProjectType().catch(() => ({}));
+            const typeLabel = detect.label || detect.type || '';
+            runBtn.title = typeLabel ? `运行 (${typeLabel})` : '运行';
+        }
 
         const createVenvBtn = document.getElementById('create-venv-btn');
         const importReqBtn = document.getElementById('import-req-btn');

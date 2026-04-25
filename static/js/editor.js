@@ -1451,6 +1451,9 @@ const EditorManager = (() => {
         const previewEl = document.getElementById('markdown-preview');
         if (!previewEl || !editor) return;
 
+        // Save current scroll position before re-rendering (for live updates)
+        var savedScrollTop = previewEl.scrollTop;
+
         var mdRaw = editor.getValue();
 
         if (typeof marked === 'undefined') {
@@ -1538,6 +1541,13 @@ const EditorManager = (() => {
                 throwOnError: false
             });
         }
+
+        // --- Step 6: Restore scroll position after re-render ---
+        if (savedScrollTop > 0) {
+            requestAnimationFrame(function() {
+                previewEl.scrollTop = savedScrollTop;
+            });
+        }
     }
 
     /**
@@ -1552,10 +1562,34 @@ const EditorManager = (() => {
         const toggleBtn = document.getElementById('btn-md-toggle');
 
         if (mdPreviewMode) {
+            // Save the editor scroll ratio before switching to preview
+            var editorScrollRatio = 0;
+            if (editor) {
+                var si = editor.getScrollInfo();
+                var maxScroll = si.height - si.clientHeight;
+                if (maxScroll > 0) {
+                    editorScrollRatio = si.top / maxScroll;
+                }
+                // Also calculate line-based ratio for more accurate mapping
+                var cursorLine = editor.getCursor().line;
+                var totalLines = editor.lineCount();
+                if (totalLines > 0) {
+                    editorScrollRatio = cursorLine / totalLines;
+                }
+            }
             renderMarkdownPreview();
             if (cmWrapper) cmWrapper.style.display = 'none';
             if (previewEl) previewEl.style.display = '';
             if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '切换编辑'; }
+            // Scroll the preview to the corresponding position
+            if (previewEl && editorScrollRatio > 0) {
+                requestAnimationFrame(function() {
+                    var maxPreviewScroll = previewEl.scrollHeight - previewEl.clientHeight;
+                    if (maxPreviewScroll > 0) {
+                        previewEl.scrollTop = Math.round(maxPreviewScroll * editorScrollRatio);
+                    }
+                });
+            }
         } else {
             if (cmWrapper) cmWrapper.style.display = '';
             if (previewEl) previewEl.style.display = 'none';
@@ -1627,7 +1661,25 @@ const EditorManager = (() => {
 
         // Use /preview/<path> route so that the <base> tag injected in HTML
         // makes relative CSS/JS paths resolve correctly via /preview/<dir>/
-        const previewUrl = '/preview/' + relPath;
+        let previewUrl = '/preview/' + relPath;
+
+        // For Markdown files, pass scroll ratio so the preview can auto-scroll
+        // to the position corresponding to the current editor view
+        if (isMarkdownFile() && editor) {
+            var scrollInfo = editor.getScrollInfo();
+            var scrollRatio = 0;
+            // Calculate how far down the user has scrolled (0 = top, 1 = bottom)
+            var maxScroll = scrollInfo.height - scrollInfo.clientHeight;
+            if (maxScroll > 0) {
+                scrollRatio = scrollInfo.top / maxScroll;
+            }
+            // Also pass the cursor line for more precise positioning
+            var cursorLine = editor.getCursor().line;
+            var totalLines = editor.lineCount();
+            var lineRatio = totalLines > 0 ? cursorLine / totalLines : 0;
+            // Use lineRatio as the primary position indicator (more accurate for MD mapping)
+            previewUrl += '?scroll=' + encodeURIComponent(lineRatio.toFixed(4));
+        }
 
         // Switch to the browser tab in the bottom panel
         const browserTab = document.querySelector('[data-btab="browser"]');
