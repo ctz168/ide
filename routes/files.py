@@ -397,7 +397,134 @@ def serve_preview_file(subpath):
     ext = os.path.splitext(target)[1].lower()
     mime_type = _PREVIEW_MIME_TYPES.get(ext, 'application/octet-stream')
 
-    # For binary file types, use send_file
+    # For Markdown files, convert to HTML before serving (reuse preview_file logic)
+    if ext in ('.md', '.markdown'):
+        try:
+            with open(target, 'r', encoding='utf-8', errors='replace') as f:
+                md_content = f.read()
+            md_json = json.dumps(md_content)
+            html_content = f'''<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/vendor/highlightjs/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="/vendor/highlightjs/github-dark.min.css" id="hljs-dark" disabled>
+<style>
+:root {{ --bg: #fff; --fg: #24292f; --heading: #1a1a2e; --link: #0969da; --code-bg: #f6f8fa;
+         --border: #d0d7de; --blockquote: #656d76; --blockquote-bg: #f6f8fa; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ --bg: #0d1117; --fg: #c9d1d9; --heading: #f0f6fc; --link: #58a6ff; --code-bg: #161b22;
+           --border: #30363d; --blockquote: #8b949e; --blockquote-bg: #161b22; }}
+  #hljs-light {{ disabled: true; }}
+  #hljs-dark {{ disabled: false; }}
+}}
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.7;
+       color: var(--fg); background: var(--bg); }}
+h1 {{ font-size: 2em; font-weight: 700; margin-top: 1.2em; margin-bottom: 0.4em;
+      border-bottom: 2px solid var(--border); padding-bottom: 0.3em; color: var(--heading); }}
+h2 {{ font-size: 1.5em; font-weight: 600; margin-top: 1.1em; margin-bottom: 0.35em;
+      border-bottom: 1px solid var(--border); padding-bottom: 0.25em; color: var(--heading); }}
+h3 {{ font-size: 1.25em; font-weight: 600; margin-top: 1em; margin-bottom: 0.3em; color: var(--heading); }}
+h4 {{ font-size: 1.1em; font-weight: 600; margin-top: 0.9em; margin-bottom: 0.25em; color: var(--heading); }}
+h5,h6 {{ font-size: 1em; font-weight: 600; margin-top: 0.8em; margin-bottom: 0.2em; color: var(--heading); }}
+code {{ background: var(--code-bg); padding: 2px 6px; border-radius: 3px; font-size: 0.9em;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }}
+pre {{ background: var(--code-bg); padding: 14px; border-radius: 8px; overflow-x: auto;
+       border: 1px solid var(--border); margin: 1em 0; }}
+pre code {{ background: none; padding: 0; font-size: 13px; line-height: 1.5; }}
+blockquote {{ border-left: 4px solid var(--link); margin: 1em 0; padding: 8px 16px;
+              color: var(--blockquote); background: var(--blockquote-bg); border-radius: 0 6px 6px 0; }}
+table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}
+th,td {{ border: 1px solid var(--border); padding: 8px 12px; text-align: left; }}
+th {{ background: var(--code-bg); font-weight: 600; }}
+img {{ max-width: 100%; border-radius: 6px; }}
+a {{ color: var(--link); text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+hr {{ border: none; border-top: 2px solid var(--border); margin: 2em 0; }}
+ul,ol {{ padding-left: 2em; }}
+li {{ margin: 0.25em 0; }}
+input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
+.katex-display {{ margin: 1em 0; overflow-x: auto; }}
+</style>
+<script src="/vendor/marked/marked.min.js"></script>
+<script src="/vendor/katex/katex.min.js"></script>
+<script src="/vendor/katex/auto-render.min.js"></script>
+<script src="/vendor/highlightjs/highlight.min.js"></script>
+</head><body>
+<div id="content"></div>
+<script>
+(function() {{
+  var mdRaw = {md_json};
+
+  var codeStore = [];
+  var codeIdx = 0;
+  function storeCode(match) {{
+    var id = 'CODEBLK' + (codeIdx++) + 'KLBC';
+    codeStore.push({{ id: id, code: match }});
+    return id;
+  }}
+  mdRaw = mdRaw.replace(/\`\`\`[\\s\\S]*?\`\`\`/g, storeCode);
+  mdRaw = mdRaw.replace(/\`[^\`]+\`/g, storeCode);
+
+  var mathStore = [];
+  var mathIdx = 0;
+  function storeMath(match) {{
+    var id = 'MATHPH' + (mathIdx++) + 'XHPM';
+    mathStore.push({{ id: id, math: match }});
+    return id;
+  }}
+  mdRaw = mdRaw.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, function(m) {{ return storeMath(m); }});
+  mdRaw = mdRaw.replace(/\\$([^\\$\\n]+?)\\$/g, function(m) {{ return storeMath(m); }});
+  mdRaw = mdRaw.replace(/\\\\\\(([\\s\\S]*?)\\\\\\)/g, function(m) {{ return storeMath(m); }});
+  mdRaw = mdRaw.replace(/\\\\\\[([\\s\\S]*?)\\\\\\]/g, function(m) {{ return storeMath(m); }});
+
+  for (var ci = 0; ci < codeStore.length; ci++) {{
+    mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
+  }}
+
+  var renderer = new marked.Renderer();
+  renderer.code = function(code, lang) {{
+    if (lang && hljs.getLanguage(lang)) {{
+      try {{ return '<pre><code class="hljs language-' + lang + '">' +
+                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
+      catch(e) {{}}
+    }}
+    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
+    catch(e) {{}}
+    return '<pre><code>' + code + '</code></pre>';
+  }};
+
+  marked.setOptions({{
+    gfm: true,
+    breaks: true,
+    renderer: renderer
+  }});
+
+  var html = marked.parse(mdRaw);
+
+  for (var i = 0; i < mathStore.length; i++) {{
+    html = html.replace(mathStore[i].id, mathStore[i].math);
+  }}
+
+  document.getElementById('content').innerHTML = html;
+
+  renderMathInElement(document.getElementById('content'), {{
+    delimiters: [
+      {{left: "$$", right: "$$", display: true}},
+      {{left: "$", right: "$", display: false}},
+      {{left: "\\\\(", right: "\\\\)", display: false}},
+      {{left: "\\\\[", right: "\\\\]", display: true}}
+    ],
+    throwOnError: false
+  }});
+}})();
+</script>
+</body></html>'''
+            return Response(html_content, mimetype='text/html; charset=utf-8')
+        except Exception as e:
+            return jsonify({'error': f'Markdown render error: {e}'}), 500
     if mime_type.startswith('image/') or mime_type == 'application/pdf':
         return send_file(target, mimetype=mime_type)
 
