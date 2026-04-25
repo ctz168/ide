@@ -1571,6 +1571,84 @@ const TerminalManager = (() => {
         });
     }
 
+    // ── Auto-Copy on Selection ────────────────────────────────────
+
+    /**
+     * When the user selects text in the output panel (via mouse on desktop
+     * or long-press / drag on mobile), automatically copy the selected text
+     * to the clipboard and show a toast notification.
+     *
+     * Uses a short debounce to avoid firing on every intermediate selection
+     * change during a drag.
+     */
+    let _selectionCopyTimer = null;
+
+    function initAutoCopyOnSelection() {
+        const container = document.getElementById('output-content');
+        if (!container) return;
+
+        function tryCopySelection() {
+            const sel = window.getSelection();
+            if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
+
+            // Only copy if the selection is within the output-content container
+            const anchorNode = sel.anchorNode;
+            const focusNode = sel.focusNode;
+            if (!anchorNode || !focusNode) return;
+            if (!container.contains(anchorNode) && !container.contains(focusNode)) return;
+
+            const text = sel.toString().trim();
+            if (!text) return;
+
+            // Copy to clipboard
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast('已复制: ' + (text.length > 30 ? text.substring(0, 30) + '...' : text), 'success');
+                }).catch(() => {
+                    // Fallback: use execCommand
+                    _fallbackCopy(text);
+                });
+            } else {
+                _fallbackCopy(text);
+            }
+        }
+
+        function _fallbackCopy(text) {
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast('已复制: ' + (text.length > 30 ? text.substring(0, 30) + '...' : text), 'success');
+            } catch (_e) {
+                showToast('复制失败', 'error');
+            }
+        }
+
+        // Desktop: mouseup after selection
+        container.addEventListener('mouseup', () => {
+            // Small delay to let the browser finalize the selection
+            clearTimeout(_selectionCopyTimer);
+            _selectionCopyTimer = setTimeout(tryCopySelection, 200);
+        });
+
+        // Mobile: touchend after long-press or drag selection
+        container.addEventListener('touchend', () => {
+            // On mobile, text selection can take a moment to finalize after touchend
+            clearTimeout(_selectionCopyTimer);
+            _selectionCopyTimer = setTimeout(tryCopySelection, 500);
+        });
+
+        // NOTE: We deliberately do NOT listen for 'selectionchange' on document.
+        // A global selectionchange listener would fire on every selection change
+        // anywhere in the page (file tree, editor, etc.), potentially interfering
+        // with CodeMirror editor focus and file opening behavior. Instead, we
+        // rely on mouseup/touchend scoped to the output-content container only.
+    }
+
     // ── Initialize ─────────────────────────────────────────────────
 
     function init() {
@@ -1582,6 +1660,7 @@ const TerminalManager = (() => {
         initKeyboardHandler();
         initVisibilityHandler();
         initScrollDetection();  // Smart auto-scroll with user scroll detection
+        initAutoCopyOnSelection();  // Auto-copy text when selected in output
 
         // Print startup banner with system info
         printStartupBanner();
