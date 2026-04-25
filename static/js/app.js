@@ -1722,6 +1722,19 @@ const AppManager = (() => {
 
         document.documentElement.setAttribute('data-theme', themeId);
 
+        // Switch highlight.js theme to match
+        const hljsLight = document.getElementById('hljs-light');
+        const hljsDark = document.getElementById('hljs-dark');
+        if (hljsLight && hljsDark) {
+            if (themeId === 'dark') {
+                hljsLight.disabled = true;
+                hljsDark.disabled = false;
+            } else {
+                hljsLight.disabled = false;
+                hljsDark.disabled = true;
+            }
+        }
+
         // Persist to localStorage
         try { localStorage.setItem('theme', themeId); } catch (e) {}
 

@@ -1436,7 +1436,33 @@ const EditorManager = (() => {
 
         const content = editor.getValue();
         if (typeof marked !== 'undefined') {
-            previewEl.innerHTML = marked.parse(content, { breaks: true, gfm: true });
+            // Configure marked with code highlighting
+            marked.setOptions({
+                gfm: true,
+                breaks: true,
+                highlight: function(code, lang) {
+                    if (typeof hljs !== 'undefined') {
+                        if (lang && hljs.getLanguage(lang)) {
+                            try { return hljs.highlight(code, { language: lang }).value; } catch(e) {}
+                        }
+                        try { return hljs.highlightAuto(code).value; } catch(e) {}
+                    }
+                    return code;
+                }
+            });
+            previewEl.innerHTML = marked.parse(content);
+            // Render math with KaTeX
+            if (typeof renderMathInElement !== 'undefined') {
+                renderMathInElement(previewEl, {
+                    delimiters: [
+                        {left: "$$", right: "$$", display: true},
+                        {left: "$", right: "$", display: false},
+                        {left: "\\(", right: "\\)", display: false},
+                        {left: "\\[", right: "\\]", display: true}
+                    ],
+                    throwOnError: false
+                });
+            }
         } else {
             previewEl.innerHTML = '<p style="color:var(--text-muted)">Markdown 渲染器未加载</p>';
         }
