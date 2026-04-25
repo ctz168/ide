@@ -2556,8 +2556,10 @@ def _pptx_to_html(filepath):
 
         shapes_content = '\n'.join(shapes_html)
         slides_html.append(f'''<div class="slide" style="{bg_style}">
+<div class="slide-scaler">
 <div class="slide-canvas" style="position:relative;width:{slide_w_px}px;height:{slide_h_px}px;overflow:hidden">
 {shapes_content}
+</div>
 </div>
 <div class="slide-number">Slide {i + 1} / {len(prs.slides)}</div>
 </div>''')
@@ -2569,21 +2571,36 @@ def _pptx_to_html(filepath):
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        margin: 0; padding: 20px; background: #f0f0f0; color: #333; }}
-.slide {{ margin: 20px auto; max-width: {slide_w_px + 40}px; padding: 0;
+.slide {{ margin: 20px auto; max-width: {slide_w_px}px; width: calc(100vw - 40px);
           border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); overflow: hidden; }}
-.slide-number {{ color: rgba(0,0,0,0.5); font-size: 11px; padding: 6px 12px; text-align: center; }}
-.slide-canvas {{ transform-origin: top left; margin: 0 auto; }}
+.slide-scaler {{ width: 100%; position: relative; }}
+.slide-canvas {{ transform-origin: top left; }}
+.slide-number {{ color: rgba(0,0,0,0.5); font-size: 11px; padding: 6px 12px; text-align: center; background: #fff; }}
 .shape {{ box-sizing: border-box; overflow: hidden; word-wrap: break-word; }}
 .shape p {{ margin: 2px 0; line-height: 1.3; word-wrap: break-word; }}
 .shape img {{ display: block; }}
 table {{ border-collapse: collapse; width: 100%; margin: 4px 0; }}
 th,td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 13px; }}
 th {{ background: #f5f5f5; font-weight: bold; }}
-@media (max-width: 1000px) {{
-    .slide-canvas {{ transform: scale(calc((100vw - 80px) / {slide_w_px})); }}
-    .slide {{ max-width: calc(100vw - 40px); }}
+</style></head><body>{body}
+<script>
+(function(){{
+var sw={slide_w_px},sh={slide_h_px};
+function resize(){{
+document.querySelectorAll('.slide').forEach(function(s){{
+var c=s.querySelector('.slide-canvas');
+var sc=s.querySelector('.slide-scaler');
+if(!c||!sc)return;
+var w=s.clientWidth;
+var scale=Math.min(1,w/sw);
+c.style.transform='scale('+scale+')';
+sc.style.height=(sh*scale)+'px';
+}});
 }}
-</style></head><body>{body}</body></html>'''
+resize();
+window.addEventListener('resize',resize);
+}})();
+</script></body></html>'''
     return Response(html, mimetype='text/html; charset=utf-8')
 
 
