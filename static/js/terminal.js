@@ -1175,7 +1175,11 @@ const TerminalManager = (() => {
         if (container) {
             container.innerHTML = '';
         }
-        pollSince = 0;
+        // Must reset currentCmdBlock — the old block was removed from DOM,
+        // otherwise appendOutput() will append to a detached element (invisible).
+        currentCmdBlock = null;
+        // Do NOT reset pollSince to 0 — that would re-fetch all old output.
+        // Keep current value so only new lines are fetched after clearing.
     }
 
     // ── Panel Management ───────────────────────────────────────────

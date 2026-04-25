@@ -315,10 +315,13 @@ const EditorManager = (() => {
             }
             // Dispatch custom event for auto-save
             document.dispatchEvent(new CustomEvent('editor:change'));
-            // Live markdown preview update
+            // Live markdown preview update (re-render + sync scroll to cursor)
             if (mdPreviewMode && isMarkdownFile()) {
                 clearTimeout(window._mdPreviewTimer);
-                window._mdPreviewTimer = setTimeout(renderMarkdownPreview, 300);
+                window._mdPreviewTimer = setTimeout(function() {
+                    renderMarkdownPreview();
+                    scrollPreviewToCursor();
+                }, 300);
             }
         });
 
@@ -665,6 +668,7 @@ const EditorManager = (() => {
 
             if (mdPreviewMode && isMarkdownFile()) {
                 renderMarkdownPreview();
+                scrollPreviewToCursor();
             }
         }
 
@@ -740,6 +744,7 @@ const EditorManager = (() => {
 
             if (mdPreviewMode && isMarkdownFile()) {
                 renderMarkdownPreview();
+                scrollPreviewToCursor();
             }
         }
 
@@ -871,6 +876,7 @@ const EditorManager = (() => {
         // Re-render markdown preview if active
         if (mdPreviewMode && isMarkdownFile()) {
             renderMarkdownPreview();
+            scrollPreviewToCursor();
         }
     }
 
@@ -1455,13 +1461,30 @@ const EditorManager = (() => {
         var savedScrollTop = previewEl.scrollTop;
 
         var mdRaw = editor.getValue();
+        var originalContent = editor.getValue(); // unmodified content for line mapping
 
         if (typeof marked === 'undefined') {
             previewEl.innerHTML = '<p style="color:var(--text-muted)">Markdown 渲染器未加载</p>';
             return;
         }
 
-        // --- Step 0: Protect fenced code blocks and inline code from math regex ---
+        // --- Step 0: Build source-line mapping from lexer tokens ---
+        // We lex the ORIGINAL content (before math/code protection) to get
+        // accurate line numbers for each block-level token.
+        var tokens = marked.lexer(originalContent);
+        var blockLineQueue = [];
+        var lineOffset = 0;
+        for (var ti = 0; ti < tokens.length; ti++) {
+            var token = tokens[ti];
+            var newLines = (token.raw.match(/\n/g) || []).length;
+            var startLine = lineOffset;
+            if (token.type !== 'space') {
+                blockLineQueue.push({ type: token.type, startLine: startLine });
+            }
+            lineOffset += newLines;
+        }
+
+        // --- Step 0.5: Protect fenced code blocks and inline code from math regex ---
         var codeStore = [];
         var codeIdx = 0;
         function storeCode(match) {
@@ -1497,20 +1520,86 @@ const EditorManager = (() => {
             mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
         }
 
-        // --- Step 2: Configure marked v12 with custom code highlighter ---
+        // --- Step 2: Configure marked v12 with custom code highlighter + data-source-line ---
         // In marked v12, renderer.code receives (code_string, lang_string, escaped_bool)
         var renderer = new marked.Renderer();
+        var queueIdx = 0;
+
+        function nextSourceLine(type) {
+            // Check if the next queue entry matches this type
+            if (queueIdx < blockLineQueue.length && blockLineQueue[queueIdx].type === type) {
+                var line = blockLineQueue[queueIdx].startLine;
+                queueIdx++;
+                return line;
+            }
+            // Type mismatch → this is a nested render call (e.g. paragraph inside blockquote).
+            return -1;
+        }
+
+        function injectLine(html, line) {
+            if (line < 0) return html; // nested call — don't inject
+            return html.replace(/^<(\w+)/, '<$1 data-source-line="' + line + '"');
+        }
+
+        // Code renderer with highlight.js + data-source-line
         renderer.code = function(code, lang) {
+            var line = nextSourceLine('code');
+            var codeHtml;
             if (typeof hljs !== 'undefined') {
                 if (lang && hljs.getLanguage(lang)) {
-                    try { return '<pre><code class="hljs language-' + lang + '">' +
+                    try { codeHtml = '<pre><code class="hljs language-' + lang + '">' +
                                 hljs.highlight(code, { language: lang }).value + '</code></pre>'; }
-                    catch(e) {}
+                    catch(e) { codeHtml = '<pre><code>' + code + '</code></pre>'; }
+                } else {
+                    try { codeHtml = '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }
+                    catch(e) { codeHtml = '<pre><code>' + code + '</code></pre>'; }
                 }
-                try { return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }
-                catch(e) {}
+            } else {
+                codeHtml = '<pre><code>' + code + '</code></pre>';
             }
-            return '<pre><code>' + code + '</code></pre>';
+            return injectLine(codeHtml, line);
+        };
+
+        // Heading renderer with data-source-line
+        var origHeading = renderer.heading.bind(renderer);
+        renderer.heading = function(text, depth, raw) {
+            var line = nextSourceLine('heading');
+            return injectLine(origHeading(text, depth, raw), line);
+        };
+
+        // Paragraph renderer with data-source-line
+        var origParagraph = renderer.paragraph.bind(renderer);
+        renderer.paragraph = function(text) {
+            var line = nextSourceLine('paragraph');
+            return injectLine(origParagraph(text), line);
+        };
+
+        // List renderer with data-source-line
+        var origList = renderer.list.bind(renderer);
+        renderer.list = function(body, ordered, start) {
+            var line = nextSourceLine('list');
+            return injectLine(origList(body, ordered, start), line);
+        };
+
+        // Blockquote renderer with data-source-line
+        var origBlockquote = renderer.blockquote.bind(renderer);
+        renderer.blockquote = function(body) {
+            var line = nextSourceLine('blockquote');
+            return injectLine(origBlockquote(body), line);
+        };
+
+        // Table renderer with data-source-line
+        var origTable = renderer.table.bind(renderer);
+        renderer.table = function(header, body) {
+            var line = nextSourceLine('table');
+            return injectLine(origTable(header, body), line);
+        };
+
+        // HR renderer with data-source-line
+        var origHr = renderer.hr.bind(renderer);
+        renderer.hr = function() {
+            var line = nextSourceLine('hr');
+            return injectLine(origHr(), line);
         };
 
         marked.setOptions({
@@ -1543,10 +1632,93 @@ const EditorManager = (() => {
         }
 
         // --- Step 6: Restore scroll position after re-render ---
-        if (savedScrollTop > 0) {
-            requestAnimationFrame(function() {
-                previewEl.scrollTop = savedScrollTop;
-            });
+        // This is now handled by scrollPreviewToCursor() called after renderMarkdownPreview(),
+        // so we skip the old savedScrollTop logic here.
+    }
+
+    /**
+     * Scroll the preview to the position corresponding to the current
+     * cursor line in the CodeMirror editor.
+     */
+    function scrollPreviewToCursor() {
+        var previewEl = document.getElementById('markdown-preview');
+        if (!previewEl || !editor) return;
+
+        var cursorLine = editor.getCursor().line;
+
+        // Find all elements with data-source-line
+        var blocks = previewEl.querySelectorAll('[data-source-line]');
+        if (blocks.length === 0) {
+            // No line annotations — fall back to proportional scroll
+            var totalLines = editor.lineCount();
+            var ratio = totalLines > 0 ? cursorLine / totalLines : 0;
+            previewEl.scrollTop = ratio * (previewEl.scrollHeight - previewEl.clientHeight);
+            return;
+        }
+
+        // Find the block whose source line is closest to (but <=) the cursor line
+        var bestEl = null;
+        var bestLine = -1;
+        blocks.forEach(function(el) {
+            var elLine = parseInt(el.getAttribute('data-source-line'), 10);
+            if (elLine <= cursorLine && elLine > bestLine) {
+                bestLine = elLine;
+                bestEl = el;
+            }
+        });
+
+        if (bestEl) {
+            // Scroll the element into view, near the top of the preview pane
+            var elTop = bestEl.offsetTop;
+            var viewHeight = previewEl.clientHeight;
+            previewEl.scrollTop = Math.max(0, elTop - viewHeight * 0.1);
+        } else {
+            previewEl.scrollTop = 0;
+        }
+    }
+
+    /**
+     * Scroll the CodeMirror editor to the source line corresponding
+     * to the current scroll position in the preview.
+     */
+    function scrollEditorToPreviewPosition() {
+        var previewEl = document.getElementById('markdown-preview');
+        if (!previewEl || !editor) return;
+
+        var scrollTop = previewEl.scrollTop;
+        var viewHeight = previewEl.clientHeight;
+        var scrollMid = scrollTop + viewHeight * 0.3; // use 30% from top as reference
+
+        // Find all elements with data-source-line
+        var blocks = previewEl.querySelectorAll('[data-source-line]');
+        if (blocks.length === 0) {
+            // Fall back to proportional mapping
+            var ratio = previewEl.scrollHeight > previewEl.clientHeight
+                ? scrollTop / (previewEl.scrollHeight - previewEl.clientHeight)
+                : 0;
+            var totalLines = editor.lineCount();
+            var targetLine = Math.round(ratio * totalLines);
+            editor.setCursor({ line: Math.min(targetLine, totalLines - 1), ch: 0 });
+            editor.scrollIntoView(null, 50);
+            return;
+        }
+
+        // Find the block at the current scroll position
+        var bestEl = null;
+        var bestLine = 0;
+        blocks.forEach(function(el) {
+            if (el.offsetTop <= scrollMid) {
+                var elLine = parseInt(el.getAttribute('data-source-line'), 10);
+                if (elLine >= bestLine) {
+                    bestLine = elLine;
+                    bestEl = el;
+                }
+            }
+        });
+
+        if (bestEl) {
+            editor.setCursor({ line: bestLine, ch: 0 });
+            editor.scrollIntoView(null, 50);
         }
     }
 
@@ -1562,35 +1734,16 @@ const EditorManager = (() => {
         const toggleBtn = document.getElementById('btn-md-toggle');
 
         if (mdPreviewMode) {
-            // Save the editor scroll ratio before switching to preview
-            var editorScrollRatio = 0;
-            if (editor) {
-                var si = editor.getScrollInfo();
-                var maxScroll = si.height - si.clientHeight;
-                if (maxScroll > 0) {
-                    editorScrollRatio = si.top / maxScroll;
-                }
-                // Also calculate line-based ratio for more accurate mapping
-                var cursorLine = editor.getCursor().line;
-                var totalLines = editor.lineCount();
-                if (totalLines > 0) {
-                    editorScrollRatio = cursorLine / totalLines;
-                }
-            }
+            // Entering preview: render, then scroll to cursor position
             renderMarkdownPreview();
             if (cmWrapper) cmWrapper.style.display = 'none';
             if (previewEl) previewEl.style.display = '';
             if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '切换编辑'; }
-            // Scroll the preview to the corresponding position
-            if (previewEl && editorScrollRatio > 0) {
-                requestAnimationFrame(function() {
-                    var maxPreviewScroll = previewEl.scrollHeight - previewEl.clientHeight;
-                    if (maxPreviewScroll > 0) {
-                        previewEl.scrollTop = Math.round(maxPreviewScroll * editorScrollRatio);
-                    }
-                });
-            }
+            // Scroll preview to where the cursor is in the source code
+            requestAnimationFrame(function() { scrollPreviewToCursor(); });
         } else {
+            // Exiting preview: scroll editor to the position visible in preview
+            scrollEditorToPreviewPosition();
             if (cmWrapper) cmWrapper.style.display = '';
             if (previewEl) previewEl.style.display = 'none';
             if (toggleBtn) { toggleBtn.textContent = '📖'; toggleBtn.title = '切换预览'; }
