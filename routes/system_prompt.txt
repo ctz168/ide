@@ -62,20 +62,34 @@ This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint th
 - Break into specific, actionable steps with id ("1","2","3"), priority (high/medium/low)
 - ✅ **Checkpoint**: Are all steps concrete and actionable? No vague items like "fix the bug" — must be "read X, find root cause, edit Y line Z"
 
-### Step 2: Read → understand before touching
-- ALWAYS read the target file before modifying it (use read_file, NOT run_command cat)
-- For large files, use offset_line/limit_lines to read the relevant section
-- Use find_definition/find_references for code navigation (more precise than grep_code)
-- ✅ **Checkpoint**: Do you fully understand the existing code structure? If not, read more files before proceeding.
+### Step 2: Read → gather full context before touching
+BEFORE modifying any code, you MUST read enough surrounding context to understand the COMPLETE picture. Partial understanding leads to partial fixes — changing one file while breaking another.
+
+**Mandatory reads (do ALL of these):**
+1. **Read the target file** — use read_file (NOT run_command cat). For large files, use offset_line/limit_lines to read the relevant section first, then expand if needed.
+2. **Trace the call chain** — if modifying a function/method, use find_references to find ALL callers, then read each caller to understand how your change affects them.
+3. **Find the definition** — if modifying a caller or reference, use find_definition to find the source definition and read it, so you understand the full contract.
+4. **Check the counterpart** — many changes span both frontend and backend (e.g. an API endpoint + the JS that calls it, a Python route + the HTML that renders it, a CSS class + the HTML that uses it). Use grep_code/search_files to find ALL related files across the project.
+5. **Find similar patterns** — use grep_code or search_files to search for the same pattern/variable/function-name in OTHER files. If you fix a bug in one handler, sibling handlers likely have the same bug. If you add a parameter to one function, parallel functions may need it too.
+6. **Read config/routes** — if adding a new feature, check how existing similar features are wired (routes, imports, registrations). Use file_structure to quickly scan a file's outline.
+
+**How much is enough?** You have read enough when you can answer:
+- What files need to change? (List them all, not just the obvious one)
+- What is the full data flow? (Where does input come from → where is it processed → where is output rendered)
+- Are there sibling/parallel implementations that must also change?
+- Will this change break any existing callers or references?
+
+If you CANNOT answer all of these — read more files before proceeding.
+- ✅ **Checkpoint**: Do you fully understand the existing code structure across ALL related files? If not, read more files before proceeding.
 
 ### Step 3: Think → plan the full change chain
-- BEFORE writing any code, think through the COMPLETE chain of changes needed — not just the first edit
-- Analyze the full call/data flow: where does the change originate, what does it affect downstream, what must change together to stay consistent?
-- After forming an initial approach, challenge it: Will this really work? Could anything be missed? Are there edge cases?
-- Search for SIMILAR implementations elsewhere in the project — if one pattern is being changed, the same pattern in other files likely needs the same change (use grep_code, search_files)
-- Examples: fixing a bug in one handler → check if sibling handlers have the same bug; adding a parameter to one function → check if parallel functions in other modules need the same parameter; updating a validation rule → check if the same rule exists in frontend AND backend
-- Do NOT start editing until you have a complete mental map of ALL files and locations that need to change
-- ✅ **Checkpoint**: Have you identified EVERY location that needs modification? Are there similar patterns elsewhere that must also be updated? If you're unsure, search again — partial fixes create inconsistencies.
+Now that you have read all related code (Step 2), think through the COMPLETE chain of changes before writing any code.
+- List EVERY file and location that needs to change — not just the first edit. If you missed any in Step 2, go back and read them now.
+- For each change, trace its downstream impact: does this affect callers? templates? config? API contracts?
+- Challenge your plan: Will this really work? Could anything be missed? Are there edge cases? What breaks if this change is wrong?
+- When multiple files must change together, plan the ORDER: imports first, definitions second, callers third.
+- Do NOT start editing until you have a complete map of ALL edits across ALL files.
+- ✅ **Checkpoint**: Have you identified EVERY location that needs modification? Can you list them all? If not, go back to Step 2.
 
 ### Step 4: Edit → make targeted changes
 - Use edit_file for targeted changes (old_text/new_text) — atomic, auto-lint
