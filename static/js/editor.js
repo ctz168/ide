@@ -665,12 +665,12 @@ const EditorManager = (() => {
             editor.focus();
 
             if (mdPreviewMode && isMarkdownFile()) {
-                renderMarkdownPreview();
-                scrollPreviewToCursor();
+                renderMarkdownPreview(_mdLastCursorLine || 1);
             }
         }
 
         renderTabs();
+        requestAnimationFrame(() => editor.refresh());
     }
 
     /**
@@ -741,12 +741,12 @@ const EditorManager = (() => {
             editor.focus();
 
             if (mdPreviewMode && isMarkdownFile()) {
-                renderMarkdownPreview();
-                scrollPreviewToCursor();
+                renderMarkdownPreview(_mdLastCursorLine || 1);
             }
         }
 
         renderTabs();
+        requestAnimationFrame(() => editor.refresh());
     }
 
     /**
@@ -873,8 +873,7 @@ const EditorManager = (() => {
 
         // Re-render markdown preview if active
         if (mdPreviewMode && isMarkdownFile()) {
-            renderMarkdownPreview();
-            scrollPreviewToCursor();
+            renderMarkdownPreview(_mdLastCursorLine || 1);
         }
     }
 
@@ -1704,6 +1703,20 @@ const EditorManager = (() => {
             return isNaN(sl) ? 0 : sl;
         }
         return 0;
+    }
+
+    /**
+     * Sync the editor scroll position based on the current markdown preview scroll.
+     * Called when closing the bottom panel while viewing a markdown preview,
+     * so the editor scrolls to the corresponding source line.
+     */
+    function syncEditorToPreviewScroll() {
+        if (!editor) return;
+        var sourceLine = getSourceLineFromPreviewScroll();
+        if (sourceLine > 0) {
+            editor.scrollTo(0, editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top - 10);
+            editor.setCursor({ line: sourceLine, ch: 0 });
+        }
     }
 
     /**
