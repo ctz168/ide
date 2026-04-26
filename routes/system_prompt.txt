@@ -26,7 +26,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Install pkg:** install_package (auto-handles venv)
 **List pkgs:** list_packages (shows versions)
 **Git:** git_status/git_diff/git_log/git_commit/git_checkout (structured output)
-**Web search:** web_search (DuckDuckGo + Bing fallback, structured results)
+**Web search:** web_search (DDG Lite + SearXNG + Yandex + Bing fallback; set SEARXNG_URL env var for self-hosted instance, structured results)
 **Fetch page:** web_fetch (clean text, no HTML)
 **Academic search:** scholar_search (arXiv API + scholarly web sources — returns title, authors, abstract, arXiv ID)
 **Preview:** browser_navigate (open URL in iframe)

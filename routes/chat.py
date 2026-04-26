@@ -545,7 +545,7 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'web_search',
-            'description': 'Search the web via DuckDuckGo + Bing fallback. Returns titles, URLs, snippets.',
+            'description': 'Search the web via DDG Lite + SearXNG + Yandex + Bing (auto-fallback). Returns titles, URLs, snippets.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -2425,6 +2425,28 @@ def _tool_create_directory(args):
 _UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 _UA_BOT = 'Mozilla/5.0 (compatible; PhoneIDE-Bot/1.0)'
 
+# SearXNG configuration:
+# - Set SEARXNG_URL env var to use your own instance (e.g. https://searxng.example.com)
+# - If not set, tries well-known public instances in rotation
+_SEARXNG_USER_URL = os.environ.get('SEARXNG_URL', '').rstrip('/')
+_SEARXNG_PUBLIC_INSTANCES = [
+    'https://searx.be',
+    'https://search.sapti.me',
+    'https://etsi.me',
+    'https://opnxng.com',
+    'https://paulgo.io',
+    'https://priv.au',
+    'https://search.2b9t.xyz',
+    'https://search.catboy.house',
+    'https://search.datenkrake.ch',
+    'https://search.einfachzocken.eu',
+    'https://search.abohiccups.com',
+    'https://ooglester.com',
+    'https://baresearch.org',
+    'https://kantan.cat',
+    'https://copp.gg',
+]
+
 
 def _search_ddg_lite(query, max_results=10):
     """Search via DuckDuckGo Lite (POST). Most reliable DDG method.
@@ -2547,6 +2569,74 @@ def _search_bing(query, max_results=10):
     return results
 
 
+def _search_searxng(query, max_results=10):
+    """Search via SearXNG JSON API. Tries user-configured instance first,
+    then falls back to public instances in rotation.
+    Returns list of {title, url, snippet}."""
+    import json as _json
+    instances = [_SEARXNG_USER_URL] if _SEARXNG_USER_URL else list(_SEARXNG_PUBLIC_INSTANCES)
+    last_err = None
+    for inst in instances:
+        if not inst:
+            continue
+        try:
+            url = inst.rstrip('/') + '/search?q=' + urllib.parse.quote_plus(query) + '&format=json&categories=general&safesearch=0'
+            req = urllib.request.Request(url, headers={
+                'User-Agent': _UA_DESKTOP,
+                'Accept': 'application/json, text/html, */*',
+            })
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                raw = resp.read().decode('utf-8', errors='ignore')
+            # Try JSON parse first
+            try:
+                data = _json.loads(raw)
+            except (_json.JSONDecodeError, ValueError):
+                # Fallback: parse HTML results if instance returned HTML instead of JSON
+                return _parse_searxng_html(raw, max_results)
+            results = []
+            for item in data.get('results', []):
+                title = item.get('title', '')
+                item_url = item.get('url', '')
+                snippet = item.get('content', '')
+                if title and item_url:
+                    results.append({'title': title, 'url': item_url, 'snippet': snippet or ''})
+                if len(results) >= max_results:
+                    break
+            if results:
+                return results
+            last_err = '0 results'
+        except Exception as e:
+            last_err = str(e)[:100]
+            continue
+    # If all instances failed
+    if last_err:
+        log_write(f'[web_search] SearXNG all instances failed. Last error: {last_err}')
+    raise RuntimeError(f'SearXNG failed (last: {last_err})')
+
+
+def _parse_searxng_html(html, max_results=10):
+    """Parse SearXNG HTML result page as fallback when JSON is unavailable."""
+    results = []
+    # SearXNG uses <article class="result"> with <h3><a href="...">title</a></h3>
+    for match in re.finditer(
+        r'<article[^>]*class="[^"]*result[^"]*"[^>]*>.*?'
+        r'<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h3>',
+        html, re.DOTALL
+    ):
+        link = match.group(1).strip()
+        title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
+        if title and link and 'search?' not in link:
+            # Extract snippet from <p class="content">
+            block_end = html.find('</article>', match.end())
+            block = html[match.start():block_end] if block_end > 0 else html[match.start():match.start() + 2000]
+            p_m = re.search(r'<p[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+            snippet = re.sub(r'<[^>]+>', '', p_m.group(1)).strip() if p_m else ''
+            results.append({'title': title, 'url': link, 'snippet': snippet})
+            if len(results) >= max_results:
+                break
+    return results
+
+
 def _search_yandex(query, max_results=10):
     """Search via Yandex (international). Returns list of {title, url, snippet}."""
     url = 'https://yandex.com/search/?text=' + urllib.parse.quote_plus(query) + '&lr=213&lang=en'
@@ -2598,7 +2688,7 @@ def _format_search_results(query, results):
 
 
 def _tool_web_search(args):
-    """Web search with multiple engine fallback: DDG Lite → Yandex → Bing."""
+    """Web search with multiple engine fallback: DDG Lite → SearXNG → Yandex → Bing."""
     query = args.get('query', '').strip()
     if not query:
         return 'Error: query is required'
@@ -2612,7 +2702,16 @@ def _tool_web_search(args):
     except Exception as e:
         errors.append(f'DDG Lite: {e}')
         log_write(f'[web_search] DDG Lite failed: {e}')
-    # Engine 2: Yandex
+    # Engine 2: SearXNG (user instance or public instances with rotation)
+    try:
+        results = _search_searxng(query, max_results=10)
+        if results:
+            return _format_search_results(query, results) + '\n(Search via SearXNG)'
+        log_write('[web_search] SearXNG returned 0 results')
+    except Exception as e:
+        errors.append(f'SearXNG: {e}')
+        log_write(f'[web_search] SearXNG failed: {e}')
+    # Engine 3: Yandex
     try:
         results = _search_yandex(query, max_results=10)
         if results:
@@ -2621,7 +2720,7 @@ def _tool_web_search(args):
     except Exception as e:
         errors.append(f'Yandex: {e}')
         log_write(f'[web_search] Yandex failed: {e}')
-    # Engine 3: Bing (last resort, redirect URLs may not decode)
+    # Engine 4: Bing (last resort, redirect URLs may not decode)
     try:
         results = _search_bing(query, max_results=10)
         if results:
@@ -2633,6 +2732,7 @@ def _tool_web_search(args):
     err_detail = '; '.join(errors) if errors else 'all engines returned 0 results'
     return (f'Error: All search engines failed for "{query}". '
             f'Details: [{err_detail}]. '
+            f'Tip: Set SEARXNG_URL env var to your own SearXNG instance for best results. '
             f'Try rephrasing your query or check network connectivity.')
 
 
