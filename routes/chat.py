@@ -545,7 +545,7 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'web_search',
-            'description': 'Search the web via DuckDuckGo. Returns titles, URLs, snippets.',
+            'description': 'Search the web via DuckDuckGo + Bing fallback. Returns titles, URLs, snippets.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -566,6 +566,20 @@ AGENT_TOOLS = [
                     'url': {'type': 'string', 'description': 'URL to fetch'},
                 },
                 'required': ['url'],
+            },
+        },
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'scholar_search',
+            'description': 'Search academic papers via arXiv API + web scholarly sources. Returns title, authors, abstract, arXiv ID, URL. Use for research/literature review.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string', 'description': 'Academic search query (e.g. "transformer attention mechanism")'},
+                },
+                'required': ['query'],
             },
         },
     },
@@ -2406,34 +2420,287 @@ def _tool_create_directory(args):
     except OSError as e:
         return f'Error creating directory {path}: {e}'
 
-def _tool_web_search(args):
-    query = args.get('query', '')
-    try:
-        url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query)
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (compatible; PhoneIDE Bot)'})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html_content = resp.read().decode('utf-8', errors='ignore')
-        results = []
-        for match in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)</a>.*?<a class="result__snippet"[^>]*>([^<]*(?:<[^a][^<]*)*)</a>', html_content, re.DOTALL):
-            link = match.group(1)
+# ==================== Web Search Helpers ====================
+
+_UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+_UA_BOT = 'Mozilla/5.0 (compatible; PhoneIDE-Bot/1.0)'
+
+
+def _search_duckduckgo(query, max_results=10):
+    """Search via DuckDuckGo HTML. Returns list of {title, url, snippet}."""
+    url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query)
+    req = urllib.request.Request(url, headers={'User-Agent': _UA_DESKTOP})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html_content = resp.read().decode('utf-8', errors='ignore')
+    results = []
+    # Multiple regex patterns for robustness (DDG changes HTML structure occasionally)
+    # Pattern 1: result__a + result__snippet (primary)
+    for match in re.finditer(
+        r'<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)</a>.*?'
+        r'<a class="result__snippet"[^>]*>([^<]*(?:<[^a][^<]*)*)</a>',
+        html_content, re.DOTALL
+    ):
+        link = match.group(1).strip()
+        title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
+        snippet = re.sub(r'<[^>]+>', '', match.group(3)).strip()
+        if link.startswith('//'):
+            link = 'https:' + link
+        # Skip DDG redirect links — resolve to real URL if possible
+        if '//duckduckgo.com/l/' in link:
+            try:
+                redirect_req = urllib.request.Request(link, headers={'User-Agent': _UA_BOT})
+                redirect_req.follow_redirects = False  # not supported, but we handle 3xx below
+                with urllib.request.urlopen(redirect_req, timeout=5) as rr:
+                    link = rr.url  # final URL after redirect
+            except Exception:
+                # Try extracting fromuddg param
+                u_m = re.search(r'uddg=([^&]+)', link)
+                if u_m:
+                    link = urllib.parse.unquote(u_m.group(1))
+        if title and link:
+            results.append({'title': title, 'url': link, 'snippet': snippet})
+        if len(results) >= max_results:
+            break
+    # Pattern 2: fallback — look for result__a with result__extras__url
+    if not results:
+        for match in re.finditer(
+            r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            html_content, re.DOTALL
+        ):
+            link = match.group(1).strip()
             title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
-            snippet = re.sub(r'<[^>]+>', '', match.group(3)).strip()
             if link.startswith('//'):
                 link = 'https:' + link
-            results.append({'title': title, 'url': link, 'snippet': snippet})
-            if len(results) >= 10:
+            if title and link and 'duckduckgo.com/l/' not in link:
+                results.append({'title': title, 'url': link, 'snippet': ''})
+            elif title and link:
+                u_m = re.search(r'uddg=([^&]+)', link)
+                if u_m:
+                    results.append({'title': title, 'url': urllib.parse.unquote(u_m.group(1)), 'snippet': ''})
+            if len(results) >= max_results:
                 break
-        if not results:
-            return f'No results found for "{query}"'
-        lines = []
-        for i, r in enumerate(results, 1):
-            lines.append(f'{i}. {r["title"]}')
-            lines.append(f'   URL: {r["url"]}')
+    return results
+
+
+def _decode_bing_redirect_url(raw_url):
+    """Extract real URL from Bing ck/a redirect URL."""
+    raw_url = raw_url.replace('&amp;', '&')
+    u_m = re.search(r'u=([A-Za-z0-9_\-+/=%]+)', raw_url)
+    if not u_m:
+        return raw_url
+    b64 = u_m.group(1)
+    # Strip 'a1' prefix (Bing version indicator)
+    if b64.startswith('a1'):
+        b64 = b64[2:]
+    b64 = urllib.parse.unquote(b64)
+    missing = len(b64) % 4
+    if missing:
+        b64 += '=' * (4 - missing)
+    try:
+        import base64
+        return base64.urlsafe_b64decode(b64).decode('utf-8')
+    except Exception:
+        return raw_url
+
+
+def _search_bing(query, max_results=10):
+    """Search via Bing. Returns list of {title, url, snippet}."""
+    url = 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(query) + '&setlang=en'
+    req = urllib.request.Request(url, headers={
+        'User-Agent': _UA_DESKTOP,
+        'Accept-Language': 'en-US,en;q=0.9',
+    })
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html_content = resp.read().decode('utf-8', errors='ignore')
+    results = []
+    blocks = re.split(r'<li class="b_algo', html_content)
+    for block in blocks[1:]:
+        # Title
+        h2_m = re.search(r'<h2[^>]*>\s*<a[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not h2_m:
+            continue
+        title = re.sub(r'<[^>]+>', '', h2_m.group(1)).strip()
+        # URL from <h2><a href="...">
+        href_m = re.search(r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"', block)
+        if not href_m:
+            continue
+        raw_url = href_m.group(1)
+        real_url = _decode_bing_redirect_url(raw_url)
+        # Skip bing-internal navigation tabs (images/videos/maps)
+        if 'bing.com' in real_url and '/search' in real_url:
+            continue
+        # Snippet
+        p_m = re.search(r'<p[^>]*class="b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+        if not p_m:
+            p_m = re.search(r'<div[^>]*class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>', block, re.DOTALL)
+        snippet = re.sub(r'<[^>]+>', '', p_m.group(1)).strip() if p_m else ''
+        snippet = snippet.replace('&nbsp;', ' ').replace('&#0183;', '·')
+        if title and real_url:
+            results.append({'title': title, 'url': real_url, 'snippet': snippet})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _format_search_results(query, results):
+    """Format search results into a readable string."""
+    if not results:
+        return f'No results found for "{query}"'
+    lines = []
+    for i, r in enumerate(results, 1):
+        lines.append(f'{i}. {r["title"]}')
+        lines.append(f'   URL: {r["url"]}')
+        if r.get('snippet'):
             lines.append(f'   {r["snippet"]}')
-            lines.append('')
-        return f'Search results for "{query}" ({len(results)} results):\n' + '\n'.join(lines)
+        lines.append('')
+    return f'Search results for "{query}" ({len(results)} results):\n' + '\n'.join(lines)
+
+
+def _tool_web_search(args):
+    """Web search with DuckDuckGo primary + Bing fallback."""
+    query = args.get('query', '').strip()
+    if not query:
+        return 'Error: query is required'
+    # Try DuckDuckGo first
+    try:
+        results = _search_duckduckgo(query, max_results=10)
+        if results:
+            return _format_search_results(query, results)
     except Exception as e:
-        return f'Error searching: {str(e)}'
+        log_write(f'[web_search] DuckDuckGo failed: {e}, falling back to Bing')
+    # Fallback to Bing
+    try:
+        results = _search_bing(query, max_results=10)
+        if results:
+            return _format_search_results(query, results) + '\n(Search via Bing)'
+    except Exception as e:
+        log_write(f'[web_search] Bing also failed: {e}')
+    return f'Error: All search engines failed for "{query}". Try rephrasing your query.'
+
+
+# ==================== Scholar / Academic Search ====================
+
+def _search_arxiv(query, max_results=8):
+    """Search arXiv via their public API. Returns list of academic results."""
+    import xml.etree.ElementTree as ET
+    url = ('http://export.arxiv.org/api/query?search_query=all:' +
+           urllib.parse.quote_plus(query) + f'&start=0&max_results={max_results}')
+    req = urllib.request.Request(url, headers={'User-Agent': _UA_BOT})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        xml_text = resp.read().decode('utf-8', errors='ignore')
+    root = ET.fromstring(xml_text)
+    ns = {'atom': 'http://www.w3.org/2005/Atom'}
+    results = []
+    for entry in root.findall('atom:entry', ns):
+        title = entry.find('atom:title', ns)
+        summary = entry.find('atom:summary', ns)
+        link = None
+        for link_el in entry.findall('atom:link', ns):
+            if link_el.get('title') == 'pdf':
+                link = link_el.get('href')
+                break
+            if not link:
+                link = link_el.get('href')
+        title_text = title.text.strip().replace('\n', ' ') if title is not None else 'Unknown'
+        summary_text = summary.text.strip().replace('\n', ' ')[:400] if summary is not None else ''
+        # Extract arXiv ID from link
+        arxiv_id = ''
+        if link:
+            m = re.search(r'(\d+\.\d+)', link)
+            if m:
+                arxiv_id = m.group(1)
+        # Extract authors
+        authors = []
+        for author in entry.findall('atom:author', ns):
+            name = author.find('atom:name', ns)
+            if name is not None:
+                authors.append(name.text.strip())
+        author_str = ', '.join(authors[:3])
+        if len(authors) > 3:
+            author_str += f' et al. ({len(authors)} authors)'
+        results.append({
+            'title': title_text,
+            'url': link or '',
+            'arxiv_id': arxiv_id,
+            'snippet': summary_text,
+            'authors': author_str,
+            'source': 'arXiv',
+        })
+    return results
+
+
+def _search_scholar_ddg(query, max_results=8):
+    """Search for academic papers via DuckDuckGo with scholarly query modifiers."""
+    # Add scholarly modifiers to improve academic relevance
+    scholarly_query = query + ' site:arxiv.org OR site:scholar.google.com OR site:semanticscholar.org OR site:researchgate.net OR filetype:pdf'
+    try:
+        results = _search_duckduckgo(scholar_query, max_results=max_results)
+    except Exception:
+        results = []
+    # Filter to academic domains only
+    academic_domains = ['arxiv.org', 'scholar.google.com', 'semanticscholar.org',
+                        'researchgate.net', 'acm.org', 'ieee.org', 'springer.com',
+                        'nature.com', 'science.org', 'wiley.com', 'dl.acm.org',
+                        'openreview.net', 'pubmed.ncbi.nlm.nih.gov', 'aclanthology.org',
+                        'neurips.cc', 'cvpr', 'icml.cc', 'aaai.org']
+    filtered = []
+    for r in results:
+        domain = urllib.parse.urlparse(r['url']).hostname or ''
+        if any(d in domain for d in academic_domains):
+            r['source'] = 'Web'
+            filtered.append(r)
+        elif r['url'].endswith('.pdf'):
+            r['source'] = 'Web'
+            filtered.append(r)
+    return filtered
+
+
+def _tool_scholar_search(args):
+    """Academic paper search via arXiv API + DuckDuckGo scholarly fallback."""
+    query = args.get('query', '').strip()
+    if not query:
+        return 'Error: query is required'
+    all_results = []
+    seen_titles = set()
+    # Primary: arXiv API (fast, reliable, free)
+    try:
+        arxiv_results = _search_arxiv(query, max_results=8)
+        for r in arxiv_results:
+            key = r['title'].lower()
+            if key not in seen_titles:
+                seen_titles.add(key)
+                all_results.append(r)
+    except Exception as e:
+        log_write(f'[scholar_search] arXiv API failed: {e}')
+    # Secondary: DuckDuckGo with academic site filters
+    if len(all_results) < 5:
+        try:
+            web_results = _search_scholar_ddg(query, max_results=10)
+            for r in web_results:
+                key = r['title'].lower()
+                if key not in seen_titles:
+                    seen_titles.add(key)
+                    all_results.append(r)
+        except Exception as e:
+            log_write(f'[scholar_search] DDG scholarly failed: {e}')
+    if not all_results:
+        return f'No academic results found for "{query}". Try broader keywords or use web_search for general web results.'
+    lines = [f'Academic search results for "{query}" ({len(all_results)} results):\n']
+    for i, r in enumerate(all_results[:12], 1):
+        lines.append(f'{i}. {r["title"]}')
+        if r.get('authors'):
+            lines.append(f'   Authors: {r["authors"]}')
+        if r.get('arxiv_id'):
+            lines.append(f'   arXiv: {r["arxiv_id"]}')
+        lines.append(f'   URL: {r["url"]}')
+        if r.get('snippet'):
+            snippet = r['snippet'][:300]
+            lines.append(f'   {snippet}')
+        source = r.get('source', '')
+        if source:
+            lines.append(f'   Source: {source}')
+        lines.append('')
+    return '\n'.join(lines)
 
 def _tool_web_fetch(args):
     url = args.get('url', '')
@@ -3706,6 +3973,7 @@ _SUBAGENT_TOOLS = {
     'find_references': _tool_find_references,
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
+    'scholar_search': _tool_scholar_search,
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
 }
@@ -4824,6 +5092,7 @@ _TOOL_HANDLERS = {
     'append_file': _tool_append_file,
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
+    'scholar_search': _tool_scholar_search,
     'browser_navigate': _tool_browser_navigate,
     'browser_console': _tool_browser_console,
     'browser_page_info': _tool_browser_page_info,
@@ -4896,7 +5165,7 @@ _READONLY_TOOLS = frozenset({
     'read_file', 'glob_files', 'grep_code', 'search_files', 'list_directory',
     'file_info', 'file_structure', 'find_definition', 'find_references',
     'list_packages', 'git_status', 'git_diff', 'git_log',
-    'web_search', 'web_fetch',
+    'web_search', 'web_fetch', 'scholar_search',
     'browser_page_info', 'browser_console', 'browser_evaluate',
     'browser_inspect', 'browser_query_all', 'browser_cookies',
     'server_logs',
@@ -6031,7 +6300,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'read_file': 5000, 'glob_files': 2000, 'grep_code': 3000,
         'search_files': 3000, 'file_structure': 3000,
         'find_definition': 3000, 'find_references': 2000,
-        'run_command': 3000, 'web_fetch': 2000,
+        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
         'kill_port': 2000,
