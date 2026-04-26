@@ -583,6 +583,36 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- PDF Generation --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'generate_pdf',
+            'description': 'Generate a PDF file and save it to the workspace. Supports multi-section documents with titles, paragraphs, bullet lists, and basic formatting. Returns the file path.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'filename': {'type': 'string', 'description': 'Output PDF filename (e.g. "report.pdf"). Will be saved to workspace root if no path prefix.'},
+                    'title': {'type': 'string', 'description': 'Document title (shown on cover/first page). Optional.'},
+                    'sections': {
+                        'type': 'array',
+                        'description': 'Document sections in order. Each section is an object with: heading (string, required), body (string, required, supports \\n for paragraphs), bullets (array of strings, optional), sub_sections (array of section objects, optional for nested content).',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'heading': {'type': 'string'},
+                                'body': {'type': 'string'},
+                                'bullets': {'type': 'array', 'items': {'type': 'string'}},
+                                'sub_sections': {'type': 'array'},
+                            },
+                            'required': ['heading', 'body'],
+                        },
+                    },
+                },
+                'required': ['filename', 'sections'],
+            },
+        },
+    },
     # -- Browser/Preview --
     {
         'type': 'function',
@@ -2887,6 +2917,158 @@ def _tool_web_fetch(args):
     except Exception as e:
         return f'Error fetching URL: {str(e)}'
 
+# ==================== PDF Generation ====================
+
+from reportlab.platypus import Paragraph as _RLParagraph, Spacer as _RLSpacer, PageBreak as _RLPageBreak
+from reportlab.lib.styles import ParagraphStyle as _RLParagraphStyle
+from reportlab.lib.pagesizes import A4 as _RL_A4
+from reportlab.lib.enums import TA_CENTER as _TA_CENTER, TA_LEFT as _TA_LEFT, TA_JUSTIFY as _TA_JUSTIFY
+from reportlab.lib.units import mm as _mm
+
+# Register CJK + Latin fonts for reportlab (lazy init)
+_PDF_FONTS_REGISTERED = False
+
+def _ensure_pdf_fonts():
+    """Register fonts for PDF generation (called once)."""
+    global _PDF_FONTS_REGISTERED
+    if _PDF_FONTS_REGISTERED:
+        return
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    try:
+        pdfmetrics.registerFont(TTFont('PdfSerif', '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Regular.ttf'))
+        pdfmetrics.registerFont(TTFont('PdfSerifB', '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Bold.ttf'))
+        pdfmetrics.registerFont(TTFont('PdfSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
+        pdfmetrics.registerFont(TTFont('PdfSansB', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'))
+        pdfmetrics.registerFontFamily('PdfSerif', normal='PdfSerif', bold='PdfSerifB')
+        pdfmetrics.registerFontFamily('PdfSans', normal='PdfSans', bold='PdfSansB')
+        _PDF_FONTS_REGISTERED = True
+    except Exception as e:
+        log_write(f'[generate_pdf] Font registration failed: {e}')
+
+
+def _render_section(section, styles, heading_style, body_style, bullet_style, flow):
+    """Recursively render a section dict into flowable elements."""
+    heading = section.get('heading', '')
+    body = section.get('body', '')
+    bullets = section.get('bullets', [])
+    sub_sections = section.get('sub_sections', [])
+    if heading:
+        flow.append(_RLParagraph(heading, heading_style))
+    if body:
+        # Split body by double-newline into paragraphs
+        paragraphs = [p.strip() for p in body.split('\n\n') if p.strip()]
+        if not paragraphs:
+            paragraphs = [body.strip()]
+        for p_text in paragraphs:
+            # Escape XML special chars for reportlab Paragraph
+            safe = (p_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+            # Convert single newlines to <br/>
+            safe = safe.replace('\n', '<br/>')
+            flow.append(_RLParagraph(safe, body_style))
+    if bullets:
+        for b in bullets:
+            safe_b = (str(b).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+            flow.append(_RLParagraph(safe_b, bullet_style, bulletText='\u2022'))
+    if sub_sections:
+        for sub in sub_sections:
+            _render_section(sub, styles, heading_style, body_style, bullet_style, flow)
+
+
+def _tool_generate_pdf(args):
+    """Generate a PDF document from structured sections."""
+    filename = args.get('filename', '').strip()
+    sections = args.get('sections', [])
+    title = args.get('title', '').strip()
+
+    if not filename:
+        return 'Error: filename is required'
+    if not sections:
+        return 'Error: sections array is required and must have at least one section'
+    # Ensure .pdf extension
+    if not filename.lower().endswith('.pdf'):
+        filename += '.pdf'
+
+    # Validate path — must be inside workspace
+    if os.path.isabs(filename):
+        filepath = filename
+    else:
+        filepath = os.path.join(WORKSPACE, filename)
+    # Normalize and verify inside workspace
+    filepath = os.path.realpath(filepath)
+    ws_real = os.path.realpath(WORKSPACE)
+    if not filepath.startswith(ws_real):
+        return f'Error: path must be inside workspace ({WORKSPACE})'
+
+    try:
+        from reportlab.platypus import SimpleDocTemplate
+
+        _ensure_pdf_fonts()
+
+        # Create output directory if needed
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+
+        doc = SimpleDocTemplate(
+            filepath, pagesize=_RL_A4,
+            leftMargin=25*_mm, rightMargin=25*_mm,
+            topMargin=25*_mm, bottomMargin=25*_mm,
+            title=title or filename,
+            author='PhoneIDE AI Assistant',
+        )
+
+        # Styles
+        title_s = _RLParagraphStyle('PdfTitle', fontName='PdfSerifB', fontSize=22,
+                                    leading=28, alignment=_TA_CENTER, spaceAfter=6*_mm)
+        subtitle_s = _RLParagraphStyle('PdfSubtitle', fontName='PdfSerif', fontSize=11,
+                                       leading=15, alignment=_TA_CENTER, textColor='#666666',
+                                       spaceAfter=10*_mm)
+        heading_s = _RLParagraphStyle('PdfHeading', fontName='PdfSerifB', fontSize=14,
+                                      leading=20, spaceAfter=3*_mm, spaceBefore=5*_mm,
+                                      textColor='#1a1a2e')
+        body_s = _RLParagraphStyle('PdfBody', fontName='PdfSerif', fontSize=10.5,
+                                   leading=16, alignment=_TA_JUSTIFY, spaceAfter=2*_mm)
+        bullet_s = _RLParagraphStyle('PdfBullet', fontName='PdfSerif', fontSize=10.5,
+                                     leading=15, leftIndent=18*_mm, bulletIndent=12*_mm,
+                                     spaceAfter=1.5*_mm, alignment=_TA_LEFT)
+
+        flow = []
+
+        # Title page
+        if title:
+            flow.append(_RLSpacer(1, 40*_mm))
+            safe_title = title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            flow.append(_RLParagraph(safe_title, title_s))
+            from datetime import datetime, timezone
+            date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+            flow.append(_RLParagraph(f'Generated: {date_str}', subtitle_s))
+            flow.append(_RLPageBreak())
+        else:
+            flow.append(_RLSpacer(1, 5*_mm))
+
+        # Render all sections
+        for i, sec in enumerate(sections):
+            _render_section(sec, None, heading_s, body_s, bullet_s, flow)
+
+        # Build
+        def add_page_number(canvas, doc):
+            canvas.saveState()
+            canvas.setFont('PdfSans', 8)
+            canvas.setFillColor('#999999')
+            page_num = canvas.getPageNumber()
+            canvas.drawCentredString(_RL_A4[0] / 2, 15*_mm, f'- {page_num} -')
+            canvas.restoreState()
+
+        doc.build(flow, onFirstPage=add_page_number, onLaterPages=add_page_number)
+
+        # Get file size
+        size_kb = os.path.getsize(filepath) / 1024
+        rel_path = os.path.relpath(filepath, WORKSPACE)
+        # Count pages approximately
+        return f'PDF generated successfully: {rel_path} ({size_kb:.1f} KB)'
+    except Exception as e:
+        return f'Error generating PDF: {str(e)}'
+
+
 def _tool_git_log(args):
     count = args.get('count', 10)
     repo_path = args.get('repo_path', None) or _get_effective_cwd()
@@ -4132,6 +4314,7 @@ _SUBAGENT_TOOLS = {
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
     'scholar_search': _tool_scholar_search,
+    'generate_pdf': _tool_generate_pdf,
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
 }
@@ -5251,6 +5434,7 @@ _TOOL_HANDLERS = {
     'web_search': _tool_web_search,
     'web_fetch': _tool_web_fetch,
     'scholar_search': _tool_scholar_search,
+    'generate_pdf': _tool_generate_pdf,
     'browser_navigate': _tool_browser_navigate,
     'browser_console': _tool_browser_console,
     'browser_page_info': _tool_browser_page_info,
@@ -6458,7 +6642,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'read_file': 5000, 'glob_files': 2000, 'grep_code': 3000,
         'search_files': 3000, 'file_structure': 3000,
         'find_definition': 3000, 'find_references': 2000,
-        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000,
+        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000, 'generate_pdf': 5000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
         'kill_port': 2000,
