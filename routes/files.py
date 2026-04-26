@@ -750,107 +750,137 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     throwOnError: false
   }});
 
-  // ── Scroll Sync Helper Functions ──
+  // ── Text-Based Scroll Sync ──
+  var _isScrollingFromParent = false;
+  var _scrollTimer = null;
+  var SCROLL_SYNC_THROTTLE = 50;
 
   /**
-   * Scroll to the element with data-source-line closest to (but <=) targetLine.
+   * Find the first block element whose text content contains the given text,
+   * then scroll it into view.
    */
-  function _scrollToSourceLine(targetLine) {{
-    var elements = document.querySelectorAll('[data-source-line]');
-    if (!elements.length) return;
+  function _scrollToText(text) {{
+    if (!text) return;
+    text = text.trim();
+    if (!text) return;
+
+    var elements = document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,td,th,tr,dl,dt,dd'
+    );
     var bestEl = null;
-    var bestLine = -1;
+    var bestPriority = -1; // 0=start match, 1=contains match, 2=reverse match
+
     for (var i = 0; i < elements.length; i++) {{
-      var sl = parseInt(elements[i].getAttribute('data-source-line'), 10);
-      if (!isNaN(sl) && sl <= targetLine && sl > bestLine) {{
-        bestLine = sl;
+      var content = (elements[i].textContent || '').trim();
+      if (!content) continue;
+
+      // Priority 0: element text starts with anchor text (best match)
+      if (content.indexOf(text) === 0) {{
         bestEl = elements[i];
+        bestPriority = 0;
+        break;
+      }}
+      // Priority 1: element text contains anchor text
+      if (content.indexOf(text) !== -1 && bestPriority > 1) {{
+        bestEl = elements[i];
+        bestPriority = 1;
       }}
     }}
+
+    // Priority 2: anchor text contains element text (useful for short elements)
+    if (!bestEl) {{
+      for (var i = 0; i < elements.length; i++) {{
+        var content = (elements[i].textContent || '').trim();
+        if (content && content.length >= 3 && text.indexOf(content) !== -1) {{
+          bestEl = elements[i];
+          break;
+        }}
+      }}
+    }}
+
     if (bestEl) {{
       bestEl.scrollIntoView({{ block: 'start', behavior: 'instant' }});
     }}
   }}
 
   /**
-   * Find the element closest to the top of the viewport and return its data-source-line.
+   * Get the text content of the first visible element in the preview.
+   * Used for reverse sync: preview → editor.
    */
-  function _getTopVisibleSourceLine() {{
-    var elements = document.querySelectorAll('[data-source-line]');
-    if (!elements.length) return 0;
-    var viewportTop = 30;
+  function _getFirstVisibleText() {{
+    var elements = document.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,p,li,blockquote,td,th'
+    );
     var bestEl = null;
     var bestDist = Infinity;
     var fallbackEl = null;
     var fallbackDist = Infinity;
+
     for (var i = 0; i < elements.length; i++) {{
-      var el = elements[i];
-      var rect = el.getBoundingClientRect();
-      var dist = Math.abs(rect.top - viewportTop);
-      if (rect.top <= viewportTop + 20) {{
-        if (dist < bestDist || bestEl === null) {{
+      var rect = elements[i].getBoundingClientRect();
+      // Element is at or near the viewport top
+      if (rect.top >= -30 && rect.top <= 60) {{
+        var dist = Math.abs(rect.top);
+        if (dist < bestDist) {{
           bestDist = dist;
-          bestEl = el;
+          bestEl = elements[i];
         }}
       }}
-      // Track the first element BELOW the viewport as fallback (for scroll-to-bottom case)
-      if (rect.top > viewportTop && rect.top < fallbackDist) {{
+      // Track first element below viewport as fallback
+      if (rect.top > 60 && rect.top < fallbackDist) {{
         fallbackDist = rect.top;
-        fallbackEl = el;
+        fallbackEl = elements[i];
       }}
     }}
-    if (!bestEl) bestEl = fallbackEl || elements[0];
-    if (bestEl) {{
-      var sl = parseInt(bestEl.getAttribute('data-source-line'), 10);
-      return isNaN(sl) ? 0 : sl;
+
+    var el = bestEl || fallbackEl;
+    if (el) {{
+      return (el.textContent || '').trim().substring(0, 100);
     }}
-    return 0;
+    return '';
   }}
 
-  // ── Bidirectional Scroll Sync State ──
-  var _isScrollingFromParent = false;
-  var _scrollTimer = null;
-  var SCROLL_SYNC_THROTTLE = 50;
-
-  // ── Initial auto-scroll (suppress feedback to parent) ──
-  var lineParam = new URLSearchParams(window.location.search).get('line');
-  if (lineParam !== null) {{
-    var targetLine = parseInt(lineParam, 10);
-    if (!isNaN(targetLine)) {{
-      _isScrollingFromParent = true; // suppress scroll feedback during initial scroll
+  // ── Initial auto-scroll from anchor parameter ──
+  var anchorParam = new URLSearchParams(window.location.search).get('anchor');
+  if (anchorParam) {{
+    _isScrollingFromParent = true; // suppress scroll feedback during initial scroll
+    try {{
+      var anchorText = decodeURIComponent(escape(atob(anchorParam)));
       requestAnimationFrame(function() {{
         requestAnimationFrame(function() {{
-          _scrollToSourceLine(targetLine);
+          _scrollToText(anchorText);
           setTimeout(function() {{ _isScrollingFromParent = false; }}, 200);
         }});
       }});
+    }} catch(e) {{
+      _isScrollingFromParent = false;
     }}
   }}
 
-  function _notifyParentScroll() {{
-    if (_isScrollingFromParent) return;
-    var line = _getTopVisibleSourceLine();
-    if (line >= 0) {{
-      window.parent.postMessage({{ type: 'previewScrolled', line: line }}, '*');
-    }}
-  }}
-
-  // Listen for scroll events in the preview
+  // Listen for scroll events — notify parent of position changes
   window.addEventListener('scroll', function() {{
     clearTimeout(_scrollTimer);
-    _scrollTimer = setTimeout(_notifyParentScroll, SCROLL_SYNC_THROTTLE);
+    _scrollTimer = setTimeout(function() {{
+      if (_isScrollingFromParent) return;
+      var text = _getFirstVisibleText();
+      if (text) {{
+        window.parent.postMessage({{ type: 'previewScrolled', text: text }}, '*');
+      }}
+    }}, SCROLL_SYNC_THROTTLE);
   }});
 
   // Listen for messages from parent editor
   window.addEventListener('message', function(event) {{
     if (!event.data || typeof event.data !== 'object') return;
-    if (event.data.type === 'scrollToLine') {{
+    if (event.data.type === 'scrollToText') {{
+      // Parent editor scrolled → find matching text and scroll preview
       _isScrollingFromParent = true;
-      _scrollToSourceLine(event.data.line);
+      _scrollToText(event.data.text);
       setTimeout(function() {{ _isScrollingFromParent = false; }}, 150);
-    }} else if (event.data.type === 'getCurrentScrollLine') {{
-      var line = _getTopVisibleSourceLine();
-      window.parent.postMessage({{ type: 'currentScrollLine', line: line }}, '*');
+    }} else if (event.data.type === 'getCurrentScrollText') {{
+      // Parent wants to know our current visible text (e.g. when closing panel)
+      var text = _getFirstVisibleText();
+      window.parent.postMessage({{ type: 'currentScrollText', text: text }}, '*');
     }}
   }});
 }})();
