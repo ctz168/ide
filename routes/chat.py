@@ -6642,7 +6642,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'read_file': 5000, 'glob_files': 2000, 'grep_code': 3000,
         'search_files': 3000, 'file_structure': 3000,
         'find_definition': 3000, 'find_references': 2000,
-        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000, 'generate_pdf': 5000,
+        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000, 'generate_pdf': 100000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
         'kill_port': 2000,
