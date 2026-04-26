@@ -2128,21 +2128,37 @@ const EditorManager = (() => {
             }
         }
 
-        // Switch to the browser tab in the bottom panel
+        // Make sure the bottom panel is visible.
+        // hidePanel() sets style.display='none' and removes 'visible' class,
+        // but does NOT re-add the 'hidden' class. So we must handle both cases:
+        //   1) First open: panel has 'hidden' CSS class → remove it
+        //   2) Re-open after close: panel has style.display='none' → use showPanel()
+        const bottomPanel = document.getElementById('bottom-panel');
+        if (bottomPanel) {
+            bottomPanel.classList.remove('hidden');
+            if (bottomPanel.style.display === 'none' || !bottomPanel.classList.contains('visible')) {
+                if (window.TerminalManager && typeof window.TerminalManager.showPanel === 'function') {
+                    window.TerminalManager.showPanel();
+                } else {
+                    bottomPanel.style.display = '';
+                    bottomPanel.classList.add('visible');
+                }
+            }
+        }
+
+        // Switch to the browser tab in the bottom panel (after panel is visible)
         const browserTab = document.querySelector('[data-btab="browser"]');
         if (browserTab) {
             browserTab.click();
         }
 
-        // Make sure the bottom panel is visible
-        const bottomPanel = document.getElementById('bottom-panel');
-        if (bottomPanel && bottomPanel.classList.contains('hidden')) {
-            bottomPanel.classList.remove('hidden');
-        }
-
-        // Navigate the preview iframe to the file
+        // Navigate the preview iframe to the file.
+        // Force reload by clearing src first — if the URL is identical to the
+        // previous one (e.g. same anchor text), the browser won't reload and
+        // the anchor-based auto-scroll won't fire.
         const iframe = document.getElementById('preview-frame');
         if (iframe) {
+            iframe.src = '';
             iframe.src = previewUrl;
         }
 
