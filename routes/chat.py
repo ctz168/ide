@@ -2426,57 +2426,58 @@ _UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 _UA_BOT = 'Mozilla/5.0 (compatible; PhoneIDE-Bot/1.0)'
 
 
-def _search_duckduckgo(query, max_results=10):
-    """Search via DuckDuckGo HTML. Returns list of {title, url, snippet}."""
-    url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query)
-    req = urllib.request.Request(url, headers={'User-Agent': _UA_DESKTOP})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        html_content = resp.read().decode('utf-8', errors='ignore')
+def _search_ddg_lite(query, max_results=10):
+    """Search via DuckDuckGo Lite (POST). Most reliable DDG method.
+    Returns real URLs directly (no redirect decoding needed).
+    Uses simple table-based HTML that rarely changes."""
+    import http.client as _hc
+    conn = _hc.HTTPSConnection('lite.duckduckgo.com', timeout=15)
+    try:
+        headers = {
+            'User-Agent': _UA_DESKTOP,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html',
+        }
+        conn.request('POST', '/lite/', body='q=' + urllib.parse.quote_plus(query), headers=headers)
+        resp = conn.getresponse()
+        html = resp.read().decode('utf-8', errors='ignore')
+    finally:
+        conn.close()
     results = []
-    # Multiple regex patterns for robustness (DDG changes HTML structure occasionally)
-    # Pattern 1: result__a + result__snippet (primary)
+    # DDG Lite uses <a rel="nofollow" href="URL" class='result-link'>Title</a>
+    # Note: class uses single quotes, href uses double quotes
     for match in re.finditer(
-        r'<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)</a>.*?'
-        r'<a class="result__snippet"[^>]*>([^<]*(?:<[^a][^<]*)*)</a>',
-        html_content, re.DOTALL
+        r"<a rel=\"nofollow\" href=\"([^\"]+)\" class='result-link'>(.*?)</a>",
+        html, re.DOTALL
     ):
         link = match.group(1).strip()
         title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
-        snippet = re.sub(r'<[^>]+>', '', match.group(3)).strip()
-        if link.startswith('//'):
-            link = 'https:' + link
-        # Skip DDG redirect links — resolve to real URL if possible
-        if '//duckduckgo.com/l/' in link:
-            try:
-                redirect_req = urllib.request.Request(link, headers={'User-Agent': _UA_BOT})
-                redirect_req.follow_redirects = False  # not supported, but we handle 3xx below
-                with urllib.request.urlopen(redirect_req, timeout=5) as rr:
-                    link = rr.url  # final URL after redirect
-            except Exception:
-                # Try extracting fromuddg param
-                u_m = re.search(r'uddg=([^&]+)', link)
-                if u_m:
-                    link = urllib.parse.unquote(u_m.group(1))
+        # Decode HTML entities in title
+        title = title.replace('&#x27;', "'").replace('&#039;', "'")
+        title = title.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
         if title and link:
-            results.append({'title': title, 'url': link, 'snippet': snippet})
+            results.append({'title': title, 'url': link, 'snippet': ''})
         if len(results) >= max_results:
             break
-    # Pattern 2: fallback — look for result__a with result__extras__url
+    # Fallback: also try standard HTML version with double-quoted class
     if not results:
+        url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query)
+        req = urllib.request.Request(url, headers={'User-Agent': _UA_DESKTOP})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html_content = resp.read().decode('utf-8', errors='ignore')
         for match in re.finditer(
-            r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            r'<a rel="nofollow" class="result__a" href="([^"]+)">([^<]+)</a>',
             html_content, re.DOTALL
         ):
             link = match.group(1).strip()
             title = re.sub(r'<[^>]+>', '', match.group(2)).strip()
             if link.startswith('//'):
                 link = 'https:' + link
-            if title and link and 'duckduckgo.com/l/' not in link:
+            uddg_m = re.search(r'uddg=([^&]+)', link)
+            if uddg_m:
+                link = urllib.parse.unquote(uddg_m.group(1))
+            if title and link and 'duckduckgo.com' not in link:
                 results.append({'title': title, 'url': link, 'snippet': ''})
-            elif title and link:
-                u_m = re.search(r'uddg=([^&]+)', link)
-                if u_m:
-                    results.append({'title': title, 'url': urllib.parse.unquote(u_m.group(1)), 'snippet': ''})
             if len(results) >= max_results:
                 break
     return results
@@ -2485,11 +2486,15 @@ def _search_duckduckgo(query, max_results=10):
 def _decode_bing_redirect_url(raw_url):
     """Extract real URL from Bing ck/a redirect URL."""
     raw_url = raw_url.replace('&amp;', '&')
+    # Skip if it's a bing redirect tracker with no decodable URL
+    if 'bing.com/ck/a' in raw_url or 'bing.com/WS/' in raw_url:
+        u_m = re.search(r'u=([A-Za-z0-9_\-+/=%]+)', raw_url)
+        if not u_m:
+            return ''  # Cannot decode — return empty to signal "skip this result"
     u_m = re.search(r'u=([A-Za-z0-9_\-+/=%]+)', raw_url)
     if not u_m:
         return raw_url
     b64 = u_m.group(1)
-    # Strip 'a1' prefix (Bing version indicator)
     if b64.startswith('a1'):
         b64 = b64[2:]
     b64 = urllib.parse.unquote(b64)
@@ -2505,7 +2510,7 @@ def _decode_bing_redirect_url(raw_url):
 
 def _search_bing(query, max_results=10):
     """Search via Bing. Returns list of {title, url, snippet}."""
-    url = 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(query) + '&setlang=en'
+    url = 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(query) + '&setlang=en&cc=us'
     req = urllib.request.Request(url, headers={
         'User-Agent': _UA_DESKTOP,
         'Accept-Language': 'en-US,en;q=0.9',
@@ -2515,19 +2520,19 @@ def _search_bing(query, max_results=10):
     results = []
     blocks = re.split(r'<li class="b_algo', html_content)
     for block in blocks[1:]:
-        # Title
         h2_m = re.search(r'<h2[^>]*>\s*<a[^>]*>(.*?)</a>', block, re.DOTALL)
         if not h2_m:
             continue
         title = re.sub(r'<[^>]+>', '', h2_m.group(1)).strip()
-        # URL from <h2><a href="...">
         href_m = re.search(r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"', block)
         if not href_m:
             continue
-        raw_url = href_m.group(1)
+        raw_url = href_m.group(1).replace('&amp;', '&')
         real_url = _decode_bing_redirect_url(raw_url)
-        # Skip bing-internal navigation tabs (images/videos/maps)
-        if 'bing.com' in real_url and '/search' in real_url:
+        # Skip results where URL could not be decoded or is bing-internal
+        if not real_url:
+            continue
+        if 'bing.com' in real_url:
             continue
         # Snippet
         p_m = re.search(r'<p[^>]*class="b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
@@ -2537,6 +2542,42 @@ def _search_bing(query, max_results=10):
         snippet = snippet.replace('&nbsp;', ' ').replace('&#0183;', '·')
         if title and real_url:
             results.append({'title': title, 'url': real_url, 'snippet': snippet})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _search_yandex(query, max_results=10):
+    """Search via Yandex (international). Returns list of {title, url, snippet}."""
+    url = 'https://yandex.com/search/?text=' + urllib.parse.quote_plus(query) + '&lr=213&lang=en'
+    req = urllib.request.Request(url, headers={
+        'User-Agent': _UA_DESKTOP,
+        'Accept-Language': 'en-US,en;q=0.9',
+    })
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        html_content = resp.read().decode('utf-8', errors='ignore')
+    results = []
+    # Yandex result blocks: <li class="serp-item" ...>
+    blocks = re.split(r'<div[^>]*class="[^"]*serp-item[^"]*"', html_content)
+    for block in blocks[1:]:
+        # Title link
+        link_m = re.search(r'<a[^>]*class="[^"]*link[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not link_m:
+            link_m = re.search(r'<a[^>]*href="(https?://yandex\.[^"]+/search/[^"]*|/search/[^"]*|https?://[^"&]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not link_m:
+            continue
+        href = link_m.group(1).strip()
+        title = re.sub(r'<[^>]+>', '', link_m.group(2)).strip()
+        # Skip Yandex internal search links
+        if 'yandex.com/search' in href or 'yandex.ru/search' in href:
+            continue
+        if not title or len(title) < 5:
+            continue
+        # Snippet: organic__text or text-container
+        s_m = re.search(r'<div[^>]*class="[^"]*(?:organic__text|text-container|extended-text)[^"]*"[^>]*>(.*?)</div>', block, re.DOTALL)
+        snippet = re.sub(r'<[^>]+>', '', s_m.group(1)).strip() if s_m else ''
+        if title and href:
+            results.append({'title': title, 'url': href, 'snippet': snippet})
         if len(results) >= max_results:
             break
     return results
@@ -2557,25 +2598,42 @@ def _format_search_results(query, results):
 
 
 def _tool_web_search(args):
-    """Web search with DuckDuckGo primary + Bing fallback."""
+    """Web search with multiple engine fallback: DDG Lite → Yandex → Bing."""
     query = args.get('query', '').strip()
     if not query:
         return 'Error: query is required'
-    # Try DuckDuckGo first
+    errors = []
+    # Engine 1: DDG Lite POST (most reliable — returns real URLs directly, no redirect decoding)
     try:
-        results = _search_duckduckgo(query, max_results=10)
+        results = _search_ddg_lite(query, max_results=10)
         if results:
             return _format_search_results(query, results)
+        log_write('[web_search] DDG Lite returned 0 results')
     except Exception as e:
-        log_write(f'[web_search] DuckDuckGo failed: {e}, falling back to Bing')
-    # Fallback to Bing
+        errors.append(f'DDG Lite: {e}')
+        log_write(f'[web_search] DDG Lite failed: {e}')
+    # Engine 2: Yandex
+    try:
+        results = _search_yandex(query, max_results=10)
+        if results:
+            return _format_search_results(query, results) + '\n(Search via Yandex)'
+        log_write('[web_search] Yandex returned 0 results')
+    except Exception as e:
+        errors.append(f'Yandex: {e}')
+        log_write(f'[web_search] Yandex failed: {e}')
+    # Engine 3: Bing (last resort, redirect URLs may not decode)
     try:
         results = _search_bing(query, max_results=10)
         if results:
             return _format_search_results(query, results) + '\n(Search via Bing)'
+        log_write('[web_search] Bing returned 0 results')
     except Exception as e:
-        log_write(f'[web_search] Bing also failed: {e}')
-    return f'Error: All search engines failed for "{query}". Try rephrasing your query.'
+        errors.append(f'Bing: {e}')
+        log_write(f'[web_search] Bing failed: {e}')
+    err_detail = '; '.join(errors) if errors else 'all engines returned 0 results'
+    return (f'Error: All search engines failed for "{query}". '
+            f'Details: [{err_detail}]. '
+            f'Try rephrasing your query or check network connectivity.')
 
 
 # ==================== Scholar / Academic Search ====================
@@ -2634,7 +2692,7 @@ def _search_scholar_ddg(query, max_results=8):
     # Add scholarly modifiers to improve academic relevance
     scholarly_query = query + ' site:arxiv.org OR site:scholar.google.com OR site:semanticscholar.org OR site:researchgate.net OR filetype:pdf'
     try:
-        results = _search_duckduckgo(scholar_query, max_results=max_results)
+        results = _search_ddg_lite(scholar_query, max_results=max_results)
     except Exception:
         results = []
     # Filter to academic domains only
