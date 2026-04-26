@@ -14,6 +14,8 @@ const TerminalManager = (() => {
 
     // SessionStorage key for persisting running process ID across page refreshes
     const PROC_ID_STORAGE_KEY = 'phoneide_running_proc_id';
+    // SessionStorage key for persisting outputClearedSince across page refreshes
+    const OUTPUT_CLEARED_SINCE_KEY = 'phoneide_output_cleared_since';
     let compilers = [];             // cached compiler list
     let panelHeight = Math.floor(window.innerHeight * 0.85);  // default 85% of screen height
     let isDragging = false;         // resize drag state
@@ -61,6 +63,16 @@ const TerminalManager = (() => {
     }
 
     // ── Helpers ────────────────────────────────────────────────────
+
+    /**
+     * Reset outputClearedSince both in-memory and in sessionStorage.
+     * Called when a new process starts or a process finishes, because
+     * the clear-offset is no longer relevant.
+     */
+    function resetOutputClearedSince() {
+        outputClearedSince = -1;
+        try { sessionStorage.removeItem(OUTPUT_CLEARED_SINCE_KEY); } catch (_e) {}
+    }
 
     /**
      * Escape HTML entities for safe insertion into output
@@ -288,7 +300,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -373,7 +385,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -445,7 +457,7 @@ const TerminalManager = (() => {
 
             currentProcId = data.proc_id || data.process_id || data.id || null;
             pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
 
             if (currentProcId) {
                 persistProcId(currentProcId);
@@ -874,7 +886,7 @@ const TerminalManager = (() => {
         clearPersistedProcId();
         currentProcId = null;
         pollSince = 0;
-        outputClearedSince = -1;
+        resetOutputClearedSince();
         setRunningState(false);
         // Execute post-complete callback if registered
         if (onProcessComplete) {
@@ -1193,6 +1205,8 @@ const TerminalManager = (() => {
         // reconnectToProcess() know to only fetch output after this point,
         // not from the beginning (which would re-show cleared output).
         outputClearedSince = pollSince;
+        // Persist to sessionStorage so it survives page refreshes
+        try { sessionStorage.setItem(OUTPUT_CLEARED_SINCE_KEY, String(outputClearedSince)); } catch (_e) {}
     }
 
     // ── Panel Management ───────────────────────────────────────────
@@ -1662,6 +1676,15 @@ const TerminalManager = (() => {
         initScrollDetection();  // Smart auto-scroll with user scroll detection
         initAutoCopyOnSelection();  // Auto-copy text when selected in output
 
+        // Restore outputClearedSince from sessionStorage (survives page refresh)
+        // so that reconnection doesn't re-fetch output the user already cleared
+        try {
+            const saved = sessionStorage.getItem(OUTPUT_CLEARED_SINCE_KEY);
+            if (saved !== null) {
+                outputClearedSince = parseInt(saved, 10);
+            }
+        } catch (_e) {}
+
         // Print startup banner with system info
         printStartupBanner();
 
@@ -1873,7 +1896,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
                 setRunningState(true);
                 streamOutput(data.proc_id);
             } else {
@@ -1947,7 +1970,7 @@ const TerminalManager = (() => {
                 if (data.proc_id) {
                     currentProcId = data.proc_id;
                     pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
                     setRunningState(true);
                     onProcessComplete = () => {
                         _hideVenvProgress();
@@ -1986,7 +2009,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
                 setRunningState(true);
                 // Set callback to refresh package list after install
                 onProcessComplete = () => {
@@ -2099,7 +2122,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
                 setRunningState(true);
 
                 onProcessComplete = () => {
@@ -2190,7 +2213,7 @@ const TerminalManager = (() => {
             if (data.proc_id) {
                 currentProcId = data.proc_id;
                 pollSince = 0;
-            outputClearedSince = -1;
+            resetOutputClearedSince();
                 setRunningState(true);
 
                 // Set callback to refresh and hide progress
