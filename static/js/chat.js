@@ -341,6 +341,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * The ring shows: thin white outline at 0% → thick black fill at 100%.
      * Over 80% turns red as a warning.
      */
+    // Estimated system prompt + tool definitions overhead in tokens.
+    // Updated by backend ctx_info SSE events during each conversation turn.
+    let _ctxSystemOverhead = 13000; // conservative default (~13K tokens for 42 tools + sys prompt)
+
     function updateContextRing() {
         const ring = document.getElementById('ctx-progress-ring');
         if (!ring) return;
@@ -357,11 +361,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             }
         }
 
-        // Estimate total tokens from all messages
-        let totalTokens = 0;
+        // Estimate total tokens from all messages + system overhead
+        let msgTokens = 0;
         for (const msg of messages) {
-            totalTokens += estimateTokens(msg.content || '');
+            msgTokens += estimateTokens(msg.content || '');
         }
+        // Include system prompt + tool definitions overhead (not in messages array)
+        let totalTokens = msgTokens + _ctxSystemOverhead;
 
         const pct = Math.min(totalTokens / maxCtx, 1);
         const circumference = 97.4; // 2 * PI * 15.5
@@ -381,7 +387,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
 
         // Update tooltip
-        ring.title = `上下文: ~${totalTokens} / ${maxCtx} tokens (${Math.round(pct * 100)}%)`;
+        ring.title = `上下文: ~${totalTokens} / ${maxCtx} tokens (${Math.round(pct * 100)}%)\n消息: ~${msgTokens} | 系统: ~${_ctxSystemOverhead}`;
 
         // Show percentage text inside ring
         let pctLabel = ring.querySelector('.ctx-pct');
@@ -1572,6 +1578,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     } else if (eventType === 'reconnected') {
                         // Skip — this is just a signal
                         continue;
+                    } else if (eventType === 'ctx_info') {
+                        // Backend reports system prompt + tools overhead token count
+                        if (parsed.sys_tokens > 0) _ctxSystemOverhead = parsed.sys_tokens;
+                        updateContextRing();
+                        continue;
                     }
 
                     // Once we see the first non-buffer event after buffered data, we're caught up
@@ -1976,7 +1987,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
                     const eventType = parsed.type || '';
 
-                    if (eventType === 'text') {
+                    if (eventType === 'ctx_info') {
+                        if (parsed.sys_tokens > 0) _ctxSystemOverhead = parsed.sys_tokens;
+                        updateContextRing();
+                        continue;
+                    } else if (eventType === 'text') {
                         // Text chunk from assistant
                         hideTyping();
                         if (!currentStreamEl) {
@@ -2343,7 +2358,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
                     const eventType = parsed.type || '';
 
-                    if (eventType === 'text') {
+                    if (eventType === 'ctx_info') {
+                        if (parsed.sys_tokens > 0) _ctxSystemOverhead = parsed.sys_tokens;
+                        updateContextRing();
+                        continue;
+                    } else if (eventType === 'text') {
                         hideTyping();
                         if (!currentStreamEl) {
                             startStreamingMessage();

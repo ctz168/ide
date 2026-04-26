@@ -6915,6 +6915,17 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
         yield f"data: {json.dumps({'type': 'thinking', 'content': f'Iteration {iteration + 1}: Calling LLM...'})}\n\n"
 
+        # On first iteration, send context overhead info to the frontend
+        # so the progress ring accurately includes system prompt + tools token cost
+        if iteration == 0:
+            try:
+                _sys_prompt = _load_system_prompt_template()
+                _tools_json = json.dumps(AGENT_TOOLS, ensure_ascii=False)
+                _sys_tokens = _estimate_tokens(_sys_prompt + _tools_json)
+                yield f"data: {json.dumps({'type': 'ctx_info', 'sys_tokens': _sys_tokens})}\n\n"
+            except Exception:
+                pass
+
         # Call LLM with streaming
         response_message = None
         finish_reason = None
@@ -7203,10 +7214,14 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                         return
                     # Aggressively compress context and retry (don't consume normal retry counter)
-                    budget = llm_config.get('max_tokens', 50000) * 10
-                    context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
+                    # Use _get_context_budget to match the same budget used in normal flow
+                    # Previously used max_tokens*10 which could be wildly wrong (e.g. 250K for a 32K model)
+                    comp_budget = _get_context_budget(llm_config)
+                    # First failure: use normal budget; subsequent failures: halve the budget
+                    comp_budget = max(comp_budget // (2 ** min(context_retries - 1, 3)), 4000)
+                    context, was_compressed = _compress_context(context, max_tokens=comp_budget)
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context too large, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
-                    print(f'[LLM] Context overflow detected (HTTP {e.code}), compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {budget // 2})')
+                    print(f'[LLM] Context overflow detected (HTTP {e.code}), compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {comp_budget})')
                     time.sleep(0.5)
                     continue
                 
@@ -7236,10 +7251,11 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                         yield f"data: {json.dumps({'type': 'error', 'content': f'Context still too large after {MAX_CONTEXT_RETRIES} compression attempts.'})}\n\n"
                         yield f"data: {json.dumps({'type': 'done', 'completed': False, 'iterations': total_iterations})}\n\n"
                         return
-                    budget = llm_config.get('max_tokens', 50000) * 10
-                    context, was_compressed = _compress_context(context, max_tokens=max(budget // 2, 4000))
+                    comp_budget = _get_context_budget(llm_config)
+                    comp_budget = max(comp_budget // (2 ** min(context_retries - 1, 3)), 4000)
+                    context, was_compressed = _compress_context(context, max_tokens=comp_budget)
                     yield f"data: {json.dumps({'type': 'thinking', 'content': f'Context error, compressing and retrying ({context_retries}/{MAX_CONTEXT_RETRIES})...'})}\n\n"
-                    print(f'[LLM] Context overflow exception, compressed and retrying')
+                    print(f'[LLM] Context overflow exception, compressed to {sum(_estimate_tokens(m.get("content","") or "") for m in context)} tokens (budget: {comp_budget})')
                     time.sleep(0.5)
                     continue
                 
