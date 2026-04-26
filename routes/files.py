@@ -620,24 +620,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
   }}
 
-  // ── Step 4: Tokenize originalContent for accurate line mapping ──
-  // Use originalContent (not mdRaw) so line numbers match the editor source
-  var origTokens = marked.lexer(originalContent);
-
-  // Build line map by counting newlines in each token's raw text.
-  // No fuzzy text matching — just accumulate newline offsets.
-  var lineMap = [];
-  var lineOffset = 0;
-  for (var ti = 0; ti < origTokens.length; ti++) {{
-    var tok = origTokens[ti];
-    lineMap.push({{ type: tok.type, sourceLine: lineOffset }});
-    if (tok.raw) {{
-      var newlines = tok.raw.split('\\n').length - 1;
-      lineOffset += Math.max(1, newlines);
-    }}
-  }}
-
-  // ── Step 5: Create a clean renderer (no line-injection hooks) ──
+  // ── Step 4: Render markdown with marked (simple one-pass) ──
   var renderer = new marked.Renderer();
   renderer.code = function(code, lang) {{
     if (lang && hljs.getLanguage(lang)) {{
@@ -651,95 +634,101 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 
   marked.setOptions({{ gfm: true, breaks: true, renderer: renderer }});
 
-  // ── Step 6: Render each token individually and inject data-source-line ──
-  // We render origTokens (from originalContent) so the HTML corresponds to correct line numbers.
-  function renderSingleToken(tok) {{
-    try {{
-      var parser = new marked.Parser({{ renderer: renderer }});
-      return parser.parse([tok]);
-    }} catch(e) {{
-      return '';
-    }}
-  }}
+  var html = marked.parse(mdRaw);
 
-  // Build original source lines for list item line lookup
-  var origSourceLines = originalContent.split('\\n');
-
-  function findSourceLineForText(text) {{
-    if (!text) return 0;
-    for (var s = 0; s < origSourceLines.length; s++) {{
-      if (origSourceLines[s] === text) return s;
-    }}
-    // Fallback: prefix match (first occurrence only, used for list items)
-    for (var s = 0; s < origSourceLines.length; s++) {{
-      if (origSourceLines[s].indexOf(text) === 0) return s;
-    }}
-    return 0;
-  }}
-
-  function renderListWithLines(listToken) {{
-    var tag = listToken.ordered ? 'ol' : 'ul';
-    var startAttr = listToken.start && listToken.start !== 1 ? ' start="' + listToken.start + '"' : '';
-    var h = '<' + tag + startAttr + '>';
-    if (listToken.items) {{
-      for (var i = 0; i < listToken.items.length; i++) {{
-        var item = listToken.items[i];
-        var itemLine = 0;
-        if (item.raw) {{
-          itemLine = findSourceLineForText(item.raw.split('\\n')[0]);
-        }}
-        h += '<li data-source-line="' + itemLine + '">';
-        if (item.tokens) {{
-          for (var j = 0; j < item.tokens.length; j++) {{
-            var sub = item.tokens[j];
-            try {{
-              if (sub.type === 'list') {{
-                h += renderListWithLines(sub);
-              }} else {{
-                h += renderSingleToken(sub);
-              }}
-            }} catch(e2) {{
-              h += sub.raw || '';
-            }}
-          }}
-        }}
-        h += '</li>';
-      }}
-    }}
-    h += '</' + tag + '>';
-    return h;
-  }}
-
-  var blockRe = /<(h[1-6]|p|pre|blockquote|ul|ol|li|table|hr|img|div)\\b/i;
-  var resultHtml = '';
-  for (var t = 0; t < origTokens.length; t++) {{
-    var tok = origTokens[t];
-    var srcLine = (lineMap[t] && lineMap[t].sourceLine !== undefined) ? lineMap[t].sourceLine : 0;
-
-    if (tok.type === 'space') continue;
-
-    var tokenHtml = '';
-    if (tok.type === 'list') {{
-      tokenHtml = renderListWithLines(tok);
-    }} else {{
-      tokenHtml = renderSingleToken(tok);
-      if (!tokenHtml) {{
-        tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
-      }}
-    }}
-    // Inject data-source-line into the first block-level element
-    tokenHtml = tokenHtml.replace(blockRe, '<$1 data-source-line="' + srcLine + '"');
-    resultHtml += tokenHtml;
-  }}
-
-  // ── Step 7: Restore math expressions ──
+  // ── Step 5: Restore math expressions ──
   for (var i = 0; i < mathStore.length; i++) {{
-    resultHtml = resultHtml.replace(mathStore[i].id, mathStore[i].math);
+    html = html.replace(mathStore[i].id, mathStore[i].math);
   }}
 
-  document.getElementById('content').innerHTML = resultHtml;
+  document.getElementById('content').innerHTML = html;
 
-  // ── Step 8: Render math with KaTeX ──
+  // ── Step 6: Inject data-source-line by matching rendered text to source lines ──
+  // This is more reliable than counting newlines in token.raw because marked v12
+  // does NOT guarantee raw ends with newline, causing off-by-one accumulation.
+  var sourceLines = originalContent.split('\\n');
+
+  // Strip markdown syntax to get plain text comparable to rendered textContent
+  function stripMd(text) {{
+    return text
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^>\s+/, '')
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+\.\s+/, '')
+      .replace(/~~(.+?)~~/g, '$1')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/__(.+?)__/g, '$1')
+      .replace(/_(.+?)_/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .trim();
+  }}
+
+  // Find source line number for a piece of text from the rendered DOM.
+  // Uses exact match first, then prefix match.
+  function findLineForRenderedText(text) {{
+    if (!text || text.length < 1) return -1;
+    // 1) Exact match on stripped source lines
+    for (var s = 0; s < sourceLines.length; s++) {{
+      if (stripMd(sourceLines[s]) === text) return s;
+    }}
+    // 2) Source line starts with rendered text (useful for short elements)
+    for (var s = 0; s < sourceLines.length; s++) {{
+      if (sourceLines[s].indexOf(text) !== -1) return s;
+    }}
+    // 3) Rendered text starts with source line text
+    for (var s = 0; s < sourceLines.length; s++) {{
+      var stripped = stripMd(sourceLines[s]);
+      if (stripped && text.indexOf(stripped) === 0) return s;
+    }}
+    return -1;
+  }}
+
+  // Walk block elements and inject data-source-line
+  var blockEls = document.querySelectorAll(
+    '#content > h1, #content > h2, #content > h3, #content > h4, #content > h5, #content > h6, ' +
+    '#content > p, #content > pre, #content > blockquote, #content > ul, #content > ol, ' +
+    '#content > table, #content > hr'
+  );
+
+  // For list items and nested block elements, handle separately
+  var lastAssignedLine = -1;
+  for (var i = 0; i < blockEls.length; i++) {{
+    var el = blockEls[i];
+    var text = (el.textContent || '').trim();
+    // Use first 80 chars for matching (avoid very long paragraphs)
+    var matchText = text.substring(0, 80);
+    // If the element is a list, match each <li> separately
+    if (el.tagName === 'UL' || el.tagName === 'OL') {{
+      var items = el.querySelectorAll(':scope > li');
+      for (var j = 0; j < items.length; j++) {{
+        var liText = (items[j].textContent || '').trim().substring(0, 80);
+        var liLine = findLineForRenderedText(liText);
+        if (liLine >= 0) {{
+          items[j].setAttribute('data-source-line', liLine);
+          lastAssignedLine = liLine;
+        }} else {{
+          items[j].setAttribute('data-source-line', lastAssignedLine + 1);
+          lastAssignedLine = lastAssignedLine + 1;
+        }}
+      }}
+      el.setAttribute('data-source-line', lastAssignedLine);
+      continue;
+    }}
+    var line = findLineForRenderedText(matchText);
+    if (line >= 0) {{
+      el.setAttribute('data-source-line', line);
+      lastAssignedLine = line;
+    }} else {{
+      // Fallback: estimate line after last assigned
+      el.setAttribute('data-source-line', lastAssignedLine + 1);
+      lastAssignedLine = lastAssignedLine + 1;
+    }}
+  }}
+
+  // ── Step 7: Render math with KaTeX ──
   renderMathInElement(document.getElementById('content'), {{
     delimiters: [
       {{left: "$$", right: "$$", display: true}},
