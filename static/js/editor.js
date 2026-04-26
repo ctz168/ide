@@ -1450,7 +1450,6 @@ const EditorManager = (() => {
     let _isPreviewScrolling = false;     // Flag: preview scroll event is driving the sync
     let _scrollSyncEnabled = false;      // Whether bidirectional sync is active
     let _editorScrollTimer = null;       // Throttle timer for editor → preview sync
-    let _previewScrollTimer = null;      // Throttle timer for preview → editor sync
     const SCROLL_SYNC_THROTTLE = 50;     // ms throttle for scroll events
 
     /**
@@ -1512,11 +1511,13 @@ const EditorManager = (() => {
      */
     function _syncIframeToEditor(sourceLine) {
         if (!_scrollSyncEnabled || _isEditorScrolling) return;
+        if (sourceLine < 0) return;
         _isPreviewScrolling = true;
 
-        if (editor && sourceLine > 0) {
-            var targetY = editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top;
-            editor.scrollTo(null, targetY - 10);
+        if (editor) {
+            var targetY = sourceLine === 0 ? 0 :
+                editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top;
+            editor.scrollTo(null, Math.max(0, targetY - 10));
         }
 
         // Reset flag after a short delay
@@ -1537,9 +1538,10 @@ const EditorManager = (() => {
             _syncIframeToEditor(event.data.line);
         } else if (event.data.type === 'currentScrollLine') {
             // Response to getCurrentScrollLine request (used when closing panel)
-            if (editor && event.data.line > 0) {
-                var targetY = editor.charCoords({ line: event.data.line, ch: 0 }, 'local').top;
-                editor.scrollTo(null, targetY - 10);
+            if (editor && event.data.line >= 0) {
+                var targetY = event.data.line === 0 ? 0 :
+                    editor.charCoords({ line: event.data.line, ch: 0 }, 'local').top;
+                editor.scrollTo(null, Math.max(0, targetY - 10));
             }
         }
     }
@@ -1573,40 +1575,20 @@ const EditorManager = (() => {
      * by walking the original source line-by-line and matching token.raw text.
      * Returns an array: [{type, sourceLine}, ...] in the same order as the
      * top-level tokens from marked.lexer().
+     * Uses simple newline counting instead of fuzzy text matching.
      */
-    function buildTokenLineMap(tokens, sourceLines) {
+    function buildTokenLineMap(tokens) {
         var map = [];
-        var srcIdx = 0; // current search position in sourceLines (0-based)
+        var lineOffset = 0;
 
         for (var t = 0; t < tokens.length; t++) {
             var tok = tokens[t];
-            var raw = tok.raw || '';
-            if (!raw) {
-                map.push({ type: tok.type, sourceLine: srcIdx });
-                continue;
+            map.push({ type: tok.type, sourceLine: lineOffset });
+            // Advance by the number of newlines in token.raw
+            if (tok.raw) {
+                var newlines = tok.raw.split('\n').length - 1;
+                lineOffset += Math.max(1, newlines);
             }
-            // Count how many newlines are in token.raw to know its span
-            var rawLines = raw.split('\n');
-            var rawFirstLine = rawLines[0];
-
-            // Find where this token starts in the source by scanning forward
-            var found = -1;
-            for (var s = srcIdx; s < sourceLines.length; s++) {
-                if (sourceLines[s] === rawFirstLine ||
-                    sourceLines[s].indexOf(rawFirstLine) === 0 ||
-                    rawFirstLine.indexOf(sourceLines[s]) === 0) {
-                    found = s;
-                    break;
-                }
-            }
-            if (found === -1) {
-                // Fallback: use current srcIdx
-                found = srcIdx;
-            }
-            map.push({ type: tok.type, sourceLine: found });
-            // Advance past the lines this token occupies
-            srcIdx = found + rawLines.length - 1;
-            if (srcIdx < found) srcIdx = found;
         }
         return map;
     }
@@ -1622,8 +1604,6 @@ const EditorManager = (() => {
      * block element in the rendered output.
      */
     function renderMarkdownWithLineNumbers(mdRaw, renderer) {
-        var sourceLines = mdRaw.split('\n');
-
         // Tokenize
         var tokens;
         try {
@@ -1632,8 +1612,8 @@ const EditorManager = (() => {
             tokens = [];
         }
 
-        // Build line map
-        var lineMap = buildTokenLineMap(tokens, sourceLines);
+        // Build line map (simple newline counting, no fuzzy matching)
+        var lineMap = buildTokenLineMap(tokens);
 
         // Create a parser instance for rendering individual tokens
         function renderToken(tok) {
@@ -1728,10 +1708,13 @@ const EditorManager = (() => {
     var _mdSourceLines = [];
     function _findSourceLineForText(text) {
         if (!text) return 0;
+        // Exact match first
         for (var i = 0; i < _mdSourceLines.length; i++) {
-            if (_mdSourceLines[i] === text || _mdSourceLines[i].indexOf(text) === 0) {
-                return i;
-            }
+            if (_mdSourceLines[i] === text) return i;
+        }
+        // Fallback: prefix match (first occurrence)
+        for (var i = 0; i < _mdSourceLines.length; i++) {
+            if (_mdSourceLines[i].indexOf(text) === 0) return i;
         }
         return 0;
     }

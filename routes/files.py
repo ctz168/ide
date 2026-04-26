@@ -589,8 +589,9 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
 <script>
 (function() {{
   var mdRaw = {md_json};
-  var originalContent = mdRaw; // keep unmodified copy for line mapping
+  var originalContent = mdRaw; // unmodified copy for accurate line mapping
 
+  // ── Step 1: Protect code blocks from math regex ──
   var codeStore = [];
   var codeIdx = 0;
   function storeCode(match) {{
@@ -601,6 +602,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   mdRaw = mdRaw.replace(/\`\`\`[\\s\\S]*?\`\`\`/g, storeCode);
   mdRaw = mdRaw.replace(/\`[^\`]+\`/g, storeCode);
 
+  // ── Step 2: Protect math expressions from marked ──
   var mathStore = [];
   var mathIdx = 0;
   function storeMath(match) {{
@@ -613,138 +615,45 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   mdRaw = mdRaw.replace(/\\\\\\(([\\s\\S]*?)\\\\\\)/g, function(m) {{ return storeMath(m); }});
   mdRaw = mdRaw.replace(/\\\\\\[([\\s\\S]*?)\\\\\\]/g, function(m) {{ return storeMath(m); }});
 
+  // ── Step 3: Restore code blocks (marked needs to process them) ──
   for (var ci = 0; ci < codeStore.length; ci++) {{
     mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
   }}
 
-  // Build source-line mapping from lexer tokens (using original unmodified content)
-  var tokens = marked.lexer(originalContent);
-  var blockLineQueue = [];
-  var lineOffset = 0;
-  for (var ti = 0; ti < tokens.length; ti++) {{
-    var tok = tokens[ti];
-    var newLines = (tok.raw.match(/\\n/g) || []).length;
-    var startLine = lineOffset;
-    if (tok.type !== 'space') {{
-      blockLineQueue.push({{ type: tok.type, startLine: startLine }});
-    }}
-    lineOffset += newLines;
-  }}
+  // ── Step 4: Tokenize originalContent for accurate line mapping ──
+  // Use originalContent (not mdRaw) so line numbers match the editor source
+  var origTokens = marked.lexer(originalContent);
 
-  var renderer = new marked.Renderer();
-  var queueIdx = 0;
-
-  function nextSourceLine(type) {{
-    if (queueIdx < blockLineQueue.length && blockLineQueue[queueIdx].type === type) {{
-      var line = blockLineQueue[queueIdx].startLine;
-      queueIdx++;
-      return line;
-    }}
-    return -1;
-  }}
-
-  function injectLine(html, line) {{
-    if (line < 0) return html;
-    return html.replace(/^<(\\w+)/, '<$1 data-source-line="' + line + '"');
-  }}
-
-  // Code renderer with highlight.js + data-source-line
-  renderer.code = function(code, lang) {{
-    var line = nextSourceLine('code');
-    var codeHtml;
-    if (lang && hljs.getLanguage(lang)) {{
-      try {{ codeHtml = '<pre><code class="hljs language-' + lang + '">' +
-                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
-      catch(e) {{ codeHtml = '<pre><code>' + code + '</code></pre>'; }}
-    }} else {{
-      try {{ codeHtml = '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
-      catch(e) {{ codeHtml = '<pre><code>' + code + '</code></pre>'; }}
-    }}
-    return injectLine(codeHtml, line);
-  }};
-
-  var origHeading = renderer.heading.bind(renderer);
-  renderer.heading = function(text, depth, raw) {{
-    var line = nextSourceLine('heading');
-    return injectLine(origHeading(text, depth, raw), line);
-  }};
-
-  var origParagraph = renderer.paragraph.bind(renderer);
-  renderer.paragraph = function(text) {{
-    var line = nextSourceLine('paragraph');
-    return injectLine(origParagraph(text), line);
-  }};
-
-  var origList = renderer.list.bind(renderer);
-  renderer.list = function(body, ordered, start) {{
-    var line = nextSourceLine('list');
-    return injectLine(origList(body, ordered, start), line);
-  }};
-
-  var origBlockquote = renderer.blockquote.bind(renderer);
-  renderer.blockquote = function(body) {{
-    var line = nextSourceLine('blockquote');
-    return injectLine(origBlockquote(body), line);
-  }};
-
-  var origTable = renderer.table.bind(renderer);
-  renderer.table = function(header, body) {{
-    var line = nextSourceLine('table');
-    return injectLine(origTable(header, body), line);
-  }};
-
-  var origHr = renderer.hr.bind(renderer);
-  renderer.hr = function() {{
-    var line = nextSourceLine('hr');
-    return injectLine(origHr(), line);
-  }};
-
-  marked.setOptions({{
-    gfm: true,
-    breaks: true,
-    renderer: renderer
-  }});
-
-  var html = marked.parse(mdRaw);
-
-  // --- Step 3: Parse markdown with source line tracking ---
-  var sourceLines = mdRaw.split('\\n');
-  var tokens;
-  try {{
-    tokens = marked.lexer(mdRaw, {{ gfm: true, breaks: true }});
-  }} catch(e) {{
-    tokens = [];
-  }}
-
-  // Build line map: token index → source line number
+  // Build line map by counting newlines in each token's raw text.
+  // No fuzzy text matching — just accumulate newline offsets.
   var lineMap = [];
-  var srcIdx = 0;
-  for (var t = 0; t < tokens.length; t++) {{
-    var tok = tokens[t];
-    var raw = tok.raw || '';
-    if (!raw) {{
-      lineMap.push(srcIdx);
-      continue;
+  var lineOffset = 0;
+  for (var ti = 0; ti < origTokens.length; ti++) {{
+    var tok = origTokens[ti];
+    lineMap.push({{ type: tok.type, sourceLine: lineOffset }});
+    if (tok.raw) {{
+      var newlines = tok.raw.split('\\n').length - 1;
+      lineOffset += Math.max(1, newlines);
     }}
-    var rawLines = raw.split('\\n');
-    var rawFirstLine = rawLines[0];
-    var found = -1;
-    for (var s = srcIdx; s < sourceLines.length; s++) {{
-      if (sourceLines[s] === rawFirstLine ||
-          sourceLines[s].indexOf(rawFirstLine) === 0 ||
-          rawFirstLine.indexOf(sourceLines[s]) === 0) {{
-        found = s;
-        break;
-      }}
-    }}
-    if (found === -1) found = srcIdx;
-    lineMap.push(found);
-    srcIdx = found + rawLines.length - 1;
-    if (srcIdx < found) srcIdx = found;
   }}
 
-  // Render each token individually, injecting data-source-line
-  function renderSingleToken2(tok) {{
+  // ── Step 5: Create a clean renderer (no line-injection hooks) ──
+  var renderer = new marked.Renderer();
+  renderer.code = function(code, lang) {{
+    if (lang && hljs.getLanguage(lang)) {{
+      try {{ return '<pre><code class="hljs language-' + lang + '">' +
+                    hljs.highlight(code, {{ language: lang }}).value + '</code></pre>'; }}
+      catch(e) {{}}
+    }}
+    try {{ return '<pre><code class="hljs">' + hljs.highlightAuto(code).value + '</code></pre>'; }}
+    catch(e) {{ return '<pre><code>' + code + '</code></pre>'; }}
+  }};
+
+  marked.setOptions({{ gfm: true, breaks: true, renderer: renderer }});
+
+  // ── Step 6: Render each token individually and inject data-source-line ──
+  // We render origTokens (from originalContent) so the HTML corresponds to correct line numbers.
+  function renderSingleToken(tok) {{
     try {{
       var parser = new marked.Parser({{ renderer: renderer }});
       return parser.parse([tok]);
@@ -753,26 +662,19 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     }}
   }}
 
-  var resultHtml = '';
-  for (var t = 0; t < tokens.length; t++) {{
-    var tok = tokens[t];
-    var srcLine = lineMap[t] || 0;
-    var tokenHtml = '';
+  // Build original source lines for list item line lookup
+  var origSourceLines = originalContent.split('\\n');
 
-    if (tok.type === 'space') continue;
-
-    if (tok.type === 'list') {{
-      tokenHtml = renderListWithLines(tok);
-    }} else {{
-      tokenHtml = renderSingleToken2(tok);
-      if (!tokenHtml) {{
-        tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
-      }}
+  function findSourceLineForText(text) {{
+    if (!text) return 0;
+    for (var s = 0; s < origSourceLines.length; s++) {{
+      if (origSourceLines[s] === text) return s;
     }}
-    // Inject data-source-line into the first block-level element
-    var blockRe = /<(h[1-6]|p|pre|blockquote|ul|ol|li|table|hr|img|div)\\b/i;
-    tokenHtml = tokenHtml.replace(blockRe, '<$1 data-source-line="' + srcLine + '"');
-    resultHtml += tokenHtml;
+    // Fallback: prefix match (first occurrence only, used for list items)
+    for (var s = 0; s < origSourceLines.length; s++) {{
+      if (origSourceLines[s].indexOf(text) === 0) return s;
+    }}
+    return 0;
   }}
 
   function renderListWithLines(listToken) {{
@@ -784,13 +686,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
         var item = listToken.items[i];
         var itemLine = 0;
         if (item.raw) {{
-          var itemFirstLine = item.raw.split('\\n')[0];
-          for (var s = 0; s < sourceLines.length; s++) {{
-            if (sourceLines[s] === itemFirstLine || sourceLines[s].indexOf(itemFirstLine) === 0) {{
-              itemLine = s;
-              break;
-            }}
-          }}
+          itemLine = findSourceLineForText(item.raw.split('\\n')[0]);
         }}
         h += '<li data-source-line="' + itemLine + '">';
         if (item.tokens) {{
@@ -800,7 +696,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
               if (sub.type === 'list') {{
                 h += renderListWithLines(sub);
               }} else {{
-                h += renderSingleToken2(sub);
+                h += renderSingleToken(sub);
               }}
             }} catch(e2) {{
               h += sub.raw || '';
@@ -814,14 +710,36 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     return h;
   }}
 
-  html = resultHtml;
+  var blockRe = /<(h[1-6]|p|pre|blockquote|ul|ol|li|table|hr|img|div)\\b/i;
+  var resultHtml = '';
+  for (var t = 0; t < origTokens.length; t++) {{
+    var tok = origTokens[t];
+    var srcLine = (lineMap[t] && lineMap[t].sourceLine !== undefined) ? lineMap[t].sourceLine : 0;
 
-  for (var i = 0; i < mathStore.length; i++) {{
-    html = html.replace(mathStore[i].id, mathStore[i].math);
+    if (tok.type === 'space') continue;
+
+    var tokenHtml = '';
+    if (tok.type === 'list') {{
+      tokenHtml = renderListWithLines(tok);
+    }} else {{
+      tokenHtml = renderSingleToken(tok);
+      if (!tokenHtml) {{
+        tokenHtml = '<p>' + (tok.raw || '').replace(/</g, '&lt;') + '</p>';
+      }}
+    }}
+    // Inject data-source-line into the first block-level element
+    tokenHtml = tokenHtml.replace(blockRe, '<$1 data-source-line="' + srcLine + '"');
+    resultHtml += tokenHtml;
   }}
 
-  document.getElementById('content').innerHTML = html;
+  // ── Step 7: Restore math expressions ──
+  for (var i = 0; i < mathStore.length; i++) {{
+    resultHtml = resultHtml.replace(mathStore[i].id, mathStore[i].math);
+  }}
 
+  document.getElementById('content').innerHTML = resultHtml;
+
+  // ── Step 8: Render math with KaTeX ──
   renderMathInElement(document.getElementById('content'), {{
     delimiters: [
       {{left: "$$", right: "$$", display: true}},
@@ -832,51 +750,7 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     throwOnError: false
   }});
 
-  // Auto-scroll to the element corresponding to the editor cursor line
-  var lineParam = new URLSearchParams(window.location.search).get('line');
-  if (lineParam !== null) {{
-    var targetLine = parseInt(lineParam, 10);
-    if (!isNaN(targetLine)) {{
-      requestAnimationFrame(function() {{
-        requestAnimationFrame(function() {{
-          _scrollToSourceLine(targetLine);
-        }});
-      }});
-    }}
-  }}
-
-  // ── Bidirectional Scroll Sync with parent editor ──
-  var _isScrollingFromParent = false;
-  var _scrollTimer = null;
-  var SCROLL_SYNC_THROTTLE = 50;
-
-  /**
-   * Find the element closest to the top of the viewport and return its data-source-line.
-   */
-  function _getTopVisibleSourceLine() {{
-    var elements = document.querySelectorAll('[data-source-line]');
-    if (!elements.length) return 0;
-    var viewportTop = 30;
-    var bestEl = null;
-    var bestDist = Infinity;
-    for (var i = 0; i < elements.length; i++) {{
-      var el = elements[i];
-      var rect = el.getBoundingClientRect();
-      var dist = Math.abs(rect.top - viewportTop);
-      if (rect.top <= viewportTop + 20) {{
-        if (dist < bestDist || bestEl === null) {{
-          bestDist = dist;
-          bestEl = el;
-        }}
-      }}
-    }}
-    if (!bestEl && elements.length) bestEl = elements[0];
-    if (bestEl) {{
-      var sl = parseInt(bestEl.getAttribute('data-source-line'), 10);
-      return isNaN(sl) ? 0 : sl;
-    }}
-    return 0;
-  }}
+  // ── Scroll Sync Helper Functions ──
 
   /**
    * Scroll to the element with data-source-line closest to (but <=) targetLine.
@@ -899,12 +773,64 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   }}
 
   /**
-   * Notify parent that the preview has scrolled to a new source line.
+   * Find the element closest to the top of the viewport and return its data-source-line.
    */
+  function _getTopVisibleSourceLine() {{
+    var elements = document.querySelectorAll('[data-source-line]');
+    if (!elements.length) return 0;
+    var viewportTop = 30;
+    var bestEl = null;
+    var bestDist = Infinity;
+    var fallbackEl = null;
+    var fallbackDist = Infinity;
+    for (var i = 0; i < elements.length; i++) {{
+      var el = elements[i];
+      var rect = el.getBoundingClientRect();
+      var dist = Math.abs(rect.top - viewportTop);
+      if (rect.top <= viewportTop + 20) {{
+        if (dist < bestDist || bestEl === null) {{
+          bestDist = dist;
+          bestEl = el;
+        }}
+      }}
+      // Track the first element BELOW the viewport as fallback (for scroll-to-bottom case)
+      if (rect.top > viewportTop && rect.top < fallbackDist) {{
+        fallbackDist = rect.top;
+        fallbackEl = el;
+      }}
+    }}
+    if (!bestEl) bestEl = fallbackEl || elements[0];
+    if (bestEl) {{
+      var sl = parseInt(bestEl.getAttribute('data-source-line'), 10);
+      return isNaN(sl) ? 0 : sl;
+    }}
+    return 0;
+  }}
+
+  // ── Bidirectional Scroll Sync State ──
+  var _isScrollingFromParent = false;
+  var _scrollTimer = null;
+  var SCROLL_SYNC_THROTTLE = 50;
+
+  // ── Initial auto-scroll (suppress feedback to parent) ──
+  var lineParam = new URLSearchParams(window.location.search).get('line');
+  if (lineParam !== null) {{
+    var targetLine = parseInt(lineParam, 10);
+    if (!isNaN(targetLine)) {{
+      _isScrollingFromParent = true; // suppress scroll feedback during initial scroll
+      requestAnimationFrame(function() {{
+        requestAnimationFrame(function() {{
+          _scrollToSourceLine(targetLine);
+          setTimeout(function() {{ _isScrollingFromParent = false; }}, 200);
+        }});
+      }});
+    }}
+  }}
+
   function _notifyParentScroll() {{
     if (_isScrollingFromParent) return;
     var line = _getTopVisibleSourceLine();
-    if (line > 0) {{
+    if (line >= 0) {{
       window.parent.postMessage({{ type: 'previewScrolled', line: line }}, '*');
     }}
   }}
@@ -919,12 +845,10 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   window.addEventListener('message', function(event) {{
     if (!event.data || typeof event.data !== 'object') return;
     if (event.data.type === 'scrollToLine') {{
-      // Parent wants us to scroll to a specific line
       _isScrollingFromParent = true;
       _scrollToSourceLine(event.data.line);
       setTimeout(function() {{ _isScrollingFromParent = false; }}, 150);
     }} else if (event.data.type === 'getCurrentScrollLine') {{
-      // Parent wants to know our current scroll position
       var line = _getTopVisibleSourceLine();
       window.parent.postMessage({{ type: 'currentScrollLine', line: line }}, '*');
     }}
