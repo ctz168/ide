@@ -839,23 +839,96 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     if (!isNaN(targetLine)) {{
       requestAnimationFrame(function() {{
         requestAnimationFrame(function() {{
-          var elements = document.querySelectorAll('[data-source-line]');
-          var bestEl = null;
-          var bestLine = -1;
-          for (var i = 0; i < elements.length; i++) {{
-            var sl = parseInt(elements[i].getAttribute('data-source-line'), 10);
-            if (!isNaN(sl) && sl <= targetLine && sl > bestLine) {{
-              bestLine = sl;
-              bestEl = elements[i];
-            }}
-          }}
-          if (bestEl) {{
-            bestEl.scrollIntoView({{ block: 'start', behavior: 'instant' }});
-          }}
+          _scrollToSourceLine(targetLine);
         }});
       }});
     }}
   }}
+
+  // ── Bidirectional Scroll Sync with parent editor ──
+  var _isScrollingFromParent = false;
+  var _scrollTimer = null;
+  var SCROLL_SYNC_THROTTLE = 50;
+
+  /**
+   * Find the element closest to the top of the viewport and return its data-source-line.
+   */
+  function _getTopVisibleSourceLine() {{
+    var elements = document.querySelectorAll('[data-source-line]');
+    if (!elements.length) return 0;
+    var viewportTop = 30;
+    var bestEl = null;
+    var bestDist = Infinity;
+    for (var i = 0; i < elements.length; i++) {{
+      var el = elements[i];
+      var rect = el.getBoundingClientRect();
+      var dist = Math.abs(rect.top - viewportTop);
+      if (rect.top <= viewportTop + 20) {{
+        if (dist < bestDist || bestEl === null) {{
+          bestDist = dist;
+          bestEl = el;
+        }}
+      }}
+    }}
+    if (!bestEl && elements.length) bestEl = elements[0];
+    if (bestEl) {{
+      var sl = parseInt(bestEl.getAttribute('data-source-line'), 10);
+      return isNaN(sl) ? 0 : sl;
+    }}
+    return 0;
+  }}
+
+  /**
+   * Scroll to the element with data-source-line closest to (but <=) targetLine.
+   */
+  function _scrollToSourceLine(targetLine) {{
+    var elements = document.querySelectorAll('[data-source-line]');
+    if (!elements.length) return;
+    var bestEl = null;
+    var bestLine = -1;
+    for (var i = 0; i < elements.length; i++) {{
+      var sl = parseInt(elements[i].getAttribute('data-source-line'), 10);
+      if (!isNaN(sl) && sl <= targetLine && sl > bestLine) {{
+        bestLine = sl;
+        bestEl = elements[i];
+      }}
+    }}
+    if (bestEl) {{
+      bestEl.scrollIntoView({{ block: 'start', behavior: 'instant' }});
+    }}
+  }}
+
+  /**
+   * Notify parent that the preview has scrolled to a new source line.
+   */
+  function _notifyParentScroll() {{
+    if (_isScrollingFromParent) return;
+    var line = _getTopVisibleSourceLine();
+    if (line > 0) {{
+      window.parent.postMessage({{ type: 'previewScrolled', line: line }}, '*');
+    }}
+  }}
+
+  // Listen for scroll events in the preview
+  window.addEventListener('scroll', function() {{
+    clearTimeout(_scrollTimer);
+    _scrollTimer = setTimeout(_notifyParentScroll, SCROLL_SYNC_THROTTLE);
+  }});
+
+  // Listen for messages from parent editor
+  window.addEventListener('message', function(event) {{
+    if (!event.data || typeof event.data !== 'object') return;
+    if (event.data.type === 'scrollToLine') {{
+      // Parent wants us to scroll to a specific line
+      _isScrollingFromParent = true;
+      _scrollToSourceLine(event.data.line);
+      setTimeout(function() {{ _isScrollingFromParent = false; }}, 150);
+    }} else if (event.data.type === 'getCurrentScrollLine') {{
+      // Parent wants to know our current scroll position
+      var line = _getTopVisibleSourceLine();
+      window.parent.postMessage({{ type: 'currentScrollLine', line: line }}, '*');
+    }}
+  }});
 }})();
 </script>
 </body></html>'''

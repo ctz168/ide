@@ -331,6 +331,9 @@ const EditorManager = (() => {
         // Initial history snapshot
         _historySize = editor.historySize().done;
 
+        // Initialize bidirectional scroll sync (editor ↔ iframe preview)
+        _initEditorScrollSync();
+
         // Window resize
         window.addEventListener('resize', debounce(() => {
             resize();
@@ -924,6 +927,8 @@ const EditorManager = (() => {
      */
     function setCurrentFile(path) {
         currentFilePath = path;
+        // Disable scroll sync when switching files
+        disableScrollSync();
     }
 
     /**
@@ -1440,6 +1445,120 @@ const EditorManager = (() => {
     // Last known source line for scroll sync (used during live re-render)
     let _mdLastCursorLine = 0;
 
+    // ── Bidirectional Scroll Sync (Editor ↔ Iframe Preview) ──────
+    let _isEditorScrolling = false;      // Flag: editor scroll event is driving the sync
+    let _isPreviewScrolling = false;     // Flag: preview scroll event is driving the sync
+    let _scrollSyncEnabled = false;      // Whether bidirectional sync is active
+    let _editorScrollTimer = null;       // Throttle timer for editor → preview sync
+    let _previewScrollTimer = null;      // Throttle timer for preview → editor sync
+    const SCROLL_SYNC_THROTTLE = 50;     // ms throttle for scroll events
+
+    /**
+     * Get the first visible line number in the editor based on scroll position.
+     * This is more accurate than cursor line when the user has scrolled away from cursor.
+     */
+    function getFirstVisibleLine() {
+        if (!editor) return 0;
+        var scrollInfo = editor.getScrollInfo();
+        var topLine = editor.lineAtHeight(scrollInfo.top, 'local');
+        return Math.max(0, topLine);
+    }
+
+    /**
+     * Enable bidirectional scroll sync between editor and iframe preview.
+     */
+    function enableScrollSync() {
+        _scrollSyncEnabled = true;
+    }
+
+    /**
+     * Disable bidirectional scroll sync.
+     */
+    function disableScrollSync() {
+        _scrollSyncEnabled = false;
+    }
+
+    /**
+     * Handle scroll sync from editor to preview iframe.
+     * Called when the editor scrolls.
+     */
+    function _syncEditorToIframe() {
+        if (!_scrollSyncEnabled || _isPreviewScrolling) return;
+        _isEditorScrolling = true;
+
+        var line = getFirstVisibleLine();
+        var iframe = document.getElementById('preview-frame');
+        if (iframe && iframe.contentWindow) {
+            try {
+                iframe.contentWindow.postMessage({
+                    type: 'scrollToLine',
+                    line: line
+                }, '*');
+            } catch(e) {
+                // cross-origin iframe, ignore
+            }
+        }
+
+        // Reset flag after a short delay to prevent feedback loops
+        clearTimeout(window._editorScrollResetTimer);
+        window._editorScrollResetTimer = setTimeout(function() {
+            _isEditorScrolling = false;
+        }, 100);
+    }
+
+    /**
+     * Handle scroll sync from preview iframe to editor.
+     * Called when receiving a postMessage from the iframe.
+     */
+    function _syncIframeToEditor(sourceLine) {
+        if (!_scrollSyncEnabled || _isEditorScrolling) return;
+        _isPreviewScrolling = true;
+
+        if (editor && sourceLine > 0) {
+            var targetY = editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top;
+            editor.scrollTo(null, targetY - 10);
+        }
+
+        // Reset flag after a short delay
+        clearTimeout(window._previewScrollResetTimer);
+        window._previewScrollResetTimer = setTimeout(function() {
+            _isPreviewScrolling = false;
+        }, 100);
+    }
+
+    /**
+     * Listen for postMessage events from the preview iframe.
+     * Handles bidirectional scroll sync.
+     */
+    function _onPreviewMessage(event) {
+        if (!event.data || typeof event.data !== 'object') return;
+        if (event.data.type === 'previewScrolled') {
+            // Preview scrolled → sync editor
+            _syncIframeToEditor(event.data.line);
+        } else if (event.data.type === 'currentScrollLine') {
+            // Response to getCurrentScrollLine request (used when closing panel)
+            if (editor && event.data.line > 0) {
+                var targetY = editor.charCoords({ line: event.data.line, ch: 0 }, 'local').top;
+                editor.scrollTo(null, targetY - 10);
+            }
+        }
+    }
+
+    /**
+     * Initialize the editor scroll listener for bidirectional sync.
+     * Called after editor is created.
+     */
+    function _initEditorScrollSync() {
+        if (!editor) return;
+        editor.on('scroll', function() {
+            if (!_scrollSyncEnabled) return;
+            clearTimeout(_editorScrollTimer);
+            _editorScrollTimer = setTimeout(_syncEditorToIframe, SCROLL_SYNC_THROTTLE);
+        });
+        // Listen for messages from preview iframe
+        window.addEventListener('message', _onPreviewMessage);
+    }
+
     /**
      * Check if the current file is a markdown file
      * @returns {boolean}
@@ -1709,9 +1828,25 @@ const EditorManager = (() => {
      * Sync the editor scroll position based on the current markdown preview scroll.
      * Called when closing the bottom panel while viewing a markdown preview,
      * so the editor scrolls to the corresponding source line.
+     * Handles both inline preview (#markdown-preview) and iframe preview (#preview-frame).
      */
     function syncEditorToPreviewScroll() {
         if (!editor) return;
+
+        // Disable scroll sync to prevent feedback loop during close
+        disableScrollSync();
+
+        // Try iframe preview first (more common usage)
+        var iframe = document.getElementById('preview-frame');
+        if (iframe && isMarkdownFile()) {
+            try {
+                iframe.contentWindow.postMessage({ type: 'getCurrentScrollLine' }, '*');
+            } catch(e) {
+                // cross-origin or not loaded, fall through
+            }
+        }
+
+        // Also handle inline preview (#markdown-preview div)
         var sourceLine = getSourceLineFromPreviewScroll();
         if (sourceLine > 0) {
             editor.scrollTo(0, editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top - 10);
@@ -1934,11 +2069,11 @@ const EditorManager = (() => {
         // makes relative CSS/JS paths resolve correctly via /preview/<dir>/
         let previewUrl = '/preview/' + relPath;
 
-        // For Markdown files, pass cursor line so the preview can auto-scroll
-        // to the position corresponding to the current editor cursor
+        // For Markdown files, pass the first visible line (based on scroll position)
+        // instead of cursor line, so the preview opens at the same position the user sees
         if (isMarkdownFile() && editor) {
-            var cursorLine = editor.getCursor().line; // 0-based
-            previewUrl += '?line=' + encodeURIComponent(String(cursorLine));
+            var visibleLine = getFirstVisibleLine(); // 0-based, from scroll position
+            previewUrl += '?line=' + encodeURIComponent(String(visibleLine));
         }
 
         // Switch to the browser tab in the bottom panel
@@ -1957,6 +2092,11 @@ const EditorManager = (() => {
         const iframe = document.getElementById('preview-frame');
         if (iframe) {
             iframe.src = previewUrl;
+        }
+
+        // Enable bidirectional scroll sync for MD files
+        if (isMarkdownFile()) {
+            enableScrollSync();
         }
 
         // Update the URL input to show what's being previewed
@@ -3097,6 +3237,8 @@ const EditorManager = (() => {
         toggleMarkdownPreview,
         renderMarkdownPreview,
         syncEditorToPreviewScroll,
+        enableScrollSync,
+        disableScrollSync,
 
         // Tab management
         openTab,
