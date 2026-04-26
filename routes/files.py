@@ -857,14 +857,46 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     }}
   }}
 
+  /**
+   * Get the data-source-line of the first element with that attribute
+   * nearest to the viewport top. More reliable than textContent matching.
+   */
+  function _getFirstVisibleSourceLine() {{
+    var elements = document.querySelectorAll('[data-source-line]');
+    var bestEl = null;
+    var bestDist = Infinity;
+    var fallbackEl = null;
+    var fallbackDist = Infinity;
+    for (var i = 0; i < elements.length; i++) {{
+      var rect = elements[i].getBoundingClientRect();
+      if (rect.top >= -50 && rect.top <= 80) {{
+        var dist = Math.abs(rect.top);
+        if (dist < bestDist) {{
+          bestDist = dist;
+          bestEl = elements[i];
+        }}
+      }}
+      if (rect.top > 80 && rect.top < fallbackDist) {{
+        fallbackDist = rect.top;
+        fallbackEl = elements[i];
+      }}
+    }}
+    var el = bestEl || fallbackEl;
+    if (el) {{
+      var lineNum = parseInt(el.getAttribute('data-source-line'), 10);
+      if (!isNaN(lineNum)) return lineNum;
+    }}
+    return -1;
+  }}
+
   // Listen for scroll events — notify parent of position changes
   window.addEventListener('scroll', function() {{
     clearTimeout(_scrollTimer);
     _scrollTimer = setTimeout(function() {{
       if (_isScrollingFromParent) return;
-      var text = _getFirstVisibleText();
-      if (text) {{
-        window.parent.postMessage({{ type: 'previewScrolled', text: text }}, '*');
+      var sourceLine = _getFirstVisibleSourceLine();
+      if (sourceLine >= 0) {{
+        window.parent.postMessage({{ type: 'previewScrolled', sourceLine: sourceLine }}, '*');
       }}
     }}, SCROLL_SYNC_THROTTLE);
   }});
@@ -878,9 +910,9 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
       _scrollToText(event.data.text);
       setTimeout(function() {{ _isScrollingFromParent = false; }}, 150);
     }} else if (event.data.type === 'getCurrentScrollText') {{
-      // Parent wants to know our current visible text (e.g. when closing panel)
-      var text = _getFirstVisibleText();
-      window.parent.postMessage({{ type: 'currentScrollText', text: text }}, '*');
+      // Parent wants to know our current position (e.g. when closing panel)
+      var sourceLine = _getFirstVisibleSourceLine();
+      window.parent.postMessage({{ type: 'currentScrollSourceLine', sourceLine: sourceLine }}, '*');
     }}
   }});
 }})();

@@ -1564,16 +1564,16 @@ const EditorManager = (() => {
     }
 
     /**
-     * Preview scrolled → find matching line in editor and scroll there.
+     * Scroll the editor to a specific line number (0-based).
+     * Used by preview→editor sync via data-source-line.
      */
-    function _scrollEditorToText(text) {
+    function _scrollEditorToLine(lineNum) {
         if (!_scrollSyncEnabled || _isEditorScrolling) return;
         _isPreviewScrolling = true;
 
-        var line = _findLineByText(text);
-        if (editor && line >= 0) {
-            var targetY = line === 0 ? 0 :
-                editor.charCoords({ line: line, ch: 0 }, 'local').top;
+        if (editor && lineNum >= 0) {
+            var targetY = lineNum === 0 ? 0 :
+                editor.charCoords({ line: lineNum, ch: 0 }, 'local').top;
             editor.scrollTo(null, Math.max(0, targetY - 10));
         }
 
@@ -1589,16 +1589,24 @@ const EditorManager = (() => {
     function _onPreviewMessage(event) {
         if (!event.data || typeof event.data !== 'object') return;
         if (event.data.type === 'previewScrolled') {
-            // Preview scrolled → sync editor to the same text position
-            _scrollEditorToText(event.data.text);
-        } else if (event.data.type === 'currentScrollText') {
-            // Response to getCurrentScrollText (used when closing panel)
-            var line = _findLineByText(event.data.text);
-            if (editor && line >= 0) {
-                var targetY = line === 0 ? 0 :
-                    editor.charCoords({ line: line, ch: 0 }, 'local').top;
-                editor.scrollTo(null, Math.max(0, targetY - 10));
+            // Preview scrolled → sync editor to the same position
+            if (event.data.sourceLine !== undefined && event.data.sourceLine >= 0) {
+                // Preferred: direct line number from data-source-line attribute
+                _scrollEditorToLine(event.data.sourceLine);
+            } else if (event.data.text) {
+                // Fallback: text-based matching (legacy)
+                var line = _findLineByText(event.data.text);
+                if (line >= 0) _scrollEditorToLine(line);
             }
+        } else if (event.data.type === 'currentScrollSourceLine') {
+            // Response to getCurrentScrollText (used when closing panel)
+            if (event.data.sourceLine !== undefined && event.data.sourceLine >= 0) {
+                _scrollEditorToLine(event.data.sourceLine);
+            }
+        } else if (event.data.type === 'currentScrollText') {
+            // Legacy: text-based response
+            var line2 = _findLineByText(event.data.text);
+            if (line2 >= 0) _scrollEditorToLine(line2);
         }
     }
 
