@@ -47,7 +47,7 @@ from utils import (
     log_write,
 )
 from routes.git import git_cmd
-from routes.browser import create_browser_command, wait_browser_result
+from routes.browser import create_browser_command, wait_browser_result, peek_console_errors, drain_console_errors
 
 bp = Blueprint('chat', __name__)
 
@@ -3370,18 +3370,70 @@ def _format_browser_result(result):
     except Exception:
         return str(info)
 
+
+def _format_browser_result_with_errors(result, pre_error_count=0):
+    """Format browser result and auto-append any new console errors.
+    
+    After a browser command (navigate, click, evaluate, etc.), JS errors may have
+    been triggered in the preview. This function:
+    1. Formats the command result normally
+    2. Waits briefly for errors to propagate from frontend
+    3. Fetches any new console errors from the buffer
+    4. Appends them to the result so the AI sees them immediately
+    
+    Args:
+        result: The browser command result dict.
+        pre_error_count: Number of errors in buffer before the command (for delta).
+    
+    Returns:
+        Formatted result string, optionally with appended error section.
+    """
+    base = _format_browser_result(result)
+    # Only check for errors if the command itself didn't fail with timeout
+    if isinstance(result, dict) and result.get('error') and 'timed out' in result.get('error', ''):
+        return base
+    try:
+        # Brief pause to let frontend flush pending error reports
+        time.sleep(0.4)
+        # Drain all errors, take only the new ones (after pre_error_count)
+        all_errors = peek_console_errors()
+        new_errors = all_errors[pre_error_count:] if pre_error_count < len(all_errors) else []
+        if new_errors:
+            # Clear the new errors so they don't show up again on the next call
+            drain_console_errors()
+            lines = [f'\n\n⚠ Browser console errors ({len(new_errors)} new):']
+            for i, err in enumerate(new_errors[-20:]):  # cap at 20 to avoid bloat
+                etype = err.get('type', 'error')
+                etime = err.get('time', '')
+                etext = err.get('text', '')
+                if len(etext) > 800:
+                    etext = etext[:800] + '...'
+                lines.append(f'  {i+1}. [{etype}] {etime}')
+                for tl in etext.split('\n')[:15]:  # cap stack trace lines
+                    lines.append(f'     {tl}')
+            return base + ''.join(lines)
+    except Exception:
+        pass
+    return base
+
+
+def _get_console_error_count():
+    """Get the current number of errors in the console error buffer."""
+    return len(peek_console_errors())
+
 def _tool_browser_navigate(args):
     url = args.get('url', '')
     if not url:
         return 'Error: URL is required'
     if not url.startswith('http://') and not url.startswith('https://'):
         url = 'http://' + url
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('navigate', {'url': url})
     result = wait_browser_result(cmd_id, timeout=30)
     # If timed out, it likely means the preview tab is not active — return a helpful message instead of error
     if isinstance(result, dict) and result.get('error') and 'timed out' in result.get('error', ''):
         return f'Warning: Preview panel may not be active. The page may still be navigating to: {url}\nUse browser_page_info to verify the page loaded.'
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_console(args):
     cmd_id = create_browser_command('console', {})
@@ -3399,46 +3451,52 @@ def _tool_browser_console(args):
     return _format_browser_result(result)
 
 def _tool_browser_page_info(args):
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('page_info', {})
     result = wait_browser_result(cmd_id, timeout=30)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_evaluate(args):
     expression = args.get('expression', '')
     if not expression:
         return 'Error: expression is required'
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('evaluate', {'expression': expression})
     result = wait_browser_result(cmd_id, timeout=15)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_inspect(args):
     selector = args.get('selector', 'body')
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('inspect', {'selector': selector})
     result = wait_browser_result(cmd_id, timeout=15)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_query_all(args):
     selector = args.get('selector', '*')
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('query_all', {'selector': selector})
     result = wait_browser_result(cmd_id, timeout=15)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_click(args):
     selector = args.get('selector', '')
     if not selector:
         return 'Error: selector is required'
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('click', {'selector': selector})
     result = wait_browser_result(cmd_id, timeout=15)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_input(args):
     selector = args.get('selector', '')
     text = args.get('text', '')
     if not selector:
         return 'Error: selector is required'
+    pre_err = _get_console_error_count()
     cmd_id = create_browser_command('input', {'selector': selector, 'text': text})
     result = wait_browser_result(cmd_id, timeout=15)
-    return _format_browser_result(result)
+    return _format_browser_result_with_errors(result, pre_err)
 
 def _tool_browser_cookies(args):
     cmd_id = create_browser_command('cookies', {})

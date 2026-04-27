@@ -204,6 +204,49 @@ def open_external():
         return jsonify({'error': str(e)}), 500
 
 
+def peek_console_errors(since_timestamp=0):
+    """Read console errors from the buffer without clearing them.
+    
+    Args:
+        since_timestamp: If provided (epoch seconds), only return errors after this time.
+    
+    Returns:
+        List of error dicts (each has 'type', 'text', 'time').
+    """
+    with _CONSOLE_ERROR_LOCK:
+        if since_timestamp:
+            errors = [e for e in _console_errors if e.get('time', '') and e['time'] > since_timestamp]
+        else:
+            errors = list(_console_errors)
+    return errors
+
+
+def drain_console_errors(since_timestamp=0):
+    """Read and clear console errors from the buffer.
+    
+    Args:
+        since_timestamp: If provided (epoch seconds), only return and remove errors after this time.
+    
+    Returns:
+        List of error dicts.
+    """
+    with _CONSOLE_ERROR_LOCK:
+        if since_timestamp:
+            kept = []
+            removed = []
+            for e in _console_errors:
+                if e.get('time', '') and e['time'] > since_timestamp:
+                    removed.append(e)
+                else:
+                    kept.append(e)
+            _console_errors[:] = kept
+            return removed
+        else:
+            errors = list(_console_errors)
+            _console_errors.clear()
+            return errors
+
+
 @bp.route('/api/browser/console-errors', methods=['POST'])
 def receive_console_errors():
     """Receive JS errors from the browser preview iframe.
