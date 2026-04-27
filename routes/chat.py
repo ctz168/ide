@@ -618,7 +618,7 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'pdflatex',
-            'description': 'Compile a LaTeX (.tex) file into PDF using Tectonic (XeLaTeX-compatible engine). Supports CJK/Chinese (ctex), math (amsmath), figures, tables, bibtex, and full LaTeX packages. Returns output PDF path.',
+            'description': 'Compile a LaTeX (.tex) file into PDF. Auto-detects compiler (tectonic > xelatex > pdflatex > lualatex). Supports CJK/Chinese (ctex), math (amsmath), figures, tables, bibtex, and full LaTeX packages. Returns output PDF path.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -3103,7 +3103,7 @@ def _tool_generate_pdf(args):
 
 
 def _tool_pdflatex(args):
-    """Compile a .tex file to PDF using Tectonic (XeLaTeX engine)."""
+    """Compile a .tex file to PDF. Auto-detects: tectonic > xelatex > pdflatex > lualatex."""
     filepath = args.get('filepath', '').strip()
     if not filepath:
         return 'Error: filepath is required'
@@ -3124,19 +3124,37 @@ def _tool_pdflatex(args):
     # Output PDF path: same directory, same basename, .pdf extension
     pdf_path = filepath.rsplit('.', 1)[0] + '.pdf'
 
-    # Use absolute path since the web server process PATH may not include /usr/local/bin
-    tectonic_bin = '/usr/local/bin/tectonic'
-    if not os.path.isfile(tectonic_bin):
-        return f'Error: tectonic not found at {tectonic_bin}. Please install it.'
+    # Auto-detect available LaTeX compiler (priority: tectonic > xelatex > pdflatex > lualatex)
+    import shutil
+    compiler = None
+    compiler_name = None
+    for name in ('tectonic', 'xelatex', 'pdflatex', 'lualatex'):
+        found = shutil.which(name)
+        if found:
+            compiler = found
+            compiler_name = name
+            break
+    if not compiler:
+        return ('Error: no LaTeX compiler found. Install one of: tectonic, xelatex, pdflatex, or lualatex.\n'
+                '  tectonic:  curl -sSL https://get.tectonic.tk | sh\n'
+                '  texlive:   apt install texlive-xetex texlive-latex-extra')
+
+    # Build command based on compiler type
+    if compiler_name == 'tectonic':
+        cmd = [compiler, '--keep-logs', tex_name]
+    else:
+        # Traditional TeX engines: nonstopmode to avoid interactive prompts
+        cmd = [compiler, '--interaction=nonstopmode', '--halt-on-error', tex_name]
+
     try:
         import subprocess
         result = subprocess.run(
-            [tectonic_bin, '--keep-logs', tex_name],
+            cmd,
             cwd=tex_dir,
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
-            log_write(f'[pdflatex] returncode={result.returncode}\nstdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-1000:]}')
+            log_write(f'[pdflatex] compiler={compiler_name} returncode={result.returncode}\nstdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-1000:]}')
             # Extract useful error info from log
             log_file = filepath.rsplit('.', 1)[0] + '.log'
             err_detail = ''
@@ -3154,7 +3172,7 @@ def _tool_pdflatex(args):
                         err_detail += '\n' + '\n'.join(ucs_lines[-5:])
                 except Exception:
                     pass
-            return f'Error compiling LaTeX: exit code {result.returncode}.{err_detail}\n\nStdout (last 500 chars):\n{result.stdout[-500:]}'
+            return f'Error compiling LaTeX ({compiler_name}): exit code {result.returncode}.{err_detail}\n\nStdout (last 500 chars):\n{result.stdout[-500:]}'
 
         if os.path.isfile(pdf_path):
             size_kb = os.path.getsize(pdf_path) / 1024
@@ -3167,9 +3185,9 @@ def _tool_pdflatex(args):
                         os.remove(aux)
                     except Exception:
                         pass
-            return f'PDF compiled successfully: {rel_pdf} ({size_kb:.1f} KB)'
+            return f'PDF compiled successfully ({compiler_name}): {rel_pdf} ({size_kb:.1f} KB)'
         else:
-            return f'Error: tectonic exited with code 0 but no PDF was generated. Check the .log file.'
+            return f'Error: {compiler_name} exited with code 0 but no PDF was generated. Check the .log file.'
     except subprocess.TimeoutExpired:
         return 'Error: LaTeX compilation timed out (120s). The document may be too complex or have infinite loops.'
     except Exception as e:

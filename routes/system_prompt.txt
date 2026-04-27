@@ -30,7 +30,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Fetch page:** web_fetch (clean text, no HTML)
 **Academic search:** scholar_search (arXiv API + scholarly web sources — returns title, authors, abstract, arXiv ID)
 **Generate PDF:** generate_pdf (create PDF documents with title, sections, paragraphs, bullet lists; supports CJK; saves to workspace)
-**Compile LaTeX to PDF:** pdflatex (compile .tex files to PDF via Tectonic/XeLaTeX engine; supports ctex/Chinese, amsmath, tables, figures, bibtex; auto-cleans aux files; pass the .tex filepath — do NOT try to install pylatex or any Python LaTeX library, do NOT use run_command)
+**Compile LaTeX to PDF:** pdflatex (auto-detects compiler: tectonic > xelatex > pdflatex > lualatex; supports ctex/Chinese, amsmath, tables, figures, bibtex; auto-cleans aux files; pass the .tex filepath — do NOT try to install pylatex or any Python LaTeX library, do NOT use run_command)
 **Preview:** browser_navigate (open URL in iframe)
 **JS in page:** browser_evaluate (DOM access)
 **Inspect element:** browser_inspect (tag, attrs, styles, position)
