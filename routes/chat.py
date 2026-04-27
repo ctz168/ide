@@ -2940,26 +2940,44 @@ from reportlab.lib.pagesizes import A4 as _RL_A4
 from reportlab.lib.enums import TA_CENTER as _TA_CENTER, TA_LEFT as _TA_LEFT, TA_JUSTIFY as _TA_JUSTIFY
 from reportlab.lib.units import mm as _mm
 
-# Register CJK + Latin fonts for reportlab (lazy init)
-_PDF_FONTS_REGISTERED = False
+# CJK + Latin font names for reportlab (set after registration attempt)
+_PDF_FONT_SERIF = 'Times-Roman'
+_PDF_FONT_SERIF_BOLD = 'Times-Bold'
+_PDF_FONT_SANS = 'Helvetica'
+_PDF_FONT_SANS_BOLD = 'Helvetica-Bold'
+_PDF_FONTS_DONE = False
 
 def _ensure_pdf_fonts():
-    """Register fonts for PDF generation (called once)."""
-    global _PDF_FONTS_REGISTERED
-    if _PDF_FONTS_REGISTERED:
+    """Register CJK/Latin fonts for PDF generation; fall back to built-in fonts."""
+    global _PDF_FONTS_DONE, _PDF_FONT_SERIF, _PDF_FONT_SERIF_BOLD
+    global _PDF_FONT_SANS, _PDF_FONT_SANS_BOLD
+    if _PDF_FONTS_DONE:
         return
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    try:
-        pdfmetrics.registerFont(TTFont('PdfSerif', '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Regular.ttf'))
-        pdfmetrics.registerFont(TTFont('PdfSerifB', '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Bold.ttf'))
-        pdfmetrics.registerFont(TTFont('PdfSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
-        pdfmetrics.registerFont(TTFont('PdfSansB', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'))
-        pdfmetrics.registerFontFamily('PdfSerif', normal='PdfSerif', bold='PdfSerifB')
-        pdfmetrics.registerFontFamily('PdfSans', normal='PdfSans', bold='PdfSansB')
-        _PDF_FONTS_REGISTERED = True
-    except Exception as e:
-        log_write(f'[generate_pdf] Font registration failed: {e}')
+    _PDF_FONTS_DONE = True  # only attempt once
+    serif_reg = '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Regular.ttf'
+    serif_bld = '/usr/share/fonts/truetype/noto-serif-sc/NotoSerifSC-Bold.ttf'
+    sans_reg  = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+    sans_bld  = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+    if all(os.path.isfile(p) for p in (serif_reg, serif_bld, sans_reg, sans_bld)):
+        try:
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            pdfmetrics.registerFont(TTFont('PdfSerif', serif_reg))
+            pdfmetrics.registerFont(TTFont('PdfSerifB', serif_bld))
+            pdfmetrics.registerFont(TTFont('PdfSans', sans_reg))
+            pdfmetrics.registerFont(TTFont('PdfSansB', sans_bld))
+            pdfmetrics.registerFontFamily('PdfSerif', normal='PdfSerif', bold='PdfSerifB')
+            pdfmetrics.registerFontFamily('PdfSans', normal='PdfSans', bold='PdfSansB')
+            _PDF_FONT_SERIF = 'PdfSerif'
+            _PDF_FONT_SERIF_BOLD = 'PdfSerifB'
+            _PDF_FONT_SANS = 'PdfSans'
+            _PDF_FONT_SANS_BOLD = 'PdfSansB'
+            log_write('[generate_pdf] Custom CJK+Latin fonts registered OK')
+            return
+        except Exception as e:
+            log_write(f'[generate_pdf] Font registration failed: {e}, using built-in fallback')
+    else:
+        log_write('[generate_pdf] Font files missing, using built-in fallback (no CJK support)')
 
 
 def _render_section(section, styles, heading_style, body_style, bullet_style, flow):
@@ -3032,17 +3050,17 @@ def _tool_generate_pdf(args):
         )
 
         # Styles
-        title_s = _RLParagraphStyle('PdfTitle', fontName='PdfSerifB', fontSize=22,
+        title_s = _RLParagraphStyle('PdfTitle', fontName=_PDF_FONT_SERIF_BOLD, fontSize=22,
                                     leading=28, alignment=_TA_CENTER, spaceAfter=6*_mm)
-        subtitle_s = _RLParagraphStyle('PdfSubtitle', fontName='PdfSerif', fontSize=11,
+        subtitle_s = _RLParagraphStyle('PdfSubtitle', fontName=_PDF_FONT_SANS, fontSize=11,
                                        leading=15, alignment=_TA_CENTER, textColor='#666666',
                                        spaceAfter=10*_mm)
-        heading_s = _RLParagraphStyle('PdfHeading', fontName='PdfSerifB', fontSize=14,
+        heading_s = _RLParagraphStyle('PdfHeading', fontName=_PDF_FONT_SERIF_BOLD, fontSize=14,
                                       leading=20, spaceAfter=3*_mm, spaceBefore=5*_mm,
                                       textColor='#1a1a2e')
-        body_s = _RLParagraphStyle('PdfBody', fontName='PdfSerif', fontSize=10.5,
+        body_s = _RLParagraphStyle('PdfBody', fontName=_PDF_FONT_SERIF, fontSize=10.5,
                                    leading=16, alignment=_TA_JUSTIFY, spaceAfter=2*_mm)
-        bullet_s = _RLParagraphStyle('PdfBullet', fontName='PdfSerif', fontSize=10.5,
+        bullet_s = _RLParagraphStyle('PdfBullet', fontName=_PDF_FONT_SERIF, fontSize=10.5,
                                      leading=15, leftIndent=18*_mm, bulletIndent=12*_mm,
                                      spaceAfter=1.5*_mm, alignment=_TA_LEFT)
 
@@ -3067,7 +3085,7 @@ def _tool_generate_pdf(args):
         # Build
         def add_page_number(canvas, doc):
             canvas.saveState()
-            canvas.setFont('PdfSans', 8)
+            canvas.setFont(_PDF_FONT_SANS, 8)
             canvas.setFillColor('#999999')
             page_num = canvas.getPageNumber()
             canvas.drawCentredString(_RL_A4[0] / 2, 15*_mm, f'- {page_num} -')
