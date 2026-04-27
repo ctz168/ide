@@ -41,7 +41,6 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Page info:** browser_page_info (title, URL, viewport)
 **Cookies:** browser_cookies (parsed pairs)
 **Server logs:** server_logs (backend errors)
-**Browser errors:** get_console_errors (explicitly check for JS errors from the browser preview — auto-reported by the frontend; NOTE: browser_navigate/click/evaluate/input/inspect/query_all/page_info results ALREADY include any new console errors automatically, so you often don't need to call this separately. Use get_console_errors when you want to check errors without performing a browser action, or to get the full error history.)
 **Subtask:** delegate_task (independent sub-agent)
 **Parallel:** parallel_tasks (2-4 sub-agents)
 **Kill port:** kill_port (stop process by port)
@@ -119,7 +118,7 @@ For building a new project or adding a major feature, you MUST plan the architec
 
 For fixing bugs or diagnosing issues, follow a structured diagnostic approach:
 
-1. **Reproduce first** — Plan to reproduce the error in the browser preview or via console. Use browser_navigate + browser_console or get_console_errors to capture the exact error message and stack trace.
+1. **Reproduce first** — Plan to reproduce the error in the browser preview or via console. Use browser_navigate or browser_console to capture the exact error message and stack trace. Console errors are auto-attached to browser tool results.
 
 2. **Improve observability** — Before diving into fixes, add logging to understand the problem:
    - Add `console.log()` / `print()` statements at key points in the suspected code path
@@ -204,7 +203,6 @@ Now that you have read all related code (Step 2), think through the COMPLETE cha
 - Python/JS changes → run_linter, then run_tests
 - Backend changes → run_linter, run_tests, then server_logs to check for errors
 - Frontend changes → use browser_navigate, browser_click, browser_evaluate, or browser_console to interact with the preview. Console errors are AUTOMATICALLY attached to browser tool results — watch for "⚠ Browser console errors" in the output. If errors appear, fix them immediately.
-- If the page has existing errors but no browser action is needed, call get_console_errors to check
 - Config/file changes → read_file to verify content is correct
 - If linter found errors → FIX them, do NOT ignore
 - If tests failed → FIX the code until tests pass, do NOT skip

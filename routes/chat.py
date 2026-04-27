@@ -753,19 +753,6 @@ AGENT_TOOLS = [
             },
         },
     },
-    # -- Browser Console Errors --
-    {
-        'type': 'function',
-        'function': {
-            'name': 'get_console_errors',
-            'description': 'Get JavaScript errors from the browser preview panel. Use during frontend debugging to see runtime errors, uncaught exceptions, and failed promises reported by the preview page. Automatically clears after reading.',
-            'parameters': {
-                'type': 'object',
-                'properties': {},
-                'required': [],
-            },
-        },
-    },
     {
         'type': 'function',
         'function': {
@@ -5716,7 +5703,6 @@ _TOOL_HANDLERS = {
     'browser_input': _tool_browser_input,
     'browser_cookies': _tool_browser_cookies,
     'server_logs': _tool_server_logs,
-    'get_console_errors': _tool_get_console_errors,
     # P0+P1 new tools
     'glob_files': _tool_glob_files,
     'find_definition': _tool_find_definition,
