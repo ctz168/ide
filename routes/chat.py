@@ -3692,48 +3692,61 @@ def _auto_lint_check(filepath):
     cwd = os.path.dirname(filepath) or '.'
     
     if ext == '.py':
+        # Auto-install ruff if not available
+        if not shutil.which('ruff', path=env.get('PATH', '')):
+            try:
+                subprocess.run('pip install ruff', shell=True, capture_output=True, text=True,
+                               timeout=120, env=env)
+            except Exception:
+                pass
         # Try ruff first (fastest), then flake8
-        try:
-            result = subprocess.run(
-                f'ruff check --output-format=concise {shlex_quote(filepath)}',
-                shell=True, cwd=cwd, capture_output=True, text=True, 
-                timeout=_AUTO_LINT_TIMEOUT, env=env
-            )
-            output = (result.stdout or '').strip()
-            if output:
-                errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
-                warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
-                msg = '[Auto-lint: ruff]'
-                if errors:
-                    msg += f' {len(errors)} error(s)'
-                if warnings:
-                    msg += f' {len(warnings)} warning(s)'
-                msg += '\n' + output[:800]
-                return msg
-            return ''  # No issues
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        if shutil.which('ruff', path=env.get('PATH', '')):
+            try:
+                result = subprocess.run(
+                    f'ruff check --output-format=concise {shlex_quote(filepath)}',
+                    shell=True, cwd=cwd, capture_output=True, text=True, 
+                    timeout=_AUTO_LINT_TIMEOUT, env=env
+                )
+                output = (result.stdout or '').strip()
+                if output:
+                    errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
+                    warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
+                    msg = '[Auto-lint: ruff]'
+                    if errors:
+                        msg += f' {len(errors)} error(s)'
+                    if warnings:
+                        msg += f' {len(warnings)} warning(s)'
+                    msg += '\n' + output[:800]
+                    return msg
+                return ''  # No issues
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:
+                pass
         
-        try:
-            result = subprocess.run(
-                f'flake8 {shlex_quote(filepath)}',
-                shell=True, cwd=cwd, capture_output=True, text=True,
-                timeout=_AUTO_LINT_TIMEOUT, env=env
-            )
-            output = (result.stdout or '').strip()
-            if output:
-                errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
-                warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
-                msg = '[Auto-lint: flake8]'
-                if errors:
-                    msg += f' {len(errors)} error(s)'
-                if warnings:
-                    msg += f' {len(warnings)} warning(s)'
-                msg += '\n' + output[:800]
-                return msg
-            return ''
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        if shutil.which('flake8', path=env.get('PATH', '')):
+            try:
+                result = subprocess.run(
+                    f'flake8 {shlex_quote(filepath)}',
+                    shell=True, cwd=cwd, capture_output=True, text=True,
+                    timeout=_AUTO_LINT_TIMEOUT, env=env
+                )
+                output = (result.stdout or '').strip()
+                if output:
+                    errors = [l for l in output.split('\n') if l.strip() and (':E' in l or ':F' in l)]
+                    warnings = [l for l in output.split('\n') if l.strip() and ':E' not in l and ':F' not in l]
+                    msg = '[Auto-lint: flake8]'
+                    if errors:
+                        msg += f' {len(errors)} error(s)'
+                    if warnings:
+                        msg += f' {len(warnings)} warning(s)'
+                    msg += '\n' + output[:800]
+                    return msg
+                return ''
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:
+                pass
     
     elif ext in ('.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs'):
         # Try eslint if configured
@@ -3857,6 +3870,26 @@ def _tool_run_linter(args):
     
     all_issues = []
     linters_tried = []
+    linters_not_found = []
+    
+    def _ensure_ruff(env):
+        """Check if ruff is installed, auto-install if not. Returns True if available."""
+        if shutil.which('ruff', path=env.get('PATH', '')):
+            return True
+        # Auto-install ruff (fast, zero-dependency Python linter)
+        try:
+            pip_cmd = 'pip install ruff' if not IS_WINDOWS else 'pip install ruff'
+            install = subprocess.run(pip_cmd, shell=True, capture_output=True, text=True,
+                                     timeout=120, env=env)
+            if install.returncode == 0 or shutil.which('ruff', path=env.get('PATH', '')):
+                return True
+            # Try pip3 as fallback
+            pip3_cmd = 'pip3 install ruff'
+            install2 = subprocess.run(pip3_cmd, shell=True, capture_output=True, text=True,
+                                      timeout=120, env=env)
+            return shutil.which('ruff', path=env.get('PATH', '')) is not None
+        except Exception:
+            return False
     
     for proj_type in project_types:
         if proj_type == 'python' or forced_linter in ('ruff', 'flake8', 'pylint'):
@@ -3867,7 +3900,15 @@ def _tool_run_linter(args):
                 # Try ruff first, then flake8, then pylint
                 linters = ['ruff', 'flake8', 'pylint']
             
+            # Auto-install ruff if no Python linter is available
+            if not any(shutil.which(l, path=env.get('PATH', '')) for l in linters):
+                _ensure_ruff(env)
+            
             for linter in linters:
+                # Check if linter exists before running
+                if not shutil.which(linter, path=env.get('PATH', '')):
+                    linters_not_found.append(linter)
+                    continue
                 linters_tried.append(linter)
                 cmd = None
                 if linter == 'ruff':
@@ -3909,12 +3950,10 @@ def _tool_run_linter(args):
                                     all_issues.append({'severity': severity, 'message': line, 'linter': linter})
                         # If linter ran successfully, don't try alternatives
                         break
-                    except FileNotFoundError:
-                        continue
                     except subprocess.TimeoutExpired:
                         all_issues.append({'severity': 'error', 'message': f'{linter} timed out after 60s', 'linter': linter})
                         break
-                    except Exception as e:
+                    except Exception:
                         continue
         
         elif proj_type in ('javascript', 'typescript') or forced_linter == 'eslint':
@@ -3982,6 +4021,8 @@ def _tool_run_linter(args):
                 continue
     
     if not linters_tried:
+        if linters_not_found:
+            return f'Error: No linter available. Tried: {", ".join(linters_not_found)} (not found). Auto-install attempted for ruff but failed. Please run: pip install ruff'
         return 'Error: No linter found. Install ruff (`pip install ruff`), flake8, or eslint.'
     
     # Format output
