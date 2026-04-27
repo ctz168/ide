@@ -95,10 +95,13 @@
             <!-- Files Panel -->
             <div id="panel-files" class="panel">
                 <div class="panel-toolbar">
-                    <button id="btn-open-folder" title="打开文件夹">📂</button>
+                    <button id="btn-upload" title="上传文件/文件夹">⬆ 上传</button>
                     <button id="btn-new-file" title="新建文件">➕ 文件</button>
                     <button id="btn-new-folder" title="新建文件夹">➕ 文件夹</button>
                     <div id="workspace-path" class="workspace-breadcrumb"></div>
+                    <!-- Hidden file inputs for upload -->
+                    <input type="file" id="input-upload-file" multiple style="display:none">
+                    <input type="file" id="input-upload-folder" webkitdirectory directory multiple style="display:none">
                 </div>
                 <div id="file-tree"></div>
             </div>

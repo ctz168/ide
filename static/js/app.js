@@ -1506,33 +1506,89 @@ const AppManager = (() => {
 
     // ── File Panel Toolbar Buttons ──
     function initFileToolbar() {
-        // Open Folder button
-        const openFolderBtn = document.getElementById('btn-open-folder');
-        if (openFolderBtn) {
-            bindTouchButton(openFolderBtn, async () => {
+        // Upload button — shows dialog to choose file or folder upload
+        const uploadBtn = document.getElementById('btn-upload');
+        const inputFile = document.getElementById('input-upload-file');
+        const inputFolder = document.getElementById('input-upload-folder');
+
+        if (uploadBtn) {
+            bindTouchButton(uploadBtn, async () => {
                 try {
-                    const result = await showPromptDialog('打开文件夹', '输入文件夹路径:', FileManager && FileManager.currentPath ? '/' + FileManager.currentPath : '');
-                    if (result) {
-                        const resp = await fetch('/api/files/open_folder', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ path: result })
-                        });
-                        if (!resp.ok) {
-                            const err = await resp.json().catch(() => ({}));
-                            throw new Error(err.error || resp.statusText);
-                        }
-                        const data = await resp.json();
-                        if (data.workspace) {
-                            document.getElementById('workspace-path').textContent = data.workspace;
-                            if (window.FileManager) await FileManager.loadFileList();
-                            showToast('工作区已切换', 'success');
-                        }
+                    const action = await showDialog('上传', '<div style="text-align:center;padding:8px 0;">选择上传方式</div>', [
+                        { text: '📁 文件夹', value: 'folder', class: 'dialog-btn-primary' },
+                        { text: '📄 文件', value: 'file' },
+                        { text: '取消', value: 'cancel' },
+                    ]);
+                    if (!action || !action.value) return;
+
+                    if (action.value === 'folder') {
+                        inputFolder.click();
+                    } else if (action.value === 'file') {
+                        inputFile.click();
                     }
                 } catch (err) {
-                    showToast('打开文件夹失败: ' + err.message, 'error');
+                    showToast('上传失败: ' + err.message, 'error');
                 }
             });
+        }
+
+        // Handle file input change (single/multiple files)
+        if (inputFile) {
+            inputFile.addEventListener('change', async (e) => {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+                showToast(`正在上传 ${files.length} 个文件...`, 'info', 0);
+                await _doUpload(files);
+                inputFile.value = '';
+            });
+        }
+
+        // Handle folder input change (webkitdirectory — files carry relative paths)
+        if (inputFolder) {
+            inputFolder.addEventListener('change', async (e) => {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+                showToast(`正在上传文件夹 (${files.length} 个文件)...`, 'info', 0);
+                await _doUpload(files, true);
+                inputFolder.value = '';
+            });
+        }
+
+        // Common upload function
+        async function _doUpload(files, isFolder = false) {
+            try {
+                const formData = new FormData();
+                for (const f of files) {
+                    formData.append('files[]', f, f.name);
+                }
+                // For folder uploads, detect the common relative path
+                // webkitdirectory gives f.webkitRelativePath like "folderName/sub/file.txt"
+                if (isFolder && files[0] && files[0].webkitRelativePath) {
+                    const topDir = files[0].webkitRelativePath.split('/')[0];
+                    formData.append('relative_path', topDir);
+                }
+
+                const resp = await fetch('/api/files/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    throw new Error(data.error || 'Upload failed');
+                }
+                if (data.count > 0) {
+                    showToast(data.message, 'success');
+                    // Refresh file tree
+                    if (window.FileManager) await FileManager.loadFileList();
+                } else {
+                    showToast('上传失败: 没有文件被上传', 'error');
+                }
+                if (data.errors && data.errors.length > 0) {
+                    console.warn('Upload errors:', data.errors);
+                }
+            } catch (err) {
+                showToast('上传失败: ' + err.message, 'error');
+            }
         }
 
         // New File button

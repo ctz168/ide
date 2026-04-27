@@ -5,7 +5,9 @@ PhoneIDE - File management API routes.
 import json
 import os
 import re
+import shutil
 import fnmatch
+import zipfile
 from pathlib import Path
 from datetime import datetime
 from flask import Blueprint, jsonify, request, send_file, Response
@@ -1539,6 +1541,72 @@ def create_project_archive():
         'total_size': total_size,
         'zip_size': zip_size,
     })
+
+
+@bp.route('/api/files/upload', methods=['POST'])
+@handle_error
+def upload_files():
+    """Upload files or a folder (as zip) to the workspace.
+
+    Accepts multipart/form-data with:
+      - files[]: one or more files (single file upload or files within a folder)
+      - relative_path: optional base path inside workspace (for folder uploads, each file
+        carries its relative path in the Content-Disposition filename)
+    """
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+    base_real = os.path.realpath(base)
+
+    if 'files[]' not in request.files:
+        return jsonify({'error': 'No files provided'}), 400
+
+    uploaded_files = request.files.getlist('files[]')
+    relative_base = (request.form.get('relative_path') or '').strip().strip('/')
+
+    uploaded = []
+    errors = []
+
+    for f in uploaded_files:
+        if not f.filename:
+            continue
+
+        # Sanitize filename — reject path traversal
+        fname = f.filename.replace('\\', '/')
+        # Remove leading slashes and path traversal attempts
+        fname = fname.lstrip('/')
+        if '..' in fname.split('/'):
+            errors.append(f.filename)
+            continue
+
+        # Determine destination path
+        if relative_base:
+            dest = os.path.join(base, relative_base, fname)
+        else:
+            dest = os.path.join(base, fname)
+
+        dest_real = os.path.realpath(dest)
+        if not dest_real.startswith(base_real):
+            errors.append(f.filename)
+            continue
+
+        # Create parent directories as needed
+        os.makedirs(os.path.dirname(dest_real), exist_ok=True)
+
+        try:
+            f.save(dest_real)
+            rel = os.path.relpath(dest_real, base_real)
+            uploaded.append(rel)
+        except Exception as e:
+            errors.append(f'{f.filename}: {str(e)}')
+
+    result = {'uploaded': uploaded, 'count': len(uploaded)}
+    if errors:
+        result['errors'] = errors
+    if uploaded:
+        result['message'] = f'{len(uploaded)} file(s) uploaded'
+    else:
+        result['message'] = 'No files uploaded'
+    return jsonify(result)
 
 
 @bp.route('/api/files/office-preview', methods=['GET'])
