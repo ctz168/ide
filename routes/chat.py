@@ -3554,16 +3554,7 @@ def _tool_server_logs(args):
 def _tool_get_console_errors(args):
     """Get JavaScript errors from the browser preview panel."""
     try:
-        import urllib.request as _urllib_req
-        port = os.environ.get('PORT', '1239')
-        req = _urllib_req.Request(
-            f'http://localhost:{port}/api/browser/get-console-errors?clear=1',
-            headers={'Content-Type': 'application/json'},
-            method='GET'
-        )
-        with _urllib_req.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-        errors = data.get('errors', [])
+        errors = drain_console_errors()  # direct call — no HTTP loopback needed
         if not errors:
             return 'No JavaScript errors in the browser preview panel.'
         lines = [f'Browser console errors ({len(errors)} total):']
