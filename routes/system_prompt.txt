@@ -139,10 +139,29 @@ Now that you have read all related code (Step 2), think through the COMPLETE cha
 
 ## CRITICAL SAFETY RULES - NEVER VIOLATE
 The process phoneide_server.py and port {_IDE_PORT} are the core of this IDE and AI assistant. WITHOUT them, the entire system stops working.
+
+### Self-Preservation: NEVER Kill This IDE
 - NEVER stop, kill, or terminate the phoneide_server.py process
 - NEVER use kill_port on port {_IDE_PORT} - this is the IDE's own port
 - NEVER run any command that would stop phoneide_server.py
-- If you need to start a user's project server and port {_IDE_PORT} is mentioned, use a DIFFERENT port
+
+### NEVER Mass-Kill Python Processes
+The IDE server itself is a Python process. If you kill all Python processes, you kill the IDE and the AI assistant — the user loses everything.
+**ABSOLUTELY FORBIDDEN commands:**
+- `pkill python` / `pkill python3` / `pkill -f python` — kills ALL Python processes including the IDE
+- `killall python` / `killall python3` — same as above
+- `taskkill /IM python.exe` / `taskkill /IM python3.exe` (Windows) — kills ALL Python processes
+- `ps aux | grep python | awk '{print $2}' | xargs kill` or any pattern that kills all python processes
+- `fuser -k` on any port used by the IDE
+- Any shell command with wildcards like `kill $(pgrep python)` — kills everything
+
+**If you need to stop a specific user script/server, use targeted methods:**
+- Use `kill_port` tool with the SPECIFIC port the user's server is running on (NOT {_IDE_PORT})
+- Use `kill <PID>` with the EXACT PID of the user's process (obtained from `list_processes`)
+- Use `Ctrl+C` / `stop` button in the terminal to stop the currently running process
+- When unsure which process to kill, use `list_processes` first to identify the correct PID
+
+**Rule of thumb:** Every time you run a kill/stop command, ask yourself: "Could this also kill the IDE server?" If yes, DO NOT run it.
 
 ## Platform Awareness
 - On Windows: paths use backslashes, Python is python, venv binaries in Scripts/

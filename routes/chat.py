@@ -2191,7 +2191,23 @@ def _tool_run_command(args):
     # SAFETY: Block commands that would kill the IDE server
     ide_port = os.environ.get('PHONEIDE_PORT', '12345')
     cmd_lower = command.lower()
-    # Check for dangerous combinations: a kill command + IDE port or server name
+
+    # 1) Mass-kill Python commands — ALWAYS block (would kill the IDE server itself)
+    _MASS_KILL_PATTERNS = [
+        'pkill python', 'pkill python3', 'pkill -f python',
+        'killall python', 'killall python3', 'killall -9 python',
+        'taskkill /im python.exe', 'taskkill /im python3.exe',
+        'taskkill /f /im python.exe', 'taskkill /f /im python3.exe',
+    ]
+    for pat in _MASS_KILL_PATTERNS:
+        if pat in cmd_lower:
+            return f'⛔ BLOCKED: `{pat}` would kill ALL Python processes, including the PhoneIDE server. Use `kill_port <specific_port>` or `kill <PID>` to target a specific process instead.'
+
+    # Block `pgrep python` piped into kill
+    if ('pgrep' in cmd_lower and 'python' in cmd_lower and 'kill' in cmd_lower):
+        return '⛔ BLOCKED: This would kill ALL Python processes including the IDE server. Use targeted `kill <PID>` or `kill_port <port>` instead.'
+
+    # 2) Targeted kill commands targeting the IDE specifically
     has_kill = any(p in cmd_lower for p in ['kill', 'pkill', 'killall', 'taskkill', 'fuser -k'])
     has_ide_target = (ide_port in command or 'phoneide_server' in cmd_lower)
     if has_kill and has_ide_target:
