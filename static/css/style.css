@@ -1442,6 +1442,15 @@ html, body {
     min-height: 0;
     overflow: hidden;
 }
+/* Disable height transition during drag for smooth resizing */
+body.panel-resizing #bottom-panel {
+    transition: none !important;
+}
+body.panel-resizing,
+body.panel-resizing * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
 /* When keyboard is open, bottom-panel lifts up */
 #bottom-panel.keyboard-open {
     position: fixed;
@@ -2798,16 +2807,6 @@ button, .file-item, .search-result-item, .git-change-item {
 #bottom-panels { flex: 1; overflow: hidden; position: relative; }
 .bpanel { position: absolute; inset: 0; display: none; flex-direction: column; overflow: hidden; }
 .bpanel.active { display: flex; }
-
-/* Debug Console */
-#debug-console-content { flex: 1; overflow-y: auto; padding: 6px 8px; font-family: var(--font-mono); font-size: 11px; }
-.console-entry { padding: 3px 0; border-bottom: 1px solid rgba(49,50,68,0.3); display: flex; align-items: flex-start; gap: 6px; }
-.console-entry .c-time { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
-.console-entry.log { color: var(--text-primary); }
-.console-entry.warn { color: var(--yellow); background: rgba(249,226,175,0.05); }
-.console-entry.error { color: var(--red); background: rgba(243,139,168,0.05); }
-.console-entry.info { color: var(--blue); }
-.console-entry .c-source { color: var(--text-muted); font-size: 10px; margin-left: auto; flex-shrink: 0; }
 
 /* HTTP Client */
 #http-client-panel { padding: 8px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
