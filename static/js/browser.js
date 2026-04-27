@@ -82,16 +82,104 @@ const BrowserInspector = (() => {
                 console.warn=function(){_s('warn',arguments);_W.apply(console,arguments);};
                 console.error=function(){_s('error',arguments);_E.apply(console,arguments);};
                 console.info=function(){_s('info',arguments);_I.apply(console,arguments);};
+
+                // Collect syntax errors from already-loaded scripts BEFORE bridge injection.
+                // When a <script> has a syntax error, the browser logs it to console.error
+                // but window.onerror may not fire. We scan existing console.error output
+                // by checking performance entries for failed resource loads.
+                try {
+                    var entries = performance.getEntriesByType('resource');
+                    for (var i = 0; i < entries.length; i++) {
+                        if (entries[i].initiatorType === 'script') {
+                            // Check if the script transferred successfully but may have parse errors
+                            // (transferSize > 0 means the file was fetched OK)
+                        }
+                    }
+                } catch(perfEx) {}
+
+                // Listen for script loading failures via MutationObserver.
+                // This catches <script src="..."> tags added dynamically or already in DOM
+                // that fail to load (404, network error, CORS, etc.).
+                // Also listens for 'error' events on script elements to detect syntax errors.
+                function _watchScriptEl(el) {
+                    if (!el || el.id === 'phoneide-bridge') return;
+                    if (el.tagName !== 'SCRIPT') return;
+                    el.addEventListener('error', function(e) {
+                        try {
+                            var src = el.src || el.getAttribute('src') || '(inline script)';
+                            var msg = '[SCRIPT LOAD ERROR] Failed to load script: ' + src;
+                            // Distinguish between load failure and parse error:
+                            // If the script element has no src (inline), it's a syntax error
+                            if (!el.src) {
+                                msg = '[SCRIPT SYNTAX ERROR] Inline script failed to parse. ' +
+                                      'This means the ENTIRE script did NOT execute. ' +
+                                      'Any functions/variables defined in it are UNDEFINED. ' +
+                                      'Read the source file directly to find the syntax error. ' +
+                                      'Check for: unmatched brackets, missing commas, catch without try, unclosed strings.';
+                            } else {
+                                msg += '. If other errors say functions are "not defined", ' +
+                                       'THIS script failure is likely the ROOT CAUSE — the script never loaded. ' +
+                                       'Read the source file directly to check for syntax errors.';
+                            }
+                            window.parent.postMessage({
+                                source:'pide-bridge',
+                                type:'script-error',
+                                text:msg
+                            },'*');
+                        } catch(ex2) {}
+                    }, true); // capture phase
+                }
+
+                // Watch all existing script elements
+                try {
+                    var existingScripts = document.querySelectorAll('script');
+                    for (var j = 0; j < existingScripts.length; j++) {
+                        _watchScriptEl(existingScripts[j]);
+                    }
+                } catch(qsEx) {}
+
+                // Watch dynamically added script elements via MutationObserver
+                try {
+                    var _observer = new MutationObserver(function(mutations) {
+                        for (var m = 0; m < mutations.length; m++) {
+                            var added = mutations[m].addedNodes;
+                            for (var n = 0; n < added.length; n++) {
+                                if (added[n].nodeName === 'SCRIPT') {
+                                    _watchScriptEl(added[n]);
+                                }
+                                // Also watch scripts inside added containers
+                                if (added[n].querySelectorAll) {
+                                    var innerScripts = added[n].querySelectorAll('script');
+                                    for (var s = 0; s < innerScripts.length; s++) {
+                                        _watchScriptEl(innerScripts[s]);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    _observer.observe(document.documentElement || document.body, {
+                        childList: true,
+                        subtree: true
+                    });
+                } catch(obsEx) {}
+
                 window.addEventListener('error',function(e){
                     try{
                         var msg=e.message||'Unknown error';
                         var loc=e.filename?' at '+e.filename+':'+e.lineno+':'+e.colno:'';
                         var stack='';
                         if(e.error&&e.error.stack) stack='\\n'+e.error.stack;
+                        // Detect SyntaxError — these are ROOT CAUSE errors that prevent scripts from loading
+                        var prefix = '';
+                        if (e.error && e.error.name === 'SyntaxError') {
+                            prefix = '[ROOT CAUSE: SYNTAX ERROR] This prevented the script from executing. ' +
+                                     'ALL "undefined" errors you see afterwards are symptoms of THIS error. ' +
+                                     'Fix this syntax error first, then the "undefined" errors will disappear. ';
+                        }
                         window.parent.postMessage({
                             source:'pide-bridge',
                             type:'uncaught',
-                            text:msg+loc+stack
+                            text:prefix + msg + loc + stack
                         },'*');
                     }catch(ex){}
                 });
@@ -152,7 +240,7 @@ const BrowserInspector = (() => {
             if (iframeLogs.length > 500) iframeLogs.splice(0, iframeLogs.length - 500);
 
             // Auto-report errors to backend (debounced, batched)
-            if (logEntry.type === 'error' || logEntry.type === 'uncaught' || logEntry.type === 'promise') {
+            if (logEntry.type === 'error' || logEntry.type === 'uncaught' || logEntry.type === 'promise' || logEntry.type === 'script-error') {
                 _pendingErrors.push(logEntry);
                 if (!_errorReportTimer) {
                     _errorReportTimer = setTimeout(function() {

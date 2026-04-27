@@ -155,7 +155,7 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'todo_write',
-            'description': 'Create/update task plan. Use BEFORE any complex multi-step task. Status: pending/in_progress/completed.',
+            'description': 'MANDATORY first tool call for ANY non-trivial task (bug fix, feature, refactoring, debugging, multi-file edit, 2+ steps). Creates/updates task plan. Use BEFORE reading or editing files. Status: pending/in_progress/completed.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -3366,7 +3366,8 @@ def _format_browser_result_with_errors(result, pre_error_count=0):
     1. Formats the command result normally
     2. Waits briefly for errors to propagate from frontend
     3. Fetches any new console errors from the buffer
-    4. Appends them to the result so the AI sees them immediately
+    4. Sorts errors: script-error/SyntaxError first (root cause), then others
+    5. Appends them to the result so the AI sees them immediately with clear prioritization
     
     Args:
         result: The browser command result dict.
@@ -3388,16 +3389,44 @@ def _format_browser_result_with_errors(result, pre_error_count=0):
         if new_errors:
             # Clear the new errors so they don't show up again on the next call
             drain_console_errors()
-            lines = [f'\n\n⚠ Browser console errors ({len(new_errors)} new):']
-            for i, err in enumerate(new_errors[-20:]):  # cap at 20 to avoid bloat
+            # Separate root-cause errors (script-error, SyntaxError) from symptom errors
+            root_cause_errors = []
+            symptom_errors = []
+            for err in new_errors:
                 etype = err.get('type', 'error')
-                etime = err.get('time', '')
                 etext = err.get('text', '')
-                if len(etext) > 800:
-                    etext = etext[:800] + '...'
-                lines.append(f'  {i+1}. [{etype}] {etime}')
-                for tl in etext.split('\n')[:15]:  # cap stack trace lines
-                    lines.append(f'     {tl}')
+                if etype == 'script-error' or 'SYNTAX ERROR' in etext or 'SyntaxError' in etext:
+                    root_cause_errors.append(err)
+                else:
+                    symptom_errors.append(err)
+            lines = [f'\n\n⚠ Browser console errors ({len(new_errors)} new):']
+            # Always show root-cause errors FIRST with clear emphasis
+            if root_cause_errors:
+                lines.append(f'\n  🔴 ROOT CAUSE ERRORS ({len(root_cause_errors)}) — Fix these FIRST:')
+                lines.append('  These errors prevented scripts from loading. All "undefined" errors')
+                lines.append('  below are SYMPTOMS of these root cause errors. Read the source files')
+                lines.append('  directly with read_file to find and fix the syntax/parse error.\n')
+                for i, err in enumerate(root_cause_errors[-10:]):
+                    etype = err.get('type', 'error')
+                    etime = err.get('time', '')
+                    etext = err.get('text', '')
+                    if len(etext) > 800:
+                        etext = etext[:800] + '...'
+                    lines.append(f'  {i+1}. [{etype}] {etime}')
+                    for tl in etext.split('\n')[:15]:
+                        lines.append(f'     {tl}')
+            if symptom_errors:
+                if root_cause_errors:
+                    lines.append(f'\n  🟡 SYMPTOM ERRORS ({len(symptom_errors)}) — Will resolve after fixing root cause above:')
+                for i, err in enumerate(symptom_errors[-15:]):  # cap at 15 symptoms
+                    etype = err.get('type', 'error')
+                    etime = err.get('time', '')
+                    etext = err.get('text', '')
+                    if len(etext) > 600:
+                        etext = etext[:600] + '...'
+                    lines.append(f'  {i+1}. [{etype}] {etime}')
+                    for tl in etext.split('\n')[:10]:
+                        lines.append(f'     {tl}')
             return base + ''.join(lines)
     except Exception:
         pass
