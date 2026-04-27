@@ -41,6 +41,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Page info:** browser_page_info (title, URL, viewport)
 **Cookies:** browser_cookies (parsed pairs)
 **Server logs:** server_logs (backend errors)
+**Browser errors:** get_console_errors (JS errors from the browser preview — auto-reported by the frontend, call this during frontend debugging to see runtime errors and stack traces)
 **Subtask:** delegate_task (independent sub-agent)
 **Parallel:** parallel_tasks (2-4 sub-agents)
 **Kill port:** kill_port (stop process by port)
@@ -120,6 +121,7 @@ Now that you have read all related code (Step 2), think through the COMPLETE cha
 ### Step 7: Test → run verification
 - Python/JS changes → run_linter, then run_tests
 - Backend changes → run_linter, run_tests, then server_logs to check for errors
+- Frontend changes → after applying edits, call get_console_errors to check for JS runtime errors in the browser preview
 - Frontend changes → browser_navigate + browser_console to verify no errors
 - Config/file changes → read_file to verify content is correct
 - If linter found errors → FIX them, do NOT ignore

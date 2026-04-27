@@ -124,6 +124,22 @@ const BrowserInspector = (() => {
     }
 
     // ── Listen for bridge messages from iframe ──
+    // Debounce timer for error reporting to backend
+    let _errorReportTimer = null;
+    let _pendingErrors = [];
+
+    function _flushErrorReport() {
+        if (_pendingErrors.length === 0) return;
+        const batch = _pendingErrors.splice(0);
+        try {
+            fetch('/api/browser/console-errors', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(batch),
+            }).catch(function() {});
+        } catch (ex) {}
+    }
+
     function initBridgeListener() {
         window.addEventListener('message', function (e) {
             if (!e.data || e.data.source !== 'pide-bridge') return;
@@ -134,6 +150,17 @@ const BrowserInspector = (() => {
             };
             iframeLogs.push(logEntry);
             if (iframeLogs.length > 500) iframeLogs.splice(0, iframeLogs.length - 500);
+
+            // Auto-report errors to backend (debounced, batched)
+            if (logEntry.type === 'error' || logEntry.type === 'uncaught' || logEntry.type === 'promise') {
+                _pendingErrors.push(logEntry);
+                if (!_errorReportTimer) {
+                    _errorReportTimer = setTimeout(function() {
+                        _errorReportTimer = null;
+                        _flushErrorReport();
+                    }, 500);
+                }
+            }
 
             // Auto-refresh panels if visible
             const logsPanel = document.getElementById('iframe-logs-panel');

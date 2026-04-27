@@ -753,6 +753,19 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- Browser Console Errors --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'get_console_errors',
+            'description': 'Get JavaScript errors from the browser preview panel. Use during frontend debugging to see runtime errors, uncaught exceptions, and failed promises reported by the preview page. Automatically clears after reading.',
+            'parameters': {
+                'type': 'object',
+                'properties': {},
+                'required': [],
+            },
+        },
+    },
     {
         'type': 'function',
         'function': {
@@ -3479,6 +3492,37 @@ def _tool_server_logs(args):
     except Exception as e:
         return f'Error reading server logs: {e}'
 
+
+def _tool_get_console_errors(args):
+    """Get JavaScript errors from the browser preview panel."""
+    try:
+        import urllib.request as _urllib_req
+        port = os.environ.get('PORT', '1239')
+        req = _urllib_req.Request(
+            f'http://localhost:{port}/api/browser/get-console-errors?clear=1',
+            headers={'Content-Type': 'application/json'},
+            method='GET'
+        )
+        with _urllib_req.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+        errors = data.get('errors', [])
+        if not errors:
+            return 'No JavaScript errors in the browser preview panel.'
+        lines = [f'Browser console errors ({len(errors)} total):']
+        for i, err in enumerate(errors):
+            etype = err.get('type', 'error')
+            etime = err.get('time', '')
+            etext = err.get('text', '')
+            # Truncate very long stack traces per entry
+            if len(etext) > 1000:
+                etext = etext[:1000] + '... (truncated)'
+            lines.append(f'\n  {i+1}. [{etype}] {etime}')
+            for tl in etext.split('\n'):
+                lines.append(f'     {tl}')
+        return '\n'.join(lines)
+    except Exception as e:
+        return f'Error reading console errors: {e}'
+
 # ── P0+P1 New Tool Implementations ──
 
 def _tool_glob_files(args):
@@ -5623,6 +5667,7 @@ _TOOL_HANDLERS = {
     'browser_input': _tool_browser_input,
     'browser_cookies': _tool_browser_cookies,
     'server_logs': _tool_server_logs,
+    'get_console_errors': _tool_get_console_errors,
     # P0+P1 new tools
     'glob_files': _tool_glob_files,
     'find_definition': _tool_find_definition,

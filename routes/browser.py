@@ -39,6 +39,12 @@ _commands = {}  # cmd_id -> {action, params, status, result, event, created}
 _lock = threading.Lock()
 COMMAND_TIMEOUT = 20  # seconds
 
+# ── Console error buffer ──
+# Frontend auto-reports JS errors here; AI reads them via get_console_errors tool.
+_console_errors = []       # list of {type, text, time, url}
+_CONSOLE_ERROR_MAX = 200   # keep last 200 errors
+_CONSOLE_ERROR_LOCK = threading.Lock()
+
 
 def _cleanup_old_commands():
     """Remove commands older than 60 seconds."""
@@ -196,6 +202,47 @@ def open_external():
         return jsonify({'error': f'Failed to open URL: {url} (no browser available)'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@bp.route('/api/browser/console-errors', methods=['POST'])
+def receive_console_errors():
+    """Receive JS errors from the browser preview iframe.
+    Frontend auto-reports errors here so the AI can read them via get_console_errors tool.
+    Body: [{type, text, time}] or a single error {type, text, time}
+    """
+    global _console_errors
+    data = request.json or {}
+    # Accept both single error object and array
+    errors = data if isinstance(data, list) else [data]
+    page_url = request.headers.get('Referer', '')
+    with _CONSOLE_ERROR_LOCK:
+        for err in errors:
+            if not err or not err.get('text'):
+                continue
+            entry = {
+                'type': err.get('type', 'error'),
+                'text': str(err['text'])[:3000],  # cap per-entry size
+                'time': err.get('time', ''),
+                'url': page_url,
+            }
+            _console_errors.append(entry)
+        # Trim to max
+        if len(_console_errors) > _CONSOLE_ERROR_MAX:
+            _console_errors = _console_errors[-_CONSOLE_ERROR_MAX:]
+    return jsonify({'ok': True, 'count': len(errors)})
+
+
+@bp.route('/api/browser/get-console-errors', methods=['GET'])
+def get_console_errors_endpoint():
+    """Return buffered console errors for the AI get_console_errors tool."""
+    with _CONSOLE_ERROR_LOCK:
+        # Return a copy; caller can pass ?clear=1 to reset after reading
+        errors = list(_console_errors)
+    clear = request.args.get('clear', '0') == '1'
+    if clear:
+        with _CONSOLE_ERROR_LOCK:
+            _console_errors.clear()
+    return jsonify({'errors': errors, 'count': len(errors)})
 
 
 # ── Proxy Endpoint ──
