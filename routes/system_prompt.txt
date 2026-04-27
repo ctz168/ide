@@ -151,7 +151,7 @@ The IDE server itself is a Python process. If you kill all Python processes, you
 - `pkill python` / `pkill python3` / `pkill -f python` — kills ALL Python processes including the IDE
 - `killall python` / `killall python3` — same as above
 - `taskkill /IM python.exe` / `taskkill /IM python3.exe` (Windows) — kills ALL Python processes
-- `ps aux | grep python | awk '{print $2}' | xargs kill` or any pattern that kills all python processes
+- `ps aux | grep python | awk '{{print $2}}' | xargs kill` or any pattern that kills all python processes
 - `fuser -k` on any port used by the IDE
 - Any shell command with wildcards like `kill $(pgrep python)` — kills everything
 
