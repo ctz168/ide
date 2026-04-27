@@ -851,13 +851,14 @@ AGENT_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'run_command',
-            'description': 'Execute shell command. Best for: dev servers, compiling, scripts. Prefer specialized tools for reading/editing/searching files.',
+            'description': 'Execute shell command. Best for: dev servers, compiling, scripts. Prefer specialized tools for reading/editing/searching files. Use background=true for long-running services (web servers, dev servers, watchers) — the process keeps running and output streams to the console panel.',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'command': {'type': 'string', 'description': 'Shell command'},
-                    'timeout': {'type': 'integer', 'description': 'Timeout in seconds. Default: 120', 'default': 120},
+                    'timeout': {'type': 'integer', 'description': 'Timeout in seconds. Default: 120. Ignored when background=true.', 'default': 120},
                     'cwd': {'type': 'string', 'description': 'Working directory. Default: project dir'},
+                    'background': {'type': 'boolean', 'description': 'Run as background process. Use for long-running services (web servers, dev servers, file watchers). The process keeps running after the tool returns; output streams to the console panel in real-time. Default: false.', 'default': False},
                 },
                 'required': ['command'],
             },
@@ -2142,9 +2143,11 @@ def _get_effective_cwd():
 
 
 def _tool_run_command(args):
-    from utils import IS_WINDOWS
+    from utils import IS_WINDOWS, run_process, running_processes, process_outputs
+    import time as _time
     command = args['command']
     timeout = args.get('timeout', 120)
+    background = args.get('background', False)
     cwd = args.get('cwd', None) or _get_effective_cwd()
 
     # ── SMART SUGGESTION: Point out better tools when appropriate ──
@@ -2212,6 +2215,38 @@ def _tool_run_command(args):
     has_ide_target = (ide_port in command or 'phoneide_server' in cmd_lower)
     if has_kill and has_ide_target:
         return f'⛔ BLOCKED: This command would stop the PhoneIDE server (port {ide_port}, phoneide_server.py). Killing the IDE process is not allowed — it would shut down the IDE and AI assistant.'
+
+    # ── BACKGROUND MODE ──
+    # For long-running services (web servers, dev servers, watchers, etc.),
+    # start the process in the background using the IDE's process manager.
+    # Wait a few seconds to collect initial output (startup logs, errors),
+    # then return immediately — the process continues running and output
+    # streams to the console panel via SSE.
+    if background:
+        try:
+            cwd = _validate_path(cwd)
+        except ValueError:
+            cwd = _get_effective_cwd()
+        proc_id = run_process(command, cwd=cwd)
+        # Wait up to 5 seconds for initial output (startup logs, bind errors, etc.)
+        _wait_end = _time.time() + 5
+        while _time.time() < _wait_end:
+            _outputs = process_outputs.get(proc_id, [])
+            # If the process already exited (quick commands, errors), return full output
+            if proc_id in running_processes and not running_processes[proc_id].get('running', False) and len(_outputs) > 0:
+                _text = '\n'.join(o.get('text', '') for o in _outputs)
+                _code = running_processes[proc_id].get('exit_code', 0)
+                return f'[background] Process exited (code {_code}). Output:\n{_text}'
+            # Got some startup output — good enough, return it
+            if len(_outputs) >= 2:
+                break
+            _time.sleep(0.3)
+        # Collect whatever output we have so far
+        _outputs = process_outputs.get(proc_id, [])
+        _text = '\n'.join(o.get('text', '') for o in _outputs) if _outputs else '(no output yet)'
+        _still_running = running_processes.get(proc_id, {}).get('running', False)
+        _status = 'still running' if _still_running else 'exited'
+        return (_suggestion or '') + f'[background] Process started (PID: {proc_id}, {_status}). Initial output:\n{_text}\n\nThe process is running in the background. Output continues streaming in the console panel. Use stop_process or kill_port to stop it when needed.'
 
     try:
         cwd = _validate_path(cwd)

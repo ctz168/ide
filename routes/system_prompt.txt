@@ -45,6 +45,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Parallel:** parallel_tasks (2-4 sub-agents)
 **Kill port:** kill_port (stop process by port)
 **Shell:** run_command (dev servers, compiling, scripts — right choice for these; but NOT for LaTeX compilation — use pdflatex tool)
+**IMPORTANT:** For long-running services (web servers, dev servers, file watchers like `python manage.py runserver`, `npm start`, `npm run dev`, `flask run`, etc.), ALWAYS use `run_command` with `background: true`. This starts the process in the background and returns immediately instead of hanging until timeout. The process output streams to the console panel in real-time.
 
 Key principle: run_command is NOT wrong — just less efficient for tasks that have a dedicated tool.
 
