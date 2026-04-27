@@ -601,8 +601,8 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
     codeStore.push({{ id: id, code: match }});
     return id;
   }}
-  mdRaw = mdRaw.replace(/\`\`\`[\\s\\S]*?\`\`\`/g, storeCode);
-  mdRaw = mdRaw.replace(/\`[^\`]+\`/g, storeCode);
+  mdRaw = mdRaw.replace(/`{{3}}[\\s\\S]*?`{{3}}/g, storeCode);
+  mdRaw = mdRaw.replace(/`[^`]+`/g, storeCode);
 
   // ── Step 2: Protect math expressions from marked ──
   var mathStore = [];
@@ -653,18 +653,18 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
   // Strip markdown syntax to get plain text comparable to rendered textContent
   function stripMd(text) {{
     return text
-      .replace(/^#{1,6}\s+/, '')
-      .replace(/^>\s+/, '')
-      .replace(/^[-*+]\s+/, '')
-      .replace(/^\d+\.\s+/, '')
+      .replace(/^#{{1,6}}\\s+/, '')
+      .replace(/^>\\s+/, '')
+      .replace(/^[-*+]\\s+/, '')
+      .replace(/^\\d+\\.\\s+/, '')
       .replace(/~~(.+?)~~/g, '$1')
-      .replace(/\*\*(.+?)\*\*/g, '$1')
-      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/\\*\\*(.+?)\\*\\*/g, '$1')
+      .replace(/\\*(.+?)\\*/g, '$1')
       .replace(/__(.+?)__/g, '$1')
       .replace(/_(.+?)_/g, '$1')
       .replace(/`([^`]+)`/g, '$1')
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\\[([^\\]]*)\\]\\([^)]*\\)/g, '$1')
+      .replace(/!\\[([^\\]]*)\\]\\([^)]*\\)/g, '$1')
       .trim();
   }}
 
