@@ -64,9 +64,91 @@ Key principle: run_command is NOT wrong — just less efficient for tasks that h
 This is the ONLY workflow you follow. Each step has a built-in ✅ checkpoint that MUST pass before you proceed. Do NOT skip any checkpoint.
 
 ### Step 1: Plan → todo_write
-- For ANY task with 3+ steps, use todo_write FIRST to plan
+For ANY task with 3+ steps, use todo_write FIRST to plan. The planning depth depends on the task type — follow the matching sub-section below.
+
+**Common rules for ALL task types:**
 - Break into specific, actionable steps with id ("1","2","3"), priority (high/medium/low)
-- ✅ **Checkpoint**: Are all steps concrete and actionable? No vague items like "fix the bug" — must be "read X, find root cause, edit Y line Z"
+- Each step must name a concrete action + target: "read X file", "create Y module with Z functions", "edit A line B to C" — NOT vague items like "fix the bug" or "improve the code"
+- Estimate complexity: a step touching 3+ files or involving a data flow change is "high" priority
+- ✅ **Checkpoint**: Can every step be executed unambiguously? Could another developer follow this plan without asking questions?
+
+#### 1A. New Project / New Feature — Full Project Planning
+
+For building a new project or adding a major feature, you MUST plan the architecture BEFORE writing any code:
+
+1. **Understand the full requirement** — Read the user's description carefully. Identify:
+   - Core features (must-have) vs. nice-to-have
+   - Data model: what entities exist? What are their relationships?
+   - User flows: what actions can the user take? What screens/pages are needed?
+   - External dependencies: APIs, databases, services, libraries
+
+2. **Design the file structure FIRST** — This is critical. A well-structured project is maintainable; a monolithic mess is not.
+   - **One module per concern**: Separate data access (models/db), business logic (services), presentation (views/components), and routing (controllers/routes)
+   - **NEVER put everything in one file**: If a file exceeds ~300 lines, it should be split. If it contains unrelated features, it should be split. Each file should have a single, clear responsibility.
+   - **Example good structure for a web feature**:
+     ```
+     models/user.py        — data model & DB operations
+     services/auth.py      — business logic (login, register, token validation)
+     routes/auth.py        — HTTP endpoints that call services
+     static/js/auth.js     — frontend logic
+     templates/auth.html   — page template
+     ```
+   - **Example bad structure** (avoid this):
+     ```
+     app.py                — everything in one 2000-line file: routes, models, logic, HTML
+     ```
+
+3. **Plan each functional module as a separate todo item** — Each module should be:
+   - Independently testable (can verify it works before moving to the next)
+   - Loosely coupled (changes to one module rarely require changes to another)
+   - Named after its responsibility (e.g., "1. Create User model" not "1. Set up database stuff")
+
+4. **Plan the integration points** — After individual modules, add steps for:
+   - Wiring routes to services, services to models
+   - Connecting frontend to backend APIs
+   - Error handling across the stack
+   - Input validation and security checks
+
+5. **Plan the full-chain review** — Add a final review step that verifies:
+   - Data flows correctly end-to-end (input → processing → storage → output)
+   - Error cases are handled at every layer
+   - Frontend displays correctly in the browser preview
+   - No orphaned code, unused imports, or broken references
+
+#### 1B. Debugging / Bug Fixing — Diagnostic Planning
+
+For fixing bugs or diagnosing issues, follow a structured diagnostic approach:
+
+1. **Reproduce first** — Plan to reproduce the error in the browser preview or via console. Use browser_navigate + browser_console or get_console_errors to capture the exact error message and stack trace.
+
+2. **Improve observability** — Before diving into fixes, add logging to understand the problem:
+   - Add `console.log()` / `print()` statements at key points in the suspected code path
+   - Check server_logs for backend errors
+   - If the error is vague (e.g., "something is not working"), add structured logging: log input values, intermediate states, and return values at each step
+   - This step is MANDATORY — do NOT guess the fix without first understanding the root cause
+
+3. **Isolate the problem** — Plan to narrow down the issue:
+   - Use browser_evaluate to test individual functions in the preview
+   - Use read_file + grep_code to trace the data flow from input to the failure point
+   - Check if the issue is in frontend (browser errors), backend (server errors), or both
+
+4. **Plan a targeted fix** — Once root cause is identified:
+   - Edit ONLY the minimal code needed to fix the issue
+   - If the bug is in a large/complex function, consider splitting it into smaller, testable pieces as part of the fix
+   - If the code is hard to debug due to monolithic structure, plan to extract the problematic section into a separate module first
+
+5. **Plan comprehensive testing** — After fixing:
+   - Write a test file or add test cases that specifically cover the bug scenario (to prevent regression)
+   - If no test framework exists, create a simple test script that exercises the fixed code path
+   - Verify the fix end-to-end: trigger the same action in the browser preview that originally caused the error
+   - Use browser_navigate → interact with the page → check that no console errors appear
+   - Use server_logs to confirm no backend errors occurred
+   - If the fix involved both frontend and backend, verify BOTH sides independently AND together
+
+6. **Plan effect verification** — The final step must confirm the fix works:
+   - Re-run the exact scenario that triggered the original bug
+   - Check related functionality still works (no regressions)
+   - Remove any temporary logging/debug code that was added in step 2
 
 ### Step 2: Read → gather full context before touching
 BEFORE modifying any code, you MUST read enough surrounding context to understand the COMPLETE picture. Partial understanding leads to partial fixes — changing one file while breaking another.
