@@ -62,6 +62,10 @@ const BrowserInspector = (() => {
                             var v=a[i];
                             if(v===null) args.push('null');
                             else if(v===undefined) args.push('undefined');
+                            else if(v instanceof Error){
+                                var s=v.stack||v.message||String(v);
+                                args.push(s);
+                            }
                             else if(typeof v==='object'){
                                 try{args.push(JSON.stringify(v,null,2).substring(0,2000));}catch(e){args.push(String(v));}
                             }
@@ -70,7 +74,7 @@ const BrowserInspector = (() => {
                         window.parent.postMessage({
                             source:'pide-bridge',
                             type:t,
-                            text:args.join(' ')
+                            text:args.join('\\n')
                         },'*');
                     }catch(ex){}
                 }
@@ -80,20 +84,30 @@ const BrowserInspector = (() => {
                 console.info=function(){_s('info',arguments);_I.apply(console,arguments);};
                 window.addEventListener('error',function(e){
                     try{
+                        var msg=e.message||'Unknown error';
+                        var loc=e.filename?' at '+e.filename+':'+e.lineno+':'+e.colno:'';
+                        var stack='';
+                        if(e.error&&e.error.stack) stack='\\n'+e.error.stack;
                         window.parent.postMessage({
                             source:'pide-bridge',
                             type:'uncaught',
-                            text:e.message+' at '+e.filename+':'+e.lineno+':'+e.colno
+                            text:msg+loc+stack
                         },'*');
                     }catch(ex){}
                 });
                 window.addEventListener('unhandledrejection',function(e){
                     try{
                         var r=e.reason;
+                        var msg='';
+                        if(r instanceof Error){
+                            msg=r.stack||r.message||String(r);
+                        }else{
+                            msg='Unhandled: '+(r&&r.message?r.message:String(r));
+                        }
                         window.parent.postMessage({
                             source:'pide-bridge',
                             type:'promise',
-                            text:'Unhandled: '+(r&&r.message?r.message:String(r))
+                            text:msg
                         },'*');
                     }catch(ex){}
                 });
@@ -588,16 +602,44 @@ const BrowserInspector = (() => {
         for (let i = 0; i < errors.length; i++) {
             const log = errors[i];
             const div = document.createElement('div');
-            div.style.cssText = 'padding:3px 8px;font-size:11px;border-bottom:1px solid var(--border);font-family:var(--font-mono);';
+            div.style.cssText = 'padding:4px 8px;font-size:11px;border-bottom:1px solid var(--border);font-family:var(--font-mono);';
 
             let label = log.type;
-            if (log.type === 'uncaught') label = 'uncaught';
-            if (log.type === 'promise') label = 'promise';
+            if (log.type === 'uncaught') label = 'Uncaught';
+            if (log.type === 'promise') label = 'Promise';
 
-            div.innerHTML =
+            const text = log.text || '';
+            // Split into first line (message) and remaining lines (stack trace)
+            const lines = text.split('\n');
+            const firstLine = lines[0] || '';
+            const stackLines = lines.slice(1);
+
+            let html =
                 '<span style="color:var(--text-muted);font-size:9px;margin-right:4px;">' + escapeHTML(log.time) + '</span>' +
                 '<span style="color:var(--red);font-size:10px;font-weight:bold;margin-right:4px;">' + escapeHTML(label) + '</span>' +
-                '<span style="color:var(--text-secondary);word-break:break-all;">' + escapeHTML(log.text).substring(0, 500) + '</span>';
+                '<span style="color:var(--text-primary);word-break:break-all;">' + escapeHTML(firstLine) + '</span>';
+
+            // Render stack trace lines with dimmer color
+            if (stackLines.length > 0) {
+                html += '<div style="margin:2px 0 0 0;padding-left:12px;border-left:2px solid var(--red);">';
+                for (let j = 0; j < stackLines.length; j++) {
+                    const sl = stackLines[j].trim();
+                    if (sl) {
+                        // Highlight "at filename:line:col" part
+                        const atMatch = sl.match(/^(.+?)\s+(at\s+.+)$/);
+                        if (atMatch) {
+                            html += '<div style="color:var(--text-muted);font-size:10px;white-space:pre-wrap;">' +
+                                escapeHTML(atMatch[1]) +
+                                ' <span style="color:var(--blue);">' + escapeHTML(atMatch[2]) + '</span></div>';
+                        } else {
+                            html += '<div style="color:var(--text-muted);font-size:10px;white-space:pre-wrap;">' + escapeHTML(sl) + '</div>';
+                        }
+                    }
+                }
+                html += '</div>';
+            }
+
+            div.innerHTML = html;
             container.appendChild(div);
         }
         container.scrollTop = container.scrollHeight;
