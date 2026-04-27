@@ -37,7 +37,7 @@ def _detect_project_type(project_dir):
         'label': '未知',
         'scripts': {},       # npm scripts (for node projects)
         'entry_files': [],   # suggested entry files
-        'compiler': 'python3',
+        'compiler': get_default_compiler(),
     }
 
     if not project_dir or not os.path.isdir(project_dir):
@@ -67,7 +67,7 @@ def _detect_project_type(project_dir):
     if has_python_markers or (has_py_files and not has_package_json):
         result['type'] = 'python'
         result['label'] = 'Python'
-        result['compiler'] = 'python3'
+        result['compiler'] = get_default_compiler()
         result['entry_files'] = py_entry
         # Also note if there's a package.json (hybrid project)
         if has_package_json:

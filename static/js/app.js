@@ -503,7 +503,7 @@ const AppManager = (() => {
             console.warn('[AppManager] Project detect failed:', err);
         }
         // Fallback: assume python
-        return { type: 'unknown', label: '未知', scripts: {}, entry_files: [], compiler: 'python3' };
+        return { type: 'unknown', label: '未知', scripts: {}, entry_files: [], compiler: (window.TerminalManager && TerminalManager.platformInfo.default_compiler) || 'python3' };
     }
 
     /**
@@ -1693,7 +1693,7 @@ const AppManager = (() => {
      */
     async function _updateVenvButtonsForProjectType() {
         let projectType = 'unknown';
-        let detectedCompiler = 'python3';
+        let detectedCompiler = (window.TerminalManager && TerminalManager.platformInfo.default_compiler) || 'python3';
         try {
             const resp = await fetch('/api/run/detect');
             if (resp.ok) {
