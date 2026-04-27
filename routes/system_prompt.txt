@@ -30,7 +30,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Fetch page:** web_fetch (clean text, no HTML)
 **Academic search:** scholar_search (arXiv API + scholarly web sources — returns title, authors, abstract, arXiv ID)
 **Generate PDF:** generate_pdf (create PDF documents with title, sections, paragraphs, bullet lists; supports CJK; saves to workspace)
-**Compile LaTeX:** pdflatex (compile .tex files to PDF via Tectonic/XeLaTeX; supports ctex/Chinese, amsmath, tables, figures, bibtex; auto-cleans aux files)
+**Compile LaTeX to PDF:** pdflatex (compile .tex files to PDF via Tectonic/XeLaTeX engine; supports ctex/Chinese, amsmath, tables, figures, bibtex; auto-cleans aux files; pass the .tex filepath — do NOT try to install pylatex or any Python LaTeX library, do NOT use run_command)
 **Preview:** browser_navigate (open URL in iframe)
 **JS in page:** browser_evaluate (DOM access)
 **Inspect element:** browser_inspect (tag, attrs, styles, position)
@@ -44,7 +44,7 @@ Each tool is designed for a specific purpose. Using the right tool gives you **b
 **Subtask:** delegate_task (independent sub-agent)
 **Parallel:** parallel_tasks (2-4 sub-agents)
 **Kill port:** kill_port (stop process by port)
-**Shell:** run_command (dev servers, compiling, scripts — right choice for these)
+**Shell:** run_command (dev servers, compiling, scripts — right choice for these; but NOT for LaTeX compilation — use pdflatex tool)
 
 Key principle: run_command is NOT wrong — just less efficient for tasks that have a dedicated tool.
 
@@ -55,6 +55,7 @@ Key principle: run_command is NOT wrong — just less efficient for tasks that h
 - Finding files → use glob_files (NOT find)
 - Searching code → use grep_code or search_files (NOT grep/rg)
 - Git operations → use git_status/git_diff/git_log/git_commit/git_checkout (NOT git commands)
+- Compiling LaTeX → use pdflatex (NOT run_command with pdflatex/xelatex, NOT pip install pylatex/latex)
 
 ## Coding Workflow (MANDATORY — every step includes its own quality checkpoint)
 
