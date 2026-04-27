@@ -1308,7 +1308,7 @@ const TerminalManager = (() => {
             if (!isDragging) return;
             e.preventDefault();
             const currentY = e.touches[0].clientY;
-            const delta = currentY - dragStartY; // Handle at top: drag down = increase height
+            const delta = dragStartY - currentY; // Drag up = taller, drag down = shorter
             setPanelHeight(dragStartHeight + delta);
         }, { passive: false });
 
@@ -1335,7 +1335,7 @@ const TerminalManager = (() => {
             if (!isDragging) return;
             e.preventDefault();
             const currentY = e.clientY;
-            const delta = currentY - dragStartY; // Handle at top: drag down = increase height
+            const delta = dragStartY - currentY; // Drag up = taller, drag down = shorter
             setPanelHeight(dragStartHeight + delta);
         });
 
