@@ -3106,10 +3106,14 @@ def _tool_pdflatex(args):
     # Output PDF path: same directory, same basename, .pdf extension
     pdf_path = filepath.rsplit('.', 1)[0] + '.pdf'
 
+    # Use absolute path since the web server process PATH may not include /usr/local/bin
+    tectonic_bin = '/usr/local/bin/tectonic'
+    if not os.path.isfile(tectonic_bin):
+        return f'Error: tectonic not found at {tectonic_bin}. Please install it.'
     try:
         import subprocess
         result = subprocess.run(
-            ['tectonic', '--keep-logs', tex_name],
+            [tectonic_bin, '--keep-logs', tex_name],
             cwd=tex_dir,
             capture_output=True, text=True, timeout=120,
         )
@@ -3147,7 +3151,7 @@ def _tool_pdflatex(args):
                         pass
             return f'PDF compiled successfully: {rel_pdf} ({size_kb:.1f} KB)'
         else:
-            return f'Error: tectonic exited 0 but no PDF was generated. Check the .log file.'
+            return f'Error: tectonic exited with code 0 but no PDF was generated. Check the .log file.'
     except subprocess.TimeoutExpired:
         return 'Error: LaTeX compilation timed out (120s). The document may be too complex or have infinite loops.'
     except Exception as e:
