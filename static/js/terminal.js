@@ -16,8 +16,9 @@ const TerminalManager = (() => {
     const PROC_ID_STORAGE_KEY = 'phoneide_running_proc_id';
     // SessionStorage key for persisting outputClearedSince across page refreshes
     const OUTPUT_CLEARED_SINCE_KEY = 'phoneide_output_cleared_since';
+    // LocalStorage key for persisting bottom panel height
+    const PANEL_HEIGHT_STORAGE_KEY = 'phoneide_bottom_panel_height';
     let compilers = [];             // cached compiler list
-    let panelHeight = Math.floor(window.innerHeight * 0.85);  // default 85% of screen height
     let isDragging = false;         // resize drag state
     let currentCmdBlock = null;     // current command block container
     let outputClearedSince = -1;    // pollSince value at last clearOutput(); -1 = not cleared
@@ -37,6 +38,18 @@ const TerminalManager = (() => {
     const MAX_PANEL_HEIGHT = window.innerHeight ? Math.floor(window.innerHeight * 0.9) : 600;
     const POLL_INTERVAL = 500;      // ms between poll requests
     const MAX_OUTPUT_LINES = 5000;  // max lines before trimming
+
+    // Restore persisted panel height, or default to 85% of viewport
+    let panelHeight = (() => {
+        try {
+            const saved = localStorage.getItem(PANEL_HEIGHT_STORAGE_KEY);
+            if (saved) {
+                const h = parseInt(saved, 10);
+                if (!isNaN(h) && h >= MIN_PANEL_HEIGHT && h <= MAX_PANEL_HEIGHT) return h;
+            }
+        } catch (e) { /* ignore */ }
+        return Math.floor(window.innerHeight * 0.85);
+    })();
 
     // ── Platform Detection ────────────────────────────────────────
     let platformInfo = {
@@ -1255,13 +1268,20 @@ const TerminalManager = (() => {
      * Set the panel height and persist it
      * @param {number} height - new height in pixels
      */
-    function setPanelHeight(height) {
+    function setPanelHeight(height, persist = true) {
         height = Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, height));
         panelHeight = height;
 
         const panel = document.getElementById('bottom-panel');
         if (panel) {
             panel.style.height = panelHeight + 'px';
+        }
+
+        // Persist to localStorage
+        if (persist) {
+            try {
+                localStorage.setItem(PANEL_HEIGHT_STORAGE_KEY, String(panelHeight));
+            } catch (e) { /* ignore */ }
         }
     }
 
@@ -2093,7 +2113,7 @@ const TerminalManager = (() => {
 
         // Expand console panel
         showPanel();
-        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT));
+        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT), false);  // don't persist temporary size
 
         startCmdBlock('npm install');
 
@@ -2177,7 +2197,7 @@ const TerminalManager = (() => {
 
         // Expand console panel
         showPanel();
-        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT));
+        setPanelHeight(Math.min(400, MAX_PANEL_HEIGHT), false);  // don't persist temporary size
 
         // Start command block for AI forward button
         startCmdBlock('pip install -r requirements.txt');
