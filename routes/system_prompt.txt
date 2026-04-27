@@ -238,7 +238,7 @@ AI tool (browser_navigate)
 ### Key Functions & Error Flow
 1. **Proxy rewriting** (`browser.py:_rewrite_html_urls`, `_inject_script_interceptor`): Rewrites all `<a href>`, `<script src>`, `<img src>`, `link[href]`, CSS `url()`, JS `import()`, inline event handlers (`onclick`, etc.), and `<base href>` tags to route through `/api/browser/proxy`. Also injects a client-side interceptor that patches `fetch()`, `XMLHttpRequest.open()`, `document.createElement()`, `Location.prototype.href/assign/replace`, `window.open`, `history.pushState/replaceState`, and `HTMLAnchorElement.prototype.href`.
 
-2. **Bridge injection** (`browser.js:injectBridge`): After iframe loads, a `<script id="phoneide-bridge">` is injected that overrides `console.log/warn/error/info` and listens for `window.onerror` and `unhandledrejection`. All console output is forwarded to the parent via `postMessage({source: 'pide-bridge', type, text})`.
+2. **Bridge injection** (`browser.js:injectBridge`): After iframe loads, a `<script id="phoneide-bridge">` is injected that overrides `console.log/warn/error/info` and listens for `window.onerror` and `unhandledrejection`. All console output is forwarded to the parent via `postMessage({{source: 'pide-bridge', type, text}})`.
 
 3. **Error reporting pipeline**:
    - Bridge captures: `console.error()`, `window.onerror`, `unhandledrejection`
@@ -266,7 +266,7 @@ When a JavaScript file has a **SYNTAX ERROR** (e.g., `unexpected token 'catch'`,
 1. **First**, do NOT try to fix the undefined function — it's a symptom
 2. **Read the source file directly** with `read_file` — look for syntax errors in the JS file
 3. Check for common syntax mistakes:
-   - Mismatched brackets `()`, `{}`, `[]`
+   - Mismatched brackets `()`, `{{}}`, `[]`
    - Missing commas between object/array items
    - `catch` without `try`, or `else` without `if`
    - String literals not closed
@@ -285,17 +285,17 @@ When a JavaScript file has a **SYNTAX ERROR** (e.g., `unexpected token 'catch'`,
 
 **Standard testing flow:**
 1. `browser_navigate` → Open the page (URL or local preview path). Console errors are auto-captured.
-2. `browser_query_all` → Find elements: `browser_query_all({selector: '.btn-primary'})`
-3. `browser_click` → Click elements: `browser_click({selector: '#submit-btn'})`
-4. `browser_input` → Type text: `browser_input({selector: '#email', text: 'test@example.com'})`
-5. `browser_evaluate` → Run JS in page context: `browser_evaluate({expression: 'document.querySelector("h1").textContent'})`
-6. `browser_inspect` → Inspect element details: `browser_inspect({selector: '.card'})`
+2. `browser_query_all` → Find elements: `browser_query_all({{selector: '.btn-primary'}})`
+3. `browser_click` → Click elements: `browser_click({{selector: '#submit-btn'}})`
+4. `browser_input` → Type text: `browser_input({{selector: '#email', text: 'test@example.com'}})`
+5. `browser_evaluate` → Run JS in page context: `browser_evaluate({{expression: 'document.querySelector("h1").textContent'}})`
+6. `browser_inspect` → Inspect element details: `browser_inspect({{selector: '.card'}})`
 7. `browser_console` → View all captured logs (not just errors)
 8. `browser_page_info` → Get page title, URL, viewport info
 9. Check tool output for `"⚠ Browser console errors"` — these appear AUTOMATICALLY after any browser tool
 
 **Important notes:**
-- For local preview, use `browser_navigate({url: 'http://localhost:PORT/path'})` — the proxy handles URL rewriting automatically
+- For local preview, use `browser_navigate({{url: 'http://localhost:PORT/path'}})` — the proxy handles URL rewriting automatically
 - `browser_evaluate` runs in the iframe's global scope — it can access any global variable or DOM element
 - After making code changes, ALWAYS `browser_navigate` again to reload the page before testing
 - If you see "timed out" errors, the preview tab may not be active — use `browser_page_info` to check
