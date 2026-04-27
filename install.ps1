@@ -265,6 +265,49 @@ try {
         }
     }
 
+    # Install tectonic (LaTeX compiler) if missing
+    $tectonicCmd = Get-Command tectonic -ErrorAction SilentlyContinue
+    if (-not $tectonicCmd) {
+        Write-Info "tectonic (LaTeX compiler) not found - installing..."
+        # Try winget first
+        $wingetTectonic = winget install tectonic.Tectonic --accept-package-agreements --accept-source-agreements 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            # Fallback: download binary
+            Write-Info "winget failed - downloading tectonic binary..."
+            $tectonicUrl = "https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-pc-windows-msvc.zip"
+            $tectonicZip = "$env:TEMP\tectonic.zip"
+            $tectonicDir = "$env:TEMP\tectonic"
+            try {
+                Invoke-WebRequest -Uri $tectonicUrl -OutFile $tectonicZip -ErrorAction Stop
+                Expand-Archive -Path $tectonicZip -DestinationPath $tectonicDir -Force
+                $tectonicBin = Get-ChildItem -Path $tectonicDir -Filter "tectonic.exe" -Recurse | Select-Object -First 1
+                if ($tectonicBin) {
+                    $destDir = if ($env:LOCALAPPDATA) { "$env:LOCALAPPDATA\Programs\tectonic" } else { "$env:TEMP\tectonic" }
+                    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+                    Copy-Item $tectonicBin.FullName -Destination $destDir -Force
+                    # Add to user PATH permanently
+                    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                    if ($currentPath -notlike "*$destDir*") {
+                        [Environment]::SetEnvironmentVariable("Path", "$currentPath;$destDir", "User")
+                    }
+                    $env:Path = "$destDir;$env:Path"
+                    Write-OK "tectonic installed to $destDir"
+                } else {
+                    Write-Warn "tectonic binary not found in archive"
+                }
+            } catch {
+                Write-Warn "Could not install tectonic - LaTeX compilation will not work"
+            }
+            Remove-Item $tectonicZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $tectonicDir -Recurse -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-OK "tectonic installed via winget"
+        }
+    } else {
+        $tectonicVer = & tectonic --version 2>$null
+        Write-OK "tectonic $tectonicVer"
+    }
+
     # Final smoke test
     $smoke = & $Python -c "from flask import Flask; from flask_cors import CORS; print('OK')" 2>&1
     if ($LASTEXITCODE -eq 0) {

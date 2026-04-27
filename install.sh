@@ -362,6 +362,75 @@ for _entry in "python-docx:docx" "python-pptx:pptx" "openpyxl:openpyxl" "PyPDF2:
     fi
 done
 
+# Install tectonic (LaTeX compiler) if missing — lightweight XeLaTeX engine
+if ! command -v tectonic &>/dev/null; then
+    info "tectonic (LaTeX compiler) not found — installing..."
+    case "$PLATFORM" in
+        termux)
+            # Try cargo install or download binary
+            if command -v cargo &>/dev/null; then
+                cargo install tectonic 2>/dev/null || warn "Could not install tectonic via cargo"
+            else
+                warn "tectonic requires Rust/Cargo on Termux — install with: pkg install rust && cargo install tectonic"
+            fi
+            ;;
+        macos)
+            if command -v brew &>/dev/null; then
+                brew install tectonic 2>/dev/null || warn "Could not install tectonic via brew"
+            else
+                curl -sSL https://get.tectonic.tk | sh 2>/dev/null || warn "Could not install tectonic"
+            fi
+            ;;
+        *)
+            # Linux: download pre-built binary
+            _tectonic_url="https://github.com/tectonic-typesetting/tectonic/releases/latest/download/tectonic-0.15.0-x86_64-unknown-linux-gnu.tar.gz"
+            _tectonic_tmp="$(mktemp -d)"
+            if curl -sSL "$_tectonic_url" -o "$_tectonic_tmp/tectonic.tar.gz" 2>/dev/null && \
+               tar xzf "$_tectonic_tmp/tectonic.tar.gz" -C "$_tectonic_tmp" 2>/dev/null; then
+                # Find the binary (may be at root or in a subdirectory)
+                _tectonic_bin="$(find "$_tectonic_tmp" -name tectonic -type f 2>/dev/null | head -1)"
+                if [ -n "$_tectonic_bin" ]; then
+                    if need_sudo; then
+                        sudo mv "$_tectonic_bin" /usr/local/bin/tectonic 2>/dev/null || \
+                            sudo install -m 755 "$_tectonic_bin" /usr/local/bin/tectonic 2>/dev/null || \
+                            warn "Could not install tectonic to /usr/local/bin (try: sudo cp $_tectonic_bin /usr/local/bin/)"
+                    else
+                        mkdir -p "$HOME/.local/bin" 2>/dev/null
+                        mv "$_tectonic_bin" "$HOME/.local/bin/tectonic" 2>/dev/null || \
+                            mv "$_tectonic_bin" /usr/local/bin/tectonic 2>/dev/null || \
+                            warn "Could not install tectonic"
+                        # Ensure ~/.local/bin is in PATH
+                        case ":$PATH:" in
+                            *":$HOME/.local/bin:"*) ;;
+                            *) echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null ;;
+                        esac
+                    fi
+                    ok "tectonic installed"
+                else
+                    warn "tectonic binary not found in archive"
+                fi
+            else
+                # Fallback: try apt (texlive-xetex is much larger ~500MB)
+                if command -v apt-get &>/dev/null; then
+                    info "tectonic download failed — falling back to texlive-xetex (~500MB)..."
+                    if need_sudo; then
+                        sudo apt-get update -qq 2>/dev/null && sudo apt-get install -y texlive-xetex 2>/dev/null || \
+                            warn "Could not install texlive-xetex either"
+                    else
+                        apt-get update -qq 2>/dev/null && apt-get install -y texlive-xetex 2>/dev/null || \
+                            warn "Could not install texlive-xetex either"
+                    fi
+                else
+                    warn "Could not install tectonic — LaTeX compilation will not work"
+                fi
+            fi
+            rm -rf "$_tectonic_tmp" 2>/dev/null
+            ;;
+    esac
+else
+    ok "tectonic $(tectonic --version 2>/dev/null | head -1)"
+fi
+
 # Final smoke test
 SMOKE_OK=false
 if python3 -c "from flask import Flask; from flask_cors import CORS; print('OK')" 2>/dev/null; then
