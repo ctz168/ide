@@ -613,6 +613,21 @@ AGENT_TOOLS = [
             },
         },
     },
+    # -- LaTeX Compilation --
+    {
+        'type': 'function',
+        'function': {
+            'name': 'pdflatex',
+            'description': 'Compile a LaTeX (.tex) file into PDF using Tectonic (XeLaTeX-compatible engine). Supports CJK/Chinese (ctex), math (amsmath), figures, tables, bibtex, and full LaTeX packages. Returns output PDF path.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'filepath': {'type': 'string', 'description': 'Path to the .tex file to compile (relative to workspace).'},
+                },
+                'required': ['filepath'],
+            },
+        },
+    },
     # -- Browser/Preview --
     {
         'type': 'function',
@@ -3069,6 +3084,76 @@ def _tool_generate_pdf(args):
         return f'Error generating PDF: {str(e)}'
 
 
+def _tool_pdflatex(args):
+    """Compile a .tex file to PDF using Tectonic (XeLaTeX engine)."""
+    filepath = args.get('filepath', '').strip()
+    if not filepath:
+        return 'Error: filepath is required'
+    # Resolve to workspace-relative path
+    if not os.path.isabs(filepath):
+        filepath = os.path.join(WORKSPACE, filepath)
+    filepath = os.path.realpath(filepath)
+    ws_real = os.path.realpath(WORKSPACE)
+    if not filepath.startswith(ws_real):
+        return f'Error: path must be inside workspace ({WORKSPACE})'
+    if not os.path.isfile(filepath):
+        return f'Error: file not found: {os.path.relpath(filepath, WORKSPACE)}'
+    if not filepath.lower().endswith('.tex'):
+        return 'Error: file must have .tex extension'
+
+    tex_dir = os.path.dirname(filepath)
+    tex_name = os.path.basename(filepath)
+    # Output PDF path: same directory, same basename, .pdf extension
+    pdf_path = filepath.rsplit('.', 1)[0] + '.pdf'
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['tectonic', '--keep-logs', tex_name],
+            cwd=tex_dir,
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            log_write(f'[pdflatex] returncode={result.returncode}\nstdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-1000:]}')
+            # Extract useful error info from log
+            log_file = filepath.rsplit('.', 1)[0] + '.log'
+            err_detail = ''
+            if os.path.isfile(log_file):
+                try:
+                    with open(log_file, 'r', errors='ignore') as f:
+                        log_text = f.read()
+                    # Find error lines
+                    err_lines = [l for l in log_text.split('\n') if 'error' in l.lower() or 'fatal' in l.lower()]
+                    if err_lines:
+                        err_detail = '\nLaTeX errors:\n' + '\n'.join(err_lines[-5:])
+                    # Also find "undefined control sequence" etc
+                    ucs_lines = [l for l in log_text.split('\n') if 'Undefined control sequence' in l or 'Missing' in l]
+                    if ucs_lines:
+                        err_detail += '\n' + '\n'.join(ucs_lines[-5:])
+                except Exception:
+                    pass
+            return f'Error compiling LaTeX: exit code {result.returncode}.{err_detail}\n\nStdout (last 500 chars):\n{result.stdout[-500:]}'
+
+        if os.path.isfile(pdf_path):
+            size_kb = os.path.getsize(pdf_path) / 1024
+            rel_pdf = os.path.relpath(pdf_path, WORKSPACE)
+            # Clean up aux/log files
+            for ext in ['.aux', '.log', '.synctex.gz', '.fls', '.fdb_latexmk', '.out', '.toc']:
+                aux = filepath.rsplit('.', 1)[0] + ext
+                if os.path.isfile(aux):
+                    try:
+                        os.remove(aux)
+                    except Exception:
+                        pass
+            return f'PDF compiled successfully: {rel_pdf} ({size_kb:.1f} KB)'
+        else:
+            return f'Error: tectonic exited 0 but no PDF was generated. Check the .log file.'
+    except subprocess.TimeoutExpired:
+        return 'Error: LaTeX compilation timed out (120s). The document may be too complex or have infinite loops.'
+    except Exception as e:
+        return f'Error compiling LaTeX: {str(e)}'
+
+
 def _tool_git_log(args):
     count = args.get('count', 10)
     repo_path = args.get('repo_path', None) or _get_effective_cwd()
@@ -4315,6 +4400,7 @@ _SUBAGENT_TOOLS = {
     'web_fetch': _tool_web_fetch,
     'scholar_search': _tool_scholar_search,
     'generate_pdf': _tool_generate_pdf,
+    'pdflatex': _tool_pdflatex,
     'run_linter': _tool_run_linter,
     'run_tests': _tool_run_tests,
 }
@@ -5435,6 +5521,7 @@ _TOOL_HANDLERS = {
     'web_fetch': _tool_web_fetch,
     'scholar_search': _tool_scholar_search,
     'generate_pdf': _tool_generate_pdf,
+    'pdflatex': _tool_pdflatex,
     'browser_navigate': _tool_browser_navigate,
     'browser_console': _tool_browser_console,
     'browser_page_info': _tool_browser_page_info,
@@ -6642,7 +6729,7 @@ def _compress_context(messages, max_tokens=None, llm_config=None):
         'read_file': 5000, 'glob_files': 2000, 'grep_code': 3000,
         'search_files': 3000, 'file_structure': 3000,
         'find_definition': 3000, 'find_references': 2000,
-        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000, 'generate_pdf': 100000,
+        'run_command': 3000, 'web_fetch': 2000, 'web_search': 3000, 'scholar_search': 3000, 'generate_pdf': 100000, 'pdflatex': 100000,
         'delegate_task': 3000,
         'parallel_tasks': 6000,
         'kill_port': 2000,
