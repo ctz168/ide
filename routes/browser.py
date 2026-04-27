@@ -1218,6 +1218,22 @@ def proxy():
         wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
         return _proxy_response(wrapped, proxy_base)
 
+    except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, OSError) as e:
+        # Target server not running (e.g. port was just killed, server crashed, etc.)
+        print(f'[PROXY] Connection error for {target_url}: {e}')
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return Response(
+            f'<html><body style="font-family:monospace;padding:40px;color:#f38ba8;background:#1e1e2e">'
+            f'<h3>Proxy Error</h3>'
+            f'<p>Connection refused — the target server is not running or was just stopped.</p>'
+            f'<p><small>{e}</small></p>'
+            f'</body></html>',
+            status=502,
+            mimetype='text/html',
+        )
     except (urllib.error.HTTPError, urllib.error.URLError) as e:
         reason = str(e.reason) if hasattr(e, 'reason') and e.reason else str(e)
         print(f'[PROXY] Error for {target_url}: {reason}')
