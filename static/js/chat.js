@@ -1306,6 +1306,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const btn = document.createElement('button');
         btn.id = 'chat-tts-btn';
         btn.className = 'chat-tts-btn';
+        // Create icon and label spans (phrasing content — valid inside <button>)
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'tts-icon';
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'tts-label';
+        btn.appendChild(iconSpan);
+        btn.appendChild(labelSpan);
         if (ttsMode !== TTS_MODES.OFF) btn.classList.add('active');
         updateTtsButtonLabel(btn);
         btn.addEventListener('click', function(e) {
@@ -1610,12 +1617,22 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
     function updateStaticTtsIcon() {
         if (!ttsStaticBtn) return;
-        if (ttsMode === TTS_MODES.ALL) {
-            ttsStaticBtn.textContent = '🔊';
-        } else if (ttsMode === TTS_MODES.LAST) {
-            ttsStaticBtn.textContent = '🔉';
-        } else {
-            ttsStaticBtn.textContent = '🔇';
+        let icon;
+        if (ttsMode === TTS_MODES.ALL) icon = '🔊';
+        else if (ttsMode === TTS_MODES.LAST) icon = '🔉';
+        else icon = '🔇';
+        // Only update text nodes — preserve child elements (dropdown div).
+        // Using .textContent = would destroy the dropdown appended by initStaticTtsButton().
+        let foundTextNode = false;
+        for (let i = 0; i < ttsStaticBtn.childNodes.length; i++) {
+            if (ttsStaticBtn.childNodes[i].nodeType === 3) { // TEXT_NODE
+                ttsStaticBtn.childNodes[i].textContent = icon;
+                foundTextNode = true;
+                break;
+            }
+        }
+        if (!foundTextNode) {
+            ttsStaticBtn.insertBefore(document.createTextNode(icon), ttsStaticBtn.firstChild);
         }
         ttsStaticBtn.classList.toggle('active', ttsMode !== TTS_MODES.OFF);
         ttsStaticBtn.classList.toggle('chat-tts-speaking', ttsSpeaking);
@@ -1647,15 +1664,23 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         btn.addEventListener('click', abortGeneration);
         row.appendChild(btn);
 
+        // TTS wrapper: button + dropdown as siblings (NOT dropdown inside button)
+        // <button> cannot contain <div> — causes click events to break on mobile
+        const ttsWrap = document.createElement('div');
+        ttsWrap.className = 'chat-tts-wrap';
+        ttsWrap.style.position = 'relative';
+
         // TTS button
         const ttsBtn = createTtsButton();
-        row.appendChild(ttsBtn);
+        ttsWrap.appendChild(ttsBtn);
         ttsBtnEl = ttsBtn;
 
-        // TTS dropdown (positioned relative to TTS button)
+        // TTS dropdown (sibling of button, inside wrapper)
         const dropdown = createTtsDropdown();
-        ttsBtn.appendChild(dropdown);
+        ttsWrap.appendChild(dropdown);
         ttsDropdownEl = dropdown;
+
+        row.appendChild(ttsWrap);
 
         // Click-outside overlay
         const overlay = document.createElement('div');
