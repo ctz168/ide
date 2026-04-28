@@ -1447,6 +1447,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         console.log('[TTS] speakText called:', cleaned.substring(0, 50));
 
+        // Mark as busy BEFORE async fetch to prevent duplicate calls
+        ttsSpeaking = true;
+        ttsCurrentAudio = ttsAudio;
+        updateTtsButtonLabel(ttsBtnEl);
+        updateStaticTtsIcon();
+
         try {
             const resp = await fetch('/api/chat/tts', {
                 method: 'POST',
@@ -1455,6 +1461,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             });
             if (!resp.ok) {
                 console.warn('[TTS] fetch failed:', resp.status);
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
+                processTtsQueue();
                 return;
             }
             const blob = await resp.blob();
@@ -1462,10 +1473,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             const blobUrl = URL.createObjectURL(blob);
 
             ttsAudio.src = blobUrl;
-            ttsSpeaking = true;
-            ttsCurrentAudio = ttsAudio;
-            updateTtsButtonLabel(ttsBtnEl);
-            updateStaticTtsIcon();
 
             console.log('[TTS] calling play()...');
             await ttsAudio.play();
