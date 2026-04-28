@@ -8415,6 +8415,7 @@ def send_chat_stream():
     def _run_agent():
         """Background thread: runs the agent loop and puts events into queue + buffer."""
         my_thread_id = threading.current_thread().ident
+        my_event_buffer = event_buffer  # capture our buffer ref so it survives cleanup
         try:
             for sse_event in run_agent_loop_stream(message, llm_config, conv_id=conv_id, is_retry=is_retry):
                 # Check cancellation before enqueueing
@@ -8422,20 +8423,21 @@ def send_chat_stream():
                     if _active_task.get('cancelled'):
                         cancel_event = f"data: {json.dumps({'type': 'cancelled', 'content': 'Task cancelled by user.'})}\n\n"
                         event_queue.put(cancel_event)
-                        _active_task['event_buffer'].append(cancel_event)
+                        if my_event_buffer is not None:
+                            my_event_buffer.append(cancel_event)
                         break
                 event_queue.put(sse_event)
-                with _active_task['lock']:
-                    _active_task['event_buffer'].append(sse_event)
+                if my_event_buffer is not None:
+                    my_event_buffer.append(sse_event)
         except Exception as e:
             err_event = f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
             event_queue.put(err_event)
-            with _active_task['lock']:
-                _active_task['event_buffer'].append(err_event)
+            if my_event_buffer is not None:
+                my_event_buffer.append(err_event)
             done_event = f"data: {json.dumps({'type': 'done', 'completed': False, 'error': True})}\n\n"
             event_queue.put(done_event)
-            with _active_task['lock']:
-                _active_task['event_buffer'].append(done_event)
+            if my_event_buffer is not None:
+                my_event_buffer.append(done_event)
         finally:
             # Signal completion and mark task as no longer running
             # Only set running=False if we are still the active task thread
