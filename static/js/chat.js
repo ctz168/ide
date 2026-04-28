@@ -46,6 +46,7 @@ const ChatManager = (() => {
     let ttsDropdownEl = null;       // reference to .chat-tts-dropdown
     let ttsOverlayEl = null;        // reference to .chat-tts-overlay
     let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
+    let ttsStaticWrap = null;       // wrapper div around static button + dropdown
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1565,14 +1566,23 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         ttsStaticBtn = document.getElementById('chat-tts-toggle');
         if (!ttsStaticBtn) return;
 
+        // Wrap button in a container so dropdown can be a sibling (NOT inside <button>).
+        // <button> cannot contain <div> — on mobile browsers, clicks on nested interactive
+        // elements (option buttons inside dropdown inside button) don't fire properly.
+        const wrap = document.createElement('div');
+        wrap.className = 'chat-tts-static-wrap';
+        ttsStaticBtn.parentNode.insertBefore(wrap, ttsStaticBtn);
+        wrap.appendChild(ttsStaticBtn);
+        ttsStaticWrap = wrap;
+
         // Update icon based on persisted mode
         updateStaticTtsIcon();
 
-        // Create dropdown with close callback for static button context
+        // Dropdown goes in the wrapper (sibling of button), NOT inside the button
         const dropdown = createTtsDropdown(closeStaticTtsDropdown);
-        ttsStaticBtn.appendChild(dropdown);
+        wrap.appendChild(dropdown);
 
-        // Create overlay (shared)
+        // Create overlay
         const overlay = document.createElement('div');
         overlay.className = 'chat-tts-overlay';
         overlay.id = 'chat-tts-static-overlay';
@@ -1584,7 +1594,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         ttsStaticBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            const dd = ttsStaticBtn.querySelector('.chat-tts-dropdown');
+            const dd = wrap.querySelector('.chat-tts-dropdown');
             const ov = document.getElementById('chat-tts-static-overlay');
             if (!dd || !ov) return;
             if (dd.classList.contains('open')) {
@@ -1607,8 +1617,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     function closeStaticTtsDropdown() {
-        if (ttsStaticBtn) {
-            const dd = ttsStaticBtn.querySelector('.chat-tts-dropdown');
+        if (ttsStaticWrap) {
+            const dd = ttsStaticWrap.querySelector('.chat-tts-dropdown');
             if (dd) dd.classList.remove('open');
         }
         const ov = document.getElementById('chat-tts-static-overlay');
@@ -1617,22 +1627,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
     function updateStaticTtsIcon() {
         if (!ttsStaticBtn) return;
-        let icon;
-        if (ttsMode === TTS_MODES.ALL) icon = '🔊';
-        else if (ttsMode === TTS_MODES.LAST) icon = '🔉';
-        else icon = '🔇';
-        // Only update text nodes — preserve child elements (dropdown div).
-        // Using .textContent = would destroy the dropdown appended by initStaticTtsButton().
-        let foundTextNode = false;
-        for (let i = 0; i < ttsStaticBtn.childNodes.length; i++) {
-            if (ttsStaticBtn.childNodes[i].nodeType === 3) { // TEXT_NODE
-                ttsStaticBtn.childNodes[i].textContent = icon;
-                foundTextNode = true;
-                break;
-            }
-        }
-        if (!foundTextNode) {
-            ttsStaticBtn.insertBefore(document.createTextNode(icon), ttsStaticBtn.firstChild);
+        if (ttsMode === TTS_MODES.ALL) {
+            ttsStaticBtn.textContent = '🔊';
+        } else if (ttsMode === TTS_MODES.LAST) {
+            ttsStaticBtn.textContent = '🔉';
+        } else {
+            ttsStaticBtn.textContent = '🔇';
         }
         ttsStaticBtn.classList.toggle('active', ttsMode !== TTS_MODES.OFF);
         ttsStaticBtn.classList.toggle('chat-tts-speaking', ttsSpeaking);
@@ -1648,8 +1648,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const inputArea = document.getElementById('chat-input-area');
         if (!inputArea) return null;
 
-        // Hide the static TTS button in send row while stop row is visible
-        if (ttsStaticBtn) ttsStaticBtn.style.display = 'none';
+        // Hide the static TTS wrapper in send row while stop row is visible
+        if (ttsStaticWrap) ttsStaticWrap.style.display = 'none';
 
         // Create wrapper row
         const row = document.createElement('div');
@@ -1709,8 +1709,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         ttsDropdownEl = null;
         ttsOverlayEl = null;
 
-        // Restore the static TTS button in send row
-        if (ttsStaticBtn) ttsStaticBtn.style.display = '';
+        // Restore the static TTS wrapper in send row
+        if (ttsStaticWrap) ttsStaticWrap.style.display = '';
     }
 
     /**
