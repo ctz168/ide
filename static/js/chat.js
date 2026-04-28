@@ -47,9 +47,10 @@ const ChatManager = (() => {
     let ttsOverlayEl = null;        // reference to .chat-tts-overlay
     let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
     let ttsStaticWrap = null;       // wrapper div around static button + dropdown
+    let ttsAudioCtx = null;         // Web Audio API context (primary playback method)
     let ttsAudioUnlocked = false;   // whether audio playback has been unlocked by user gesture
-    let ttsPersistentAudio = null;  // persistent Audio element to keep context alive
-    let ttsLastBlobUrl = null;     // track blob URL for cleanup when switching audio
+    let ttsPersistentAudio = null;  // persistent Audio element (fallback playback method)
+    let ttsLastBlobUrl = null;      // track blob URL for cleanup when switching audio
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1388,74 +1389,52 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
-     * Set TTS mode and persist to localStorage
+     * Ensure the TTS AudioContext is created and running.
+     * AudioContext is more reliable on mobile WebViews than HTMLAudio elements.
+     * The completion sound (playCompletionSound) already proves AudioContext works.
      */
+    function getTtsAudioCtx() {
+        if (!ttsAudioCtx) {
+            try {
+                ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            } catch(e) {
+                console.warn('[TTS] AudioContext creation failed:', e);
+                return null;
+            }
+        }
+        if (ttsAudioCtx.state === 'suspended') {
+            ttsAudioCtx.resume().catch(function(){});
+        }
+        return ttsAudioCtx;
+    }
+
     /**
      * Unlock audio playback on mobile browsers.
-     * Mobile browsers require audio.play() to be called inside a user-gesture
-     * call stack. We create a persistent Audio element and play a tiny silent
-     * clip during the user's click on TTS option. This unlocks the audio
-     * session so subsequent programmatic play() calls work during SSE streaming.
+     * Called during user-gesture (click on TTS dropdown option).
+     * Primary: create/resume AudioContext. Fallback: play silent clip via HTMLAudio.
      */
     function unlockTtsAudio() {
         if (ttsAudioUnlocked) return;
+        // Primary: create AudioContext in user-gesture context
+        var ctx = getTtsAudioCtx();
+        if (ctx && ctx.state === 'running') {
+            ttsAudioUnlocked = true;
+            return;
+        }
+        // Fallback: try HTMLAudio silent clip
         try {
             if (!ttsPersistentAudio) {
                 ttsPersistentAudio = new Audio();
                 ttsPersistentAudio.preload = 'auto';
-                // Set up event handlers once
-                ttsPersistentAudio.onended = function() {
-                    ttsSpeaking = false;
-                    ttsCurrentAudio = null;
-                    updateTtsButtonLabel(ttsBtnEl);
-                    updateStaticTtsIcon();
-                    processTtsQueue();
-                };
-                ttsPersistentAudio.onerror = function() {
-                    console.warn('[TTS] audio error event');
-                    ttsSpeaking = false;
-                    ttsCurrentAudio = null;
-                    updateTtsButtonLabel(ttsBtnEl);
-                    updateStaticTtsIcon();
-                    processTtsQueue();
-                };
             }
-            // Unlock by playing a tiny silent data-URI WAV in user-gesture context
-            const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+            var silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
             ttsPersistentAudio.src = silentWav;
             ttsPersistentAudio.volume = 0.01;
             var p = ttsPersistentAudio.play();
             if (p && p.then) {
-                p.then(function() {
-                    ttsAudioUnlocked = true;
-                    console.log('[TTS] audio unlocked successfully');
-                }).catch(function() {
-                    // Unlock failed — try Web Audio API fallback
-                    tryTtsAudioContext();
-                });
+                p.then(function() { ttsAudioUnlocked = true; }).catch(function() {});
             } else {
                 ttsAudioUnlocked = true;
-            }
-        } catch(e) {
-            tryTtsAudioContext();
-        }
-    }
-
-    /**
-     * Fallback: use Web Audio API to unlock audio on iOS/Android
-     */
-    function tryTtsAudioContext() {
-        if (ttsAudioUnlocked) return;
-        try {
-            var ctx = new (window.AudioContext || window.webkitAudioContext)();
-            if (ctx.state === 'suspended') {
-                ctx.resume().then(function() {
-                    ttsAudioUnlocked = true;
-                    ctx.close().catch(function(){});
-                }).catch(function(){});
-            } else {
-                ttsAudioUnlocked = true;
-                ctx.close().catch(function(){});
             }
         } catch(e) {}
     }
@@ -1484,11 +1463,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * Stop any current TTS playback
      */
     function stopTtsPlayback() {
-        if (ttsPersistentAudio) {
-            ttsPersistentAudio.pause();
-            ttsPersistentAudio.currentTime = 0;
-            ttsPersistentAudio.removeAttribute('src');
-            ttsPersistentAudio.load(); // Reset internal state so next play() is clean
+        if (ttsCurrentAudio) {
+            try {
+                if (ttsCurrentAudio._isWebAudio && typeof ttsCurrentAudio.stop === 'function') {
+                    ttsCurrentAudio.stop(); // AudioBufferSourceNode
+                } else if (ttsCurrentAudio.pause) {
+                    ttsCurrentAudio.pause(); // HTMLAudio element
+                }
+            } catch(e) {}
         }
         ttsCurrentAudio = null;
         ttsSpeaking = false;
@@ -1501,11 +1483,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
-     * Fetch audio from backend and play it
+     * Fetch audio from backend and play it.
+     * Primary method: Web Audio API (AudioContext + decodeAudioData).
+     * Fallback: HTMLAudio element.
+     * Web Audio API is more reliable on mobile WebViews — proven by playCompletionSound.
      */
     async function speakText(text) {
         if (!text || text.trim().length < 2) return;
-
         const cleaned = cleanTtsText(text);
         if (cleaned.length < 2) return;
 
@@ -1519,55 +1503,83 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 console.warn('[TTS] fetch failed:', response.status);
                 return;
             }
-            const blob = await response.blob();
-            if (blob.size < 100) {
-                console.warn('[TTS] audio too small:', blob.size, 'bytes');
+            const arrayBuffer = await response.arrayBuffer();
+            if (arrayBuffer.byteLength < 100) {
+                console.warn('[TTS] audio too small:', arrayBuffer.byteLength, 'bytes');
                 return;
             }
-            const url = URL.createObjectURL(blob);
 
-            // Reuse the persistent Audio element (unlocked during user gesture)
-            // This is critical for mobile browsers: new Audio() objects created
-            // outside user-gesture context are blocked by autoplay policy.
-            // By reusing the same element that was 'unlocked' in unlockTtsAudio(),
-            // subsequent play() calls work even during SSE streaming.
-            const audio = ttsPersistentAudio || new Audio();
-            if (!ttsPersistentAudio) {
-                ttsPersistentAudio = audio;
-                audio.onended = function() {
-                    ttsSpeaking = false;
-                    ttsCurrentAudio = null;
-                    updateTtsButtonLabel(ttsBtnEl);
+            // === Primary: Web Audio API (same technology as playCompletionSound) ===
+            const ctx = getTtsAudioCtx();
+            if (ctx) {
+                try {
+                    // decodeAudioData detaches the buffer, so clone it
+                    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+                    const source = ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(ctx.destination);
+                    source._isWebAudio = true;
+
+                    ttsSpeaking = true;
+                    ttsCurrentAudio = source;
+                    if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
                     updateStaticTtsIcon();
-                    processTtsQueue();
-                };
-                audio.onerror = function() {
-                    console.warn('[TTS] audio error event');
-                    ttsSpeaking = false;
-                    ttsCurrentAudio = null;
-                    updateTtsButtonLabel(ttsBtnEl);
-                    updateStaticTtsIcon();
-                    processTtsQueue();
-                };
+
+                    source.onended = function() {
+                        ttsSpeaking = false;
+                        ttsCurrentAudio = null;
+                        if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                        updateStaticTtsIcon();
+                        processTtsQueue();
+                    };
+
+                    source.start(0);
+                    return; // Success — don't fall through to HTMLAudio
+                } catch(audioErr) {
+                    console.warn('[TTS] Web Audio decode failed, trying HTMLAudio fallback:', audioErr);
+                }
             }
 
-            // Revoke previous blob URL if any
+            // === Fallback: HTMLAudio element ===
+            const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+            const url = URL.createObjectURL(blob);
             if (ttsLastBlobUrl) {
                 try { URL.revokeObjectURL(ttsLastBlobUrl); } catch(e) {}
             }
             ttsLastBlobUrl = url;
 
+            const audio = ttsPersistentAudio || new Audio();
+            if (!ttsPersistentAudio) ttsPersistentAudio = audio;
+
             audio.src = url;
             audio.volume = 1.0;
+            audio._isWebAudio = false;
             ttsCurrentAudio = audio;
             ttsSpeaking = true;
             if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
             updateStaticTtsIcon();
 
+            audio.onended = function() {
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
+                processTtsQueue();
+            };
+            audio.onerror = function() {
+                console.warn('[TTS] HTMLAudio error');
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
+                processTtsQueue();
+            };
+
             await audio.play();
         } catch (err) {
             console.warn('[TTS] error:', err);
             ttsSpeaking = false;
+            ttsCurrentAudio = null;
             if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
             updateStaticTtsIcon();
             processTtsQueue();
