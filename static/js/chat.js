@@ -1264,7 +1264,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     /**
      * Create TTS dropdown with mode options
      */
-    function createTtsDropdown() {
+    function createTtsDropdown(onOptionSelect) {
         const dropdown = document.createElement('div');
         dropdown.className = 'chat-tts-dropdown';
         dropdown.id = 'chat-tts-dropdown';
@@ -1287,7 +1287,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             btn.addEventListener('click', function(e) {
                 e.stopPropagation();
                 setTtsMode(opt.mode);
-                closeTtsDropdown();
+                if (typeof onOptionSelect === 'function') {
+                    onOptionSelect();
+                } else {
+                    closeTtsDropdown();
+                }
             });
             dropdown.appendChild(btn);
         });
@@ -1326,7 +1330,12 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             icon = '🔇'; label = '朗读';
         }
         if (ttsSpeaking) icon = '🗣️';
-        btn.innerHTML = '<span class="tts-icon">' + icon + '</span><span class="tts-label">' + label + '</span>';
+        // Use querySelector to update text only — do NOT use innerHTML which
+        // would destroy the dropdown child element appended after creation
+        var iconEl = btn.querySelector('.tts-icon');
+        var labelEl = btn.querySelector('.tts-label');
+        if (iconEl) iconEl.textContent = icon;
+        if (labelEl) labelEl.textContent = label;
         if (ttsSpeaking) {
             btn.classList.add('chat-tts-speaking');
         } else {
@@ -1552,8 +1561,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         // Update icon based on persisted mode
         updateStaticTtsIcon();
 
-        // Create dropdown (reused for both static and dynamic buttons)
-        const dropdown = createTtsDropdown();
+        // Create dropdown with close callback for static button context
+        const dropdown = createTtsDropdown(closeStaticTtsDropdown);
         ttsStaticBtn.appendChild(dropdown);
 
         // Create overlay (shared)
