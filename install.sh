@@ -189,6 +189,28 @@ if ! $PYTHON -m pip --version &>/dev/null 2>&1; then
     warn "pip not available — trying alternative install..."
 fi
 
+# Install system build dependencies for reportlab (has C extensions for font rendering)
+# Only needed on proot/debian/alpine where pip may compile from source
+case "$PLATFORM" in
+    proot)
+        apt-get install -y gcc g++ libfreetype6-dev pkg-config 2>/dev/null || true
+        ;;
+    debian)
+        if need_sudo; then
+            sudo apt-get install -y gcc g++ libfreetype6-dev pkg-config 2>/dev/null || true
+        else
+            apt-get install -y gcc g++ libfreetype6-dev pkg-config 2>/dev/null || true
+        fi
+        ;;
+    alpine)
+        if need_sudo; then
+            sudo apk add freetype-dev gcc g++ 2>/dev/null || true
+        else
+            apk add freetype-dev gcc g++ 2>/dev/null || true
+        fi
+        ;;
+esac
+
 # Install flask + flask-cors + office/pdf dependencies
 # Use --break-system-packages on Debian/Ubuntu 12+ and proot where externally managed env blocks pip
 PIP_PACKAGES="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"

@@ -2997,7 +2997,7 @@ _REPORTLAB_AVAILABLE = None  # None=not checked, True/False=cached result
 
 
 def _check_reportlab():
-    """Check if reportlab is available. Returns True/False, cached after first check."""
+    """Check if reportlab is available, auto-install if missing. Returns True/False, cached after first check."""
     global _REPORTLAB_AVAILABLE
     if _REPORTLAB_AVAILABLE is not None:
         return _REPORTLAB_AVAILABLE
@@ -3005,6 +3005,31 @@ def _check_reportlab():
         import reportlab
         _REPORTLAB_AVAILABLE = True
     except ImportError:
+        # Auto-install reportlab (same pattern as ruff auto-install)
+        log_write('[check_reportlab] reportlab not found, attempting auto-install...')
+        try:
+            import subprocess
+            _env = os.environ.copy()
+            _pip = 'pip3 install reportlab' if not IS_WINDOWS else 'pip install reportlab'
+            _r = subprocess.run(_pip, shell=True, capture_output=True, text=True, timeout=180, env=_env)
+            if _r.returncode == 0:
+                log_write('[check_reportlab] reportlab auto-installed OK')
+                _REPORTLAB_AVAILABLE = True
+                return True
+            else:
+                log_write(f'[check_reportlab] pip install failed (rc={_r.returncode}): {_r.stderr[:200]}')
+                # On Termux proot / some Linux, may need system deps for C extensions
+                # Try installing without build isolation (use pre-built wheel if available)
+                _r2 = subprocess.run(
+                    'pip3 install --no-build-isolation reportlab 2>/dev/null || pip3 install reportlab',
+                    shell=True, capture_output=True, text=True, timeout=180, env=_env)
+                if _r2.returncode == 0:
+                    log_write('[check_reportlab] reportlab installed with --no-build-isolation')
+                    _REPORTLAB_AVAILABLE = True
+                    return True
+                log_write(f'[check_reportlab] fallback install also failed: {_r2.stderr[:200]}')
+        except Exception as _e:
+            log_write(f'[check_reportlab] auto-install exception: {_e}')
         _REPORTLAB_AVAILABLE = False
     return _REPORTLAB_AVAILABLE
 
@@ -5382,6 +5407,9 @@ def _tool_xlsx_edit(args):
 
 def _tool_pdf_generate(args):
     """Create a new PDF document with titles, headings, paragraphs, tables, and bullet lists."""
+    if not _check_reportlab():
+        return 'Error: reportlab is not installed. Run: pip install reportlab'
+
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm, cm
@@ -5573,10 +5601,6 @@ def _tool_pdf_generate(args):
 def _tool_pdf_edit(args):
     """Read or modify an existing PDF document."""
     from PyPDF2 import PdfReader, PdfWriter
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
     import tempfile
 
     raw_path = args.get('path', '')
@@ -5639,6 +5663,14 @@ def _tool_pdf_edit(args):
         page_text = args.get('page_text', '')
         if not page_text and not page_heading:
             return 'Error: page_text or page_heading required for add_text_page action'
+
+        if not _check_reportlab():
+            return 'Error: reportlab is not installed. Run: pip install reportlab'
+
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
         # Create a temporary PDF with the new text page using ReportLab
         tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf', prefix='phoneide_pdf_')
