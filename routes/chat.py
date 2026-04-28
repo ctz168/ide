@@ -2984,19 +2984,29 @@ def _tool_web_fetch(args):
         return f'Error fetching URL: {str(e)}'
 
 # ==================== PDF Generation ====================
+# reportlab is an optional dependency — lazy-imported when PDF tools are called.
+# Do NOT import at module level to avoid crashing on systems without reportlab.
 
-from reportlab.platypus import Paragraph as _RLParagraph, Spacer as _RLSpacer, PageBreak as _RLPageBreak
-from reportlab.lib.styles import ParagraphStyle as _RLParagraphStyle
-from reportlab.lib.pagesizes import A4 as _RL_A4
-from reportlab.lib.enums import TA_CENTER as _TA_CENTER, TA_LEFT as _TA_LEFT, TA_JUSTIFY as _TA_JUSTIFY
-from reportlab.lib.units import mm as _mm
-
-# CJK + Latin font names for reportlab (set after registration attempt)
+# Module-level defaults for fonts (overridden by _ensure_pdf_fonts if CJK fonts exist)
 _PDF_FONT_SERIF = 'Times-Roman'
 _PDF_FONT_SERIF_BOLD = 'Times-Bold'
 _PDF_FONT_SANS = 'Helvetica'
 _PDF_FONT_SANS_BOLD = 'Helvetica-Bold'
 _PDF_FONTS_DONE = False
+_REPORTLAB_AVAILABLE = None  # None=not checked, True/False=cached result
+
+
+def _check_reportlab():
+    """Check if reportlab is available. Returns True/False, cached after first check."""
+    global _REPORTLAB_AVAILABLE
+    if _REPORTLAB_AVAILABLE is not None:
+        return _REPORTLAB_AVAILABLE
+    try:
+        import reportlab
+        _REPORTLAB_AVAILABLE = True
+    except ImportError:
+        _REPORTLAB_AVAILABLE = False
+    return _REPORTLAB_AVAILABLE
 
 def _ensure_pdf_fonts():
     """Register CJK/Latin fonts for PDF generation; fall back to built-in fonts."""
@@ -3031,14 +3041,14 @@ def _ensure_pdf_fonts():
         log_write('[generate_pdf] Font files missing, using built-in fallback (no CJK support)')
 
 
-def _render_section(section, styles, heading_style, body_style, bullet_style, flow):
+def _render_section(section, styles, heading_style, body_style, bullet_style, flow, RLParagraph, RLPageBreak, RLSpacer):
     """Recursively render a section dict into flowable elements."""
     heading = section.get('heading', '')
     body = section.get('body', '')
     bullets = section.get('bullets', [])
     sub_sections = section.get('sub_sections', [])
     if heading:
-        flow.append(_RLParagraph(heading, heading_style))
+        flow.append(RLParagraph(heading, heading_style))
     if body:
         # Split body by double-newline into paragraphs
         paragraphs = [p.strip() for p in body.split('\n\n') if p.strip()]
@@ -3049,14 +3059,14 @@ def _render_section(section, styles, heading_style, body_style, bullet_style, fl
             safe = (p_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
             # Convert single newlines to <br/>
             safe = safe.replace('\n', '<br/>')
-            flow.append(_RLParagraph(safe, body_style))
+            flow.append(RLParagraph(safe, body_style))
     if bullets:
         for b in bullets:
             safe_b = (str(b).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
-            flow.append(_RLParagraph(safe_b, bullet_style, bulletText='\u2022'))
+            flow.append(RLParagraph(safe_b, bullet_style, bulletText='\u2022'))
     if sub_sections:
         for sub in sub_sections:
-            _render_section(sub, styles, heading_style, body_style, bullet_style, flow)
+            _render_section(sub, styles, heading_style, body_style, bullet_style, flow, RLParagraph, RLPageBreak, RLSpacer)
 
 
 def _tool_generate_pdf(args):
@@ -3084,8 +3094,15 @@ def _tool_generate_pdf(args):
     if not filepath.startswith(ws_real):
         return f'Error: path must be inside workspace ({WORKSPACE})'
 
+    if not _check_reportlab():
+        return 'Error: reportlab is not installed. Run: pip install reportlab'
+
     try:
-        from reportlab.platypus import SimpleDocTemplate
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+        from reportlab.lib.units import mm
 
         _ensure_pdf_fonts()
 
@@ -3093,45 +3110,45 @@ def _tool_generate_pdf(args):
         os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
 
         doc = SimpleDocTemplate(
-            filepath, pagesize=_RL_A4,
-            leftMargin=25*_mm, rightMargin=25*_mm,
-            topMargin=25*_mm, bottomMargin=25*_mm,
+            filepath, pagesize=A4,
+            leftMargin=25*mm, rightMargin=25*mm,
+            topMargin=25*mm, bottomMargin=25*mm,
             title=title or filename,
             author='PhoneIDE AI Assistant',
         )
 
         # Styles
-        title_s = _RLParagraphStyle('PdfTitle', fontName=_PDF_FONT_SERIF_BOLD, fontSize=22,
-                                    leading=28, alignment=_TA_CENTER, spaceAfter=6*_mm)
-        subtitle_s = _RLParagraphStyle('PdfSubtitle', fontName=_PDF_FONT_SANS, fontSize=11,
-                                       leading=15, alignment=_TA_CENTER, textColor='#666666',
-                                       spaceAfter=10*_mm)
-        heading_s = _RLParagraphStyle('PdfHeading', fontName=_PDF_FONT_SERIF_BOLD, fontSize=14,
-                                      leading=20, spaceAfter=3*_mm, spaceBefore=5*_mm,
+        title_s = ParagraphStyle('PdfTitle', fontName=_PDF_FONT_SERIF_BOLD, fontSize=22,
+                                    leading=28, alignment=TA_CENTER, spaceAfter=6*mm)
+        subtitle_s = ParagraphStyle('PdfSubtitle', fontName=_PDF_FONT_SANS, fontSize=11,
+                                       leading=15, alignment=TA_CENTER, textColor='#666666',
+                                       spaceAfter=10*mm)
+        heading_s = ParagraphStyle('PdfHeading', fontName=_PDF_FONT_SERIF_BOLD, fontSize=14,
+                                      leading=20, spaceAfter=3*mm, spaceBefore=5*mm,
                                       textColor='#1a1a2e')
-        body_s = _RLParagraphStyle('PdfBody', fontName=_PDF_FONT_SERIF, fontSize=10.5,
-                                   leading=16, alignment=_TA_JUSTIFY, spaceAfter=2*_mm)
-        bullet_s = _RLParagraphStyle('PdfBullet', fontName=_PDF_FONT_SERIF, fontSize=10.5,
-                                     leading=15, leftIndent=18*_mm, bulletIndent=12*_mm,
-                                     spaceAfter=1.5*_mm, alignment=_TA_LEFT)
+        body_s = ParagraphStyle('PdfBody', fontName=_PDF_FONT_SERIF, fontSize=10.5,
+                                   leading=16, alignment=TA_JUSTIFY, spaceAfter=2*mm)
+        bullet_s = ParagraphStyle('PdfBullet', fontName=_PDF_FONT_SERIF, fontSize=10.5,
+                                     leading=15, leftIndent=18*mm, bulletIndent=12*mm,
+                                     spaceAfter=1.5*mm, alignment=TA_LEFT)
 
         flow = []
 
         # Title page
         if title:
-            flow.append(_RLSpacer(1, 40*_mm))
+            flow.append(Spacer(1, 40*mm))
             safe_title = title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            flow.append(_RLParagraph(safe_title, title_s))
+            flow.append(Paragraph(safe_title, title_s))
             from datetime import datetime, timezone
             date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-            flow.append(_RLParagraph(f'Generated: {date_str}', subtitle_s))
-            flow.append(_RLPageBreak())
+            flow.append(Paragraph(f'Generated: {date_str}', subtitle_s))
+            flow.append(PageBreak())
         else:
-            flow.append(_RLSpacer(1, 5*_mm))
+            flow.append(Spacer(1, 5*mm))
 
         # Render all sections
         for i, sec in enumerate(sections):
-            _render_section(sec, None, heading_s, body_s, bullet_s, flow)
+            _render_section(sec, None, heading_s, body_s, bullet_s, flow, Paragraph, PageBreak, Spacer)
 
         # Build
         def add_page_number(canvas, doc):
@@ -3139,7 +3156,7 @@ def _tool_generate_pdf(args):
             canvas.setFont(_PDF_FONT_SANS, 8)
             canvas.setFillColor('#999999')
             page_num = canvas.getPageNumber()
-            canvas.drawCentredString(_RL_A4[0] / 2, 15*_mm, f'- {page_num} -')
+            canvas.drawCentredString(A4[0] / 2, 15*mm, f'- {page_num} -')
             canvas.restoreState()
 
         doc.build(flow, onFirstPage=add_page_number, onLaterPages=add_page_number)
