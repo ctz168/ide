@@ -48,6 +48,7 @@ const ChatManager = (() => {
     let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
     let ttsStaticWrap = null;       // wrapper div around static button + dropdown
     let ttsAudio = new Audio();      // single persistent Audio element for TTS playback
+    let ttsAllSpokenPos = 0;        // tracks how many chars of streamBuffer have been spoken (ALL mode)
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1056,19 +1057,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         streamBuffer += chunk;
 
         // TTS: In ALL mode, check if we have a complete sentence to queue
-        if (ttsMode === TTS_MODES.ALL && !ttsSpeaking && ttsQueue.length < 3) {
+        if (ttsMode === TTS_MODES.ALL && ttsQueue.length < 3) {
             const lastChars = streamBuffer.slice(-3);
             if (/[。！？.!?\n]/.test(lastChars)) {
                 // Find last sentence boundary
                 const lastMatch = streamBuffer.match(/[。！？.!?\n]+[\s]*$/);
                 if (lastMatch) {
                     const sentenceEnd = streamBuffer.length - lastMatch[0].length;
-                    const prevEnd = ttsLastTextBlock.length;
-                    if (sentenceEnd > prevEnd) {
-                        const segment = streamBuffer.slice(prevEnd, sentenceEnd);
+                    if (sentenceEnd > ttsAllSpokenPos) {
+                        const segment = streamBuffer.slice(ttsAllSpokenPos, sentenceEnd);
                         if (segment.trim().length >= 2) {
                             queueTtsText(segment);
-                            ttsLastTextBlock = streamBuffer.slice(0, sentenceEnd);
+                            ttsAllSpokenPos = sentenceEnd;
                         }
                     }
                 }
@@ -1203,7 +1203,15 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         currentStreamEl.classList.remove('streaming');
 
         // TTS: Save the finalized text block for LAST mode
+        // Also flush remaining unspoken text for ALL mode (before overwriting ttsLastTextBlock)
         if (streamBuffer && streamBuffer.trim().length >= 2) {
+            // ALL mode: queue any text after the last spoken position
+            if (ttsMode === TTS_MODES.ALL && streamBuffer.length > ttsAllSpokenPos) {
+                const remaining = streamBuffer.slice(ttsAllSpokenPos);
+                if (remaining.trim().length >= 2) {
+                    queueTtsText(remaining);
+                }
+            }
             ttsLastTextBlock = streamBuffer;
         }
 
@@ -1413,9 +1421,6 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (mode === TTS_MODES.OFF) {
             stopTtsPlayback();
             ttsQueue = [];
-        } else {
-            // Play a test tone immediately to verify TTS works
-            speakText('朗读已开启');
         }
     }
 
@@ -1534,18 +1539,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             if (ttsLastTextBlock && ttsLastTextBlock.length >= 2) {
                 speakText(ttsLastTextBlock);
             }
-        } else if (ttsMode === TTS_MODES.ALL) {
-            // Finalize: add only the remaining unbuffered text after last spoken sentence
-            if (streamBuffer && ttsLastTextBlock && streamBuffer.length > ttsLastTextBlock.length) {
-                const remaining = streamBuffer.slice(ttsLastTextBlock.length);
-                if (remaining.trim().length >= 2) {
-                    queueTtsText(remaining);
-                }
-            } else if (streamBuffer && streamBuffer.trim().length >= 2 && !ttsLastTextBlock) {
-                // No sentences were spoken yet (text was too short), speak the whole buffer
-                queueTtsText(streamBuffer);
-            }
         }
+        // ALL mode: remaining text is already handled in finalizeStreamMessage()
     }
 
     /**
@@ -1554,6 +1549,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     function resetTtsState() {
         ttsQueue = [];
         ttsLastTextBlock = '';
+        ttsAllSpokenPos = 0;
         stopTtsPlayback();
     }
 
