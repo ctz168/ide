@@ -2054,7 +2054,7 @@ const EditorManager = (() => {
             if (cmWrapper) cmWrapper.style.display = '';
             if (previewEl) previewEl.style.display = 'none';
             if (toggleBtn) { toggleBtn.textContent = '📖'; toggleBtn.title = '切换预览'; }
-            if (ttsBtn) ttsBtn.style.display = 'none';
+            // Keep TTS button visible (it works in both modes)
 
             // Scroll the editor to the corresponding source line
             if (editor && sourceLine > 0) {
@@ -2076,7 +2076,7 @@ const EditorManager = (() => {
             btn.style.display = isMarkdownFile() ? '' : 'none';
         }
         if (ttsBtn) {
-            ttsBtn.style.display = (isMarkdownFile() && mdPreviewMode) ? '' : 'none';
+            ttsBtn.style.display = isMarkdownFile() ? '' : 'none';
         }
         // If switching away from markdown, reset preview mode
         if (!isMarkdownFile() && mdPreviewMode) {
@@ -2112,11 +2112,25 @@ const EditorManager = (() => {
     // ── MD Preview TTS (Text-to-Speech) ─────────────────────────
 
     /**
-     * Extract plain text from the markdown preview, starting from the
-     * element currently at the top of the viewport, going downward.
+     * Extract plain text from the current markdown content, starting from
+     * the current scroll position, going downward.
+     * Works in both editor mode and inline preview mode.
      * Splits into sentences for TTS playback.
      */
     function getMdTextFromScroll() {
+        // If in inline preview mode, read from the rendered preview DOM
+        if (mdPreviewMode) {
+            return getMdTextFromPreviewDom();
+        }
+
+        // Otherwise, read from the CodeMirror editor content directly
+        return getMdTextFromEditor();
+    }
+
+    /**
+     * Extract text from the rendered markdown preview DOM (#markdown-preview)
+     */
+    function getMdTextFromPreviewDom() {
         const previewEl = document.getElementById('markdown-preview');
         if (!previewEl) return [];
 
@@ -2170,6 +2184,85 @@ const EditorManager = (() => {
                 if (cleaned.length >= 2) {
                     segments.push(cleaned);
                 }
+            }
+        }
+
+        return segments;
+    }
+
+    /**
+     * Extract text from the CodeMirror editor content, starting from the
+     * current scroll position (first visible line).
+     */
+    function getMdTextFromEditor() {
+        if (!editor) return [];
+
+        const scrollInfo = editor.getScrollInfo();
+        const topLine = editor.lineAtHeight(scrollInfo.top, 'local');
+        const lineCount = editor.lineCount();
+
+        const segments = [];
+        let inCodeBlock = false;
+        let pendingText = '';
+
+        for (let i = topLine; i < lineCount; i++) {
+            const line = editor.getLine(i) || '';
+
+            // Track fenced code blocks
+            if (line.match(/^```/)) {
+                // Flush pending text before code block
+                if (pendingText.trim().length >= 2) {
+                    const sentenceParts = pendingText.trim().match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [pendingText.trim()];
+                    for (const part of sentenceParts) {
+                        const cleaned = part.trim().replace(/\s+/g, ' ');
+                        if (cleaned.length >= 2) segments.push(cleaned);
+                    }
+                }
+                pendingText = '';
+                inCodeBlock = !inCodeBlock;
+                continue;
+            }
+            if (inCodeBlock) continue;
+
+            // Strip markdown syntax to get plain text
+            let plain = line
+                .replace(/^#{1,6}\s+/, '')           // heading markers
+                .replace(/^>\s+/, '')                 // blockquote markers
+                .replace(/^[-*+]\s+/, '')             // unordered list markers
+                .replace(/^\d+\.\s+/, '')             // ordered list markers
+                .replace(/^---+$/, '')                // hr
+                .replace(/\*\*(.+?)\*\*/g, '$1')     // bold **
+                .replace(/\*(.+?)\*/g, '$1')         // italic *
+                .replace(/__(.+?)__/g, '$1')         // bold __
+                .replace(/_(.+?)_/g, '$1')           // italic _
+                .replace(/`([^`]+)`/g, '$1')         // inline code
+                .replace(/~~(.+?)~~/g, '$1')         // strikethrough
+                .replace(/!\[([^\]]*)\]\([^)]*\)/g, '')  // images (remove)
+                .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // links
+                .trim();
+
+            if (!plain) {
+                // Empty line — flush pending text as a segment
+                if (pendingText.trim().length >= 2) {
+                    const sentenceParts = pendingText.trim().match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [pendingText.trim()];
+                    for (const part of sentenceParts) {
+                        const cleaned = part.trim().replace(/\s+/g, ' ');
+                        if (cleaned.length >= 2) segments.push(cleaned);
+                    }
+                }
+                pendingText = '';
+                continue;
+            }
+
+            pendingText += (pendingText ? ' ' : '') + plain;
+        }
+
+        // Flush remaining text
+        if (pendingText.trim().length >= 2) {
+            const sentenceParts = pendingText.trim().match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [pendingText.trim()];
+            for (const part of sentenceParts) {
+                const cleaned = part.trim().replace(/\s+/g, ' ');
+                if (cleaned.length >= 2) segments.push(cleaned);
             }
         }
 
