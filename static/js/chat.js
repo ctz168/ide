@@ -1582,15 +1582,19 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const dropdown = createTtsDropdown(closeStaticTtsDropdown);
         wrap.appendChild(dropdown);
 
-        // Create overlay
+        // Create overlay — must be inside the same stacking context as the dropdown.
+        // The sidebar has z-index:200 (stacking context). If the overlay is in
+        // document.body (root stacking context, z-index:349), it would cover the
+        // dropdown (z-index:350 inside sidebar → effective z-index 200 < 349).
         const overlay = document.createElement('div');
         overlay.className = 'chat-tts-overlay';
         overlay.id = 'chat-tts-static-overlay';
         overlay.addEventListener('click', function() {
             closeStaticTtsDropdown();
         });
-        // Insert overlay into body
-        document.body.appendChild(overlay);
+        // Append to the sidebar (or nearest ancestor with stacking context)
+        const sidebar = ttsStaticBtn.closest('.sidebar') || ttsStaticBtn.closest('#chat-input-area');
+        (sidebar || document.body).appendChild(overlay);
 
         ttsStaticBtn.addEventListener('click', function(e) {
             e.stopPropagation();
