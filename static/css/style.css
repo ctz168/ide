@@ -3429,3 +3429,138 @@ button, .file-item, .search-result-item, .git-change-item {
 .CodeMirror.sel-mode-active .CodeMirror-cursor {
     display: none !important;
 }
+
+/* ==================== TTS (Text-to-Speech) ==================== */
+#chat-stop-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+#chat-stop-row .chat-stop-btn {
+    flex-shrink: 0;
+}
+
+.chat-tts-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    min-height: 32px;
+}
+
+.chat-tts-btn:active {
+    background: var(--bg-hover);
+    transform: scale(0.96);
+}
+
+.chat-tts-btn .tts-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.chat-tts-btn .tts-label {
+    font-size: 11px;
+}
+
+/* Active TTS mode indicator */
+.chat-tts-btn.active {
+    background: rgba(232, 133, 61, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Speaking animation — pulse on the icon */
+.chat-tts-speaking .tts-icon {
+    animation: tts-pulse 1s ease-in-out infinite;
+}
+
+@keyframes tts-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.25); }
+}
+
+/* TTS Dropdown */
+.chat-tts-dropdown {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px;
+    min-width: 140px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 350;
+    display: none;
+}
+
+.chat-tts-dropdown.open {
+    display: block;
+}
+
+.chat-tts-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: none;
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    transition: background 0.12s;
+}
+
+.chat-tts-option:active {
+    background: var(--bg-hover);
+}
+
+.chat-tts-option .tts-check {
+    width: 16px;
+    font-size: 12px;
+    color: var(--accent);
+    flex-shrink: 0;
+    text-align: center;
+}
+
+.chat-tts-option .tts-check.empty {
+    visibility: hidden;
+}
+
+.chat-tts-option .tts-opt-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+}
+
+.chat-tts-option .tts-opt-label {
+    flex: 1;
+}
+
+/* Click-outside overlay for dropdown */
+.chat-tts-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 349;
+}
+
+.chat-tts-overlay.open {
+    display: block;
+}

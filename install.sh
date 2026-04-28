@@ -213,7 +213,7 @@ esac
 
 # Install flask + flask-cors + office/pdf dependencies
 # Use --break-system-packages on Debian/Ubuntu 12+ and proot where externally managed env blocks pip
-PIP_PACKAGES="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
+PIP_PACKAGES="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab edge-tts"
 FLASK_OK=false
 if [ "$PLATFORM" = "debian" ] || [ "$PLATFORM" = "proot" ] || [ "$PLATFORM" = "alpine" ]; then
     $PYTHON -m pip install --break-system-packages $PIP_PACKAGES 2>&1 && FLASK_OK=true
@@ -321,7 +321,7 @@ echo -e "${BLUE}[4/5]${NC} Verifying in target environment..."
 
 # Re-check flask import with the actual python3 that will run the server
 VERIFY_FAILED=false
-VERIFY_PKGS="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab"
+VERIFY_PKGS="flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab edge-tts"
 if ! python3 -c "import flask" 2>/dev/null; then
     info "flask not found in current python3 — installing..."
     if command -v pip3 &>/dev/null; then
@@ -372,7 +372,7 @@ if ! python3 -c "import flask_cors" 2>/dev/null; then
 fi
 
 # Install office/pdf dependencies if missing
-for _entry in "python-docx:docx" "python-pptx:pptx" "openpyxl:openpyxl" "PyPDF2:PyPDF2" "reportlab:reportlab"; do
+for _entry in "python-docx:docx" "python-pptx:pptx" "openpyxl:openpyxl" "PyPDF2:PyPDF2" "reportlab:reportlab" "edge-tts:edge_tts"; do
     _pkg=$(echo "$_entry" | cut -d: -f1)
     _imp=$(echo "$_entry" | cut -d: -f2)
     if ! python3 -c "import $_imp" 2>/dev/null; then
@@ -460,7 +460,7 @@ if python3 -c "from flask import Flask; from flask_cors import CORS; print('OK')
     SMOKE_OK=true
 else
     warn "Flask import still fails — you may need to run:"
-    echo -e "  ${CYAN}pip3 install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab${NC}"
+    echo -e "  ${CYAN}pip3 install flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab edge-tts${NC}"
     echo ""
 fi
 
@@ -601,7 +601,7 @@ if ! python3 phoneide_server.py; then
     echo "  3. Python version is too old (need 3.8+)"
     echo ""
     info "Try these commands:"
-    echo -e "  ${CYAN}pip3 install --break-system-packages flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab${NC}"
+    echo -e "  ${CYAN}pip3 install --break-system-packages flask flask-cors python-docx python-pptx openpyxl PyPDF2 reportlab edge-tts${NC}"
     echo -e "  ${CYAN}cd $INSTALL_DIR && python3 phoneide_server.py${NC}"
     echo ""
     exit $EXIT_CODE

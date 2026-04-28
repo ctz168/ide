@@ -33,6 +33,19 @@ const ChatManager = (() => {
     let sseConnectionAlive = false;     // whether the SSE connection is currently alive
     let sseConnectionLostWhileHidden = false; // set to true if SSE dies while page is hidden
 
+    // ── TTS State ──────────────────────────────────────────────────
+    const TTS_MODES = { OFF: 'off', LAST: 'last', ALL: 'all' };
+    const TTS_MODE_KEY = 'phoneide_tts_mode';
+    let ttsMode = localStorage.getItem(TTS_MODE_KEY) || TTS_MODES.OFF;
+    let ttsQueue = [];              // queue of text segments to speak
+    let ttsCurrentAudio = null;     // current Audio object being played
+    let ttsSpeaking = false;        // whether currently speaking
+    let ttsLastTextBlock = '';      // the last assistant text block seen
+    let ttsStopRowEl = null;        // reference to #chat-stop-row
+    let ttsBtnEl = null;            // reference to .chat-tts-btn
+    let ttsDropdownEl = null;       // reference to .chat-tts-dropdown
+    let ttsOverlayEl = null;        // reference to .chat-tts-overlay
+
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
     // After current task completes, queued messages are auto-sent.
@@ -1039,6 +1052,26 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         streamBuffer += chunk;
 
+        // TTS: In ALL mode, check if we have a complete sentence to queue
+        if (ttsMode === TTS_MODES.ALL && !ttsSpeaking && ttsQueue.length < 3) {
+            const lastChars = streamBuffer.slice(-3);
+            if (/[。！？.!?\n]/.test(lastChars)) {
+                // Find last sentence boundary
+                const lastMatch = streamBuffer.match(/[。！？.!?\n]+[\s]*$/);
+                if (lastMatch) {
+                    const sentenceEnd = streamBuffer.length - lastMatch[0].length;
+                    const prevEnd = ttsLastTextBlock.length;
+                    if (sentenceEnd > prevEnd) {
+                        const segment = streamBuffer.slice(prevEnd, sentenceEnd);
+                        if (segment.trim().length >= 5) {
+                            queueTtsText(segment);
+                            ttsLastTextBlock = streamBuffer.slice(0, sentenceEnd);
+                        }
+                    }
+                }
+            }
+        }
+
         const contentEl = currentStreamEl.querySelector('.chat-content');
         if (contentEl) {
             contentEl.innerHTML = renderMarkdownLite(streamBuffer);
@@ -1166,6 +1199,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         currentStreamEl.classList.remove('streaming');
 
+        // TTS: Save the finalized text block for LAST mode
+        if (streamBuffer && streamBuffer.trim().length >= 2) {
+            ttsLastTextBlock = streamBuffer;
+        }
+
         // Add timestamp
         const timeEl = document.createElement('div');
         timeEl.className = 'chat-time';
@@ -1195,8 +1233,308 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     // ── Stop Button ────────────────────────────────────────────────
 
     /**
-     * Create and show the stop button during generation
-     * @returns {HTMLElement} the stop button
+     * Clean text for TTS: remove code blocks, markdown formatting, URLs, formulas.
+     */
+    function cleanTtsText(text) {
+        if (!text) return '';
+        // Remove code blocks
+        text = text.replace(/```[\s\S]*?```/g, '');
+        // Remove inline code
+        text = text.replace(/`[^`]+`/g, '');
+        // Remove markdown headers
+        text = text.replace(/^#{1,6}\s+/gm, '');
+        // Remove bold/italic
+        text = text.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1');
+        // Remove display formulas ($$...$$)
+        text = text.replace(/\$\$[\s\S]*?\$\$/g, '');
+        // Remove inline formulas ($...$)
+        text = text.replace(/\$[^$]+\$/g, '');
+        // Remove URLs
+        text = text.replace(/https?:\/\/\S+/g, '');
+        // Remove markdown links
+        text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+        // Remove extra whitespace
+        text = text.replace(/\n{3,}/g, '\n\n').trim();
+        // Remove lines that are just symbols/punctuation
+        text = text.replace(/^[^\w\u4e00-\u9fff]{3,}$/gm, '');
+        return text.trim();
+    }
+
+    /**
+     * Create TTS dropdown with mode options
+     */
+    function createTtsDropdown() {
+        const dropdown = document.createElement('div');
+        dropdown.className = 'chat-tts-dropdown';
+        dropdown.id = 'chat-tts-dropdown';
+
+        const options = [
+            { mode: TTS_MODES.ALL, icon: '📖', label: '朗读全部' },
+            { mode: TTS_MODES.LAST, icon: '💬', label: '朗读最新' },
+            { mode: TTS_MODES.OFF, icon: '🔇', label: '关闭朗读' },
+        ];
+
+        options.forEach(function(opt) {
+            const btn = document.createElement('button');
+            btn.className = 'chat-tts-option';
+            btn.dataset.mode = opt.mode;
+            const isActive = ttsMode === opt.mode;
+            btn.innerHTML =
+                '<span class="tts-check ' + (isActive ? '' : 'empty') + '">' + (isActive ? '✓' : '✓') + '</span>' +
+                '<span class="tts-opt-icon">' + opt.icon + '</span>' +
+                '<span class="tts-opt-label">' + opt.label + '</span>';
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                setTtsMode(opt.mode);
+                closeTtsDropdown();
+            });
+            dropdown.appendChild(btn);
+        });
+
+        return dropdown;
+    }
+
+    /**
+     * Create the TTS button element
+     */
+    function createTtsButton() {
+        const btn = document.createElement('button');
+        btn.id = 'chat-tts-btn';
+        btn.className = 'chat-tts-btn';
+        if (ttsMode !== TTS_MODES.OFF) btn.classList.add('active');
+        updateTtsButtonLabel(btn);
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            toggleTtsDropdown();
+        });
+        return btn;
+    }
+
+    /**
+     * Update TTS button label/icon based on current mode
+     */
+    function updateTtsButtonLabel(btn) {
+        btn = btn || ttsBtnEl;
+        if (!btn) return;
+        let icon, label;
+        if (ttsMode === TTS_MODES.ALL) {
+            icon = '🔊'; label = '全部';
+        } else if (ttsMode === TTS_MODES.LAST) {
+            icon = '🔉'; label = '最新';
+        } else {
+            icon = '🔇'; label = '朗读';
+        }
+        if (ttsSpeaking) icon = '🗣️';
+        btn.innerHTML = '<span class="tts-icon">' + icon + '</span><span class="tts-label">' + label + '</span>';
+        if (ttsSpeaking) {
+            btn.classList.add('chat-tts-speaking');
+        } else {
+            btn.classList.remove('chat-tts-speaking');
+        }
+    }
+
+    /**
+     * Toggle the TTS dropdown open/closed
+     */
+    function toggleTtsDropdown() {
+        if (!ttsDropdownEl || !ttsBtnEl) return;
+        if (ttsDropdownEl.classList.contains('open')) {
+            closeTtsDropdown();
+        } else {
+            openTtsDropdown();
+        }
+    }
+
+    function openTtsDropdown() {
+        if (!ttsDropdownEl || !ttsBtnEl || !ttsOverlayEl) return;
+        // Update active state of options
+        const opts = ttsDropdownEl.querySelectorAll('.chat-tts-option');
+        opts.forEach(function(opt) {
+            const isActive = opt.dataset.mode === ttsMode;
+            const checkEl = opt.querySelector('.tts-check');
+            if (checkEl) {
+                checkEl.textContent = '✓';
+                checkEl.classList.toggle('empty', !isActive);
+            }
+        });
+        ttsDropdownEl.classList.add('open');
+        ttsOverlayEl.classList.add('open');
+    }
+
+    function closeTtsDropdown() {
+        if (ttsDropdownEl) ttsDropdownEl.classList.remove('open');
+        if (ttsOverlayEl) ttsOverlayEl.classList.remove('open');
+    }
+
+    /**
+     * Set TTS mode and persist to localStorage
+     */
+    function setTtsMode(mode) {
+        ttsMode = mode;
+        try { localStorage.setItem(TTS_MODE_KEY, mode); } catch(e) {}
+        if (ttsBtnEl) {
+            ttsBtnEl.classList.toggle('active', mode !== TTS_MODES.OFF);
+            updateTtsButtonLabel(ttsBtnEl);
+        }
+        // If switching OFF, stop any current playback
+        if (mode === TTS_MODES.OFF) {
+            stopTtsPlayback();
+            ttsQueue = [];
+        }
+    }
+
+    /**
+     * Stop any current TTS playback
+     */
+    function stopTtsPlayback() {
+        if (ttsCurrentAudio) {
+            ttsCurrentAudio.pause();
+            ttsCurrentAudio = null;
+        }
+        ttsSpeaking = false;
+        if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+    }
+
+    /**
+     * Fetch audio from backend and play it
+     */
+    async function speakText(text) {
+        if (!text || text.trim().length < 2) return;
+
+        const cleaned = cleanTtsText(text);
+        if (cleaned.length < 2) return;
+
+        try {
+            const response = await fetch('/api/chat/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: cleaned, voice: 'zh-CN-YunxiNeural' })
+            });
+            if (!response.ok) {
+                console.warn('[TTS] fetch failed:', response.status);
+                return;
+            }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+
+            const audio = new Audio(url);
+            ttsCurrentAudio = audio;
+            ttsSpeaking = true;
+            if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+
+            audio.onended = function() {
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                URL.revokeObjectURL(url);
+                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                // Process next in queue
+                processTtsQueue();
+            };
+
+            audio.onerror = function() {
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                URL.revokeObjectURL(url);
+                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                // Process next in queue even on error
+                processTtsQueue();
+            };
+
+            audio.play().catch(function(err) {
+                console.warn('[TTS] play() failed:', err);
+                ttsSpeaking = false;
+                ttsCurrentAudio = null;
+                URL.revokeObjectURL(url);
+                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                processTtsQueue();
+            });
+        } catch (err) {
+            console.warn('[TTS] error:', err);
+            ttsSpeaking = false;
+            if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+            processTtsQueue();
+        }
+    }
+
+    /**
+     * Process the TTS queue — speak next item
+     */
+    function processTtsQueue() {
+        if (ttsSpeaking || ttsQueue.length === 0 || ttsMode === TTS_MODES.OFF) return;
+        const text = ttsQueue.shift();
+        if (text && text.length >= 2) {
+            speakText(text);
+        } else {
+            processTtsQueue();
+        }
+    }
+
+    /**
+     * Queue text for TTS (used in ALL mode)
+     */
+    function queueTtsText(text) {
+        if (ttsMode === TTS_MODES.OFF || ttsMode === TTS_MODES.LAST) return;
+        if (!text || text.trim().length < 5) return;
+        const cleaned = cleanTtsText(text);
+        if (cleaned.length < 5) return;
+        ttsQueue.push(cleaned);
+        // Start processing if not already speaking
+        if (!ttsSpeaking) {
+            processTtsQueue();
+        }
+    }
+
+    /**
+     * Speak the latest text block (used in LAST mode, triggered at tool_result/done)
+     */
+    function speakLatestText() {
+        if (ttsMode === TTS_MODES.OFF) return;
+        if (ttsMode === TTS_MODES.LAST) {
+            // In LAST mode: stop current playback and speak the latest block
+            stopTtsPlayback();
+            ttsQueue = [];
+            if (ttsLastTextBlock && ttsLastTextBlock.length >= 2) {
+                speakText(ttsLastTextBlock);
+            }
+        } else if (ttsMode === TTS_MODES.ALL) {
+            // In ALL mode: just ensure queue is being processed
+            if (!ttsSpeaking) {
+                processTtsQueue();
+            }
+        }
+    }
+
+    /**
+     * Flush remaining TTS queue (called on done event)
+     */
+    function flushTts() {
+        if (ttsMode === TTS_MODES.OFF) return;
+        if (ttsMode === TTS_MODES.LAST) {
+            stopTtsPlayback();
+            ttsQueue = [];
+            if (ttsLastTextBlock && ttsLastTextBlock.length >= 2) {
+                speakText(ttsLastTextBlock);
+            }
+        } else if (ttsMode === TTS_MODES.ALL) {
+            // Finalize: add any remaining streamBuffer text, then process queue
+            if (streamBuffer && streamBuffer.length >= 5) {
+                queueTtsText(streamBuffer);
+            }
+        }
+    }
+
+    /**
+     * Reset TTS state for a new conversation turn
+     */
+    function resetTtsState() {
+        ttsQueue = [];
+        ttsLastTextBlock = '';
+        stopTtsPlayback();
+    }
+
+    /**
+     * Create and show the stop button + TTS button row during generation
+     * @returns {HTMLElement} the stop row element
      */
     function showStopButton() {
         hideStopButton();
@@ -1204,22 +1542,55 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         const inputArea = document.getElementById('chat-input-area');
         if (!inputArea) return null;
 
+        // Create wrapper row
+        const row = document.createElement('div');
+        row.id = 'chat-stop-row';
+        ttsStopRowEl = row;
+
+        // Stop button
         const btn = document.createElement('button');
         btn.id = 'chat-stop';
         btn.className = 'chat-stop-btn';
         btn.textContent = '⏹ Stop';
         btn.addEventListener('click', abortGeneration);
+        row.appendChild(btn);
 
-        inputArea.insertBefore(btn, inputArea.firstChild);
-        return btn;
+        // TTS button
+        const ttsBtn = createTtsButton();
+        row.appendChild(ttsBtn);
+        ttsBtnEl = ttsBtn;
+
+        // TTS dropdown (positioned relative to TTS button)
+        const dropdown = createTtsDropdown();
+        ttsBtn.appendChild(dropdown);
+        ttsDropdownEl = dropdown;
+
+        // Click-outside overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'chat-tts-overlay';
+        overlay.id = 'chat-tts-overlay';
+        overlay.addEventListener('click', function() {
+            closeTtsDropdown();
+        });
+        ttsOverlayEl = overlay;
+
+        inputArea.insertBefore(overlay, inputArea.firstChild);
+        inputArea.insertBefore(row, inputArea.firstChild);
+        return row;
     }
 
     /**
-     * Hide the stop button
+     * Hide the stop button row and TTS controls
      */
     function hideStopButton() {
-        const btn = document.getElementById('chat-stop');
-        if (btn) btn.remove();
+        const row = document.getElementById('chat-stop-row');
+        if (row) row.remove();
+        const overlay = document.getElementById('chat-tts-overlay');
+        if (overlay) overlay.remove();
+        ttsStopRowEl = null;
+        ttsBtnEl = null;
+        ttsDropdownEl = null;
+        ttsOverlayEl = null;
     }
 
     /**
@@ -1657,6 +2028,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 } catch(e) {}
                             }
                         }
+                        // TTS: trigger latest text speech on tool_result
+                        speakLatestText();
                         lastToolName = null;
                         lastToolArgs = {};
                         forceScrollToBottom();
@@ -1705,6 +2078,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         if (currentStreamEl && streamBuffer) {
                             finalizedEl = finalizeStreamMessage();
                         }
+                        // TTS: flush any remaining text
+                        flushTts();
                         // Task completed — backend saved history, clear local backup
                         clearBackup();
                         const totalDuration = Date.now() - streamingStartTime;
@@ -1895,6 +2270,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         setProcessing(true);
         hideTurnIndicator();
 
+        // Reset TTS state for new conversation turn
+        resetTtsState();
+
         // Plan mode: prepend plan instruction to message
         let actualMessage = message;
         if (chatMode === 'plan') {
@@ -2063,6 +2441,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 } catch(e) {}
                             }
                         }
+                        // TTS: trigger latest text speech on tool_result
+                        speakLatestText();
                         lastToolName = null;
                         lastToolArgs = {};
                         forceScrollToBottom();
@@ -2119,6 +2499,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         if (currentStreamEl && streamBuffer) {
                             finalizedEl = finalizeStreamMessage();
                         }
+                        // TTS: flush any remaining text
+                        flushTts();
                         const totalDuration = Date.now() - streamingStartTime;
                         const tokensUsed = estimateTokens(streamBuffer);
                         let summary = `Completed in ${formatDuration(totalDuration)}`;
@@ -2429,6 +2811,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 } catch(e) {}
                             }
                         }
+                        // TTS: trigger latest text speech on tool_result
+                        speakLatestText();
                         lastToolName = null;
                         lastToolArgs = {};
                         forceScrollToBottom();
@@ -2476,6 +2860,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                         if (currentStreamEl && streamBuffer) {
                             finalizedEl = finalizeStreamMessage();
                         }
+                        // TTS: flush any remaining text
+                        flushTts();
                         const totalDuration = Date.now() - streamingStartTime;
                         const tokensUsed = estimateTokens(streamBuffer);
                         let summary = `Completed in ${formatDuration(totalDuration)}`;

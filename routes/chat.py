@@ -8753,3 +8753,143 @@ def test_llm_config():
         return jsonify({'ok': False, 'error': f'Connection failed: {reason}{hint}'})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)})
+
+# ==================== TTS (Text-to-Speech) ====================
+
+_EDGE_TTS_AVAILABLE = None  # None=not checked, True/False=cached result
+
+
+def _check_edge_tts():
+    """Check if edge-tts is available, auto-install if missing. Returns True/False, cached after first check."""
+    global _EDGE_TTS_AVAILABLE
+    if _EDGE_TTS_AVAILABLE is not None:
+        return _EDGE_TTS_AVAILABLE
+    try:
+        import edge_tts
+        _EDGE_TTS_AVAILABLE = True
+    except ImportError:
+        # Auto-install edge-tts (same pattern as reportlab auto-install)
+        log_write('[check_edge_tts] edge-tts not found, attempting auto-install...')
+        try:
+            import subprocess
+            _env = os.environ.copy()
+            _pip = 'pip3 install edge-tts' if not IS_WINDOWS else 'pip install edge-tts'
+            _r = subprocess.run(_pip, shell=True, capture_output=True, text=True, timeout=180, env=_env)
+            if _r.returncode == 0:
+                log_write('[check_edge_tts] edge-tts auto-installed OK')
+                _EDGE_TTS_AVAILABLE = True
+                return True
+            else:
+                log_write(f'[check_edge_tts] edge-tts auto-install failed: {_r.stderr[:200]}')
+                # Try pip3 as fallback
+                _pip2 = 'pip install edge-tts'
+                _r2 = subprocess.run(_pip2, shell=True, capture_output=True, text=True, timeout=180, env=_env)
+                if _r2.returncode == 0:
+                    log_write('[check_edge_tts] edge-tts auto-installed via pip OK')
+                    _EDGE_TTS_AVAILABLE = True
+                    return True
+                _EDGE_TTS_AVAILABLE = False
+                return False
+        except Exception as e:
+            log_write(f'[check_edge_tts] edge-tts auto-install error: {e}')
+            _EDGE_TTS_AVAILABLE = False
+            return False
+    return _EDGE_TTS_AVAILABLE
+
+
+def _clean_tts_text(text):
+    """Clean text for TTS: remove code blocks, markdown formatting, URLs, formulas."""
+    if not text:
+        return ''
+    # Remove fenced code blocks
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove inline code
+    text = re.sub(r'`[^`]+`', '', text)
+    # Remove markdown headers
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Remove bold/italic
+    text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+    # Remove display formulas ($$...$$)
+    text = re.sub(r'\$\$[\s\S]*?\$\$', '', text)
+    # Remove inline formulas ($...$)
+    text = re.sub(r'(?<!\$)\$(?!\$)[^\$]+(?<!\$)\$(?!\$)', '', text)
+    # Remove URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # Remove markdown links: [text](url) -> text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # Remove extra whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    # Remove lines that are just symbols/punctuation
+    text = re.sub(r'^[^\w\u4e00-\u9fff]{3,}$', '', text, flags=re.MULTILINE)
+    # Collapse whitespace
+    text = re.sub(r' {2,}', ' ', text)
+    return text.strip()
+
+
+@bp.route('/api/chat/tts', methods=['POST'])
+@handle_error
+def tts_endpoint():
+    """Generate TTS audio using edge-tts and return as MP3."""
+    import asyncio
+
+    data = request.json or {}
+    text = data.get('text', '')
+    voice = data.get('voice', 'zh-CN-YunxiNeural')
+
+    if not text or not text.strip():
+        return jsonify({'error': 'No text provided'}), 400
+
+    # Clean text for TTS
+    text = _clean_tts_text(text)
+    if len(text) < 2:
+        return jsonify({'error': 'Text too short after cleaning'}), 400
+
+    # Truncate extremely long text (edge-tts has practical limits)
+    if len(text) > 5000:
+        text = text[:5000]
+
+    if not _check_edge_tts():
+        return jsonify({'error': 'edge-tts is not installed. Run: pip install edge-tts'}), 500
+
+    import edge_tts
+
+    # Generate audio to a temporary file
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.mp3')
+    os.close(tmp_fd)
+
+    try:
+        async def _generate():
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(tmp_path)
+
+        # Run async function
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_generate())
+        finally:
+            loop.close()
+
+        # Send the file as response
+        with open(tmp_path, 'rb') as f:
+            audio_data = f.read()
+
+        response = Response(
+            audio_data,
+            mimetype='audio/mpeg',
+            headers={
+                'Content-Length': str(len(audio_data)),
+                'Content-Disposition': 'inline; filename="tts.mp3"',
+                'Cache-Control': 'no-store',
+            }
+        )
+        return response
+
+    except Exception as e:
+        log_write(f'[tts] edge-tts error: {e}')
+        return jsonify({'error': f'TTS generation failed: {str(e)}'}), 500
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
