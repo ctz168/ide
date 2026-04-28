@@ -334,6 +334,9 @@ const EditorManager = (() => {
         // Initialize bidirectional scroll sync (editor ↔ iframe preview)
         _initEditorScrollSync();
 
+        // Initialize MD preview TTS button
+        initMdTtsButton();
+
         // Window resize
         window.addEventListener('resize', debounce(() => {
             resize();
@@ -1445,6 +1448,13 @@ const EditorManager = (() => {
     // Last known source line for scroll sync (used during live re-render)
     let _mdLastCursorLine = 0;
 
+    // ── MD Preview TTS State ─────────────────────────────────────
+    let mdTtsActive = false;         // whether MD TTS is currently reading
+    let mdTtsAudio = null;           // Audio element for MD TTS
+    let mdTtsQueue = [];             // queued text segments
+    let mdTtsSpeaking = false;       // currently playing a segment
+    let mdTtsAbort = false;          // flag to stop the TTS loop
+
     // ── Text-Based Scroll Sync (Editor ↔ Iframe Preview) ──────
     let _isEditorScrolling = false;      // Feedback loop guard
     let _isPreviewScrolling = false;     // Feedback loop guard
@@ -2022,6 +2032,7 @@ const EditorManager = (() => {
         const previewEl = document.getElementById('markdown-preview');
         const cmWrapper = editor ? editor.getWrapperElement() : null;
         const toggleBtn = document.getElementById('btn-md-toggle');
+        const ttsBtn = document.getElementById('btn-md-tts');
 
         if (mdPreviewMode) {
             // Get the current cursor line (0-based) for scroll sync
@@ -2032,13 +2043,18 @@ const EditorManager = (() => {
             if (cmWrapper) cmWrapper.style.display = 'none';
             if (previewEl) previewEl.style.display = '';
             if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '切换编辑'; }
+            if (ttsBtn) ttsBtn.style.display = '';
         } else {
+            // Stop any MD TTS playback
+            stopMdTts();
+
             // Before closing preview, get the corresponding source line
             var sourceLine = getSourceLineFromPreviewScroll();
 
             if (cmWrapper) cmWrapper.style.display = '';
             if (previewEl) previewEl.style.display = 'none';
             if (toggleBtn) { toggleBtn.textContent = '📖'; toggleBtn.title = '切换预览'; }
+            if (ttsBtn) ttsBtn.style.display = 'none';
 
             // Scroll the editor to the corresponding source line
             if (editor && sourceLine > 0) {
@@ -2055,8 +2071,12 @@ const EditorManager = (() => {
      */
     function updateMarkdownButton() {
         const btn = document.getElementById('btn-md-toggle');
+        const ttsBtn = document.getElementById('btn-md-tts');
         if (btn) {
             btn.style.display = isMarkdownFile() ? '' : 'none';
+        }
+        if (ttsBtn) {
+            ttsBtn.style.display = (isMarkdownFile() && mdPreviewMode) ? '' : 'none';
         }
         // If switching away from markdown, reset preview mode
         if (!isMarkdownFile() && mdPreviewMode) {
@@ -2086,6 +2106,186 @@ const EditorManager = (() => {
         const btn = document.getElementById('editor-preview-btn');
         if (btn) {
             btn.style.display = isPreviewableFile() ? '' : 'none';
+        }
+    }
+
+    // ── MD Preview TTS (Text-to-Speech) ─────────────────────────
+
+    /**
+     * Extract plain text from the markdown preview, starting from the
+     * element currently at the top of the viewport, going downward.
+     * Splits into sentences for TTS playback.
+     */
+    function getMdTextFromScroll() {
+        const previewEl = document.getElementById('markdown-preview');
+        if (!previewEl) return [];
+
+        // Find all block-level elements
+        const blocks = previewEl.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote > p');
+        if (blocks.length === 0) return [];
+
+        // Determine the first visible block by checking position relative to container
+        const containerRect = previewEl.getBoundingClientRect();
+        const containerTop = containerRect.top;
+        let startIdx = 0;
+
+        for (let i = 0; i < blocks.length; i++) {
+            const rect = blocks[i].getBoundingClientRect();
+            if (rect.top >= containerTop - 10) {
+                startIdx = i;
+                break;
+            }
+        }
+
+        // Collect text from startIdx onward
+        const segments = [];
+        const addedParents = new WeakSet(); // avoid duplicate text from nested elements
+
+        for (let i = startIdx; i < blocks.length; i++) {
+            // Skip code blocks
+            if (blocks[i].closest('pre')) continue;
+
+            // Skip if an ancestor was already added (e.g., li inside ul inside blockquote)
+            let parent = blocks[i].parentElement;
+            let skip = false;
+            while (parent && parent !== previewEl) {
+                if (addedParents.has(parent)) { skip = true; break; }
+                parent = parent.parentElement;
+            }
+            if (skip) continue;
+
+            let text = blocks[i].textContent.trim();
+            if (!text || text.length < 2) continue;
+
+            // Clean up: remove excessive whitespace
+            text = text.replace(/\s+/g, ' ').trim();
+            if (text.length < 2) continue;
+
+            addedParents.add(blocks[i]);
+
+            // Split into sentences at Chinese/English sentence boundaries
+            const sentenceParts = text.match(/[^。！？.!?\n]+[。！？.!?\n]?/g) || [text];
+            for (const part of sentenceParts) {
+                const cleaned = part.trim().replace(/\s+/g, ' ');
+                if (cleaned.length >= 2) {
+                    segments.push(cleaned);
+                }
+            }
+        }
+
+        return segments;
+    }
+
+    /**
+     * Play a single TTS segment for MD preview
+     */
+    async function mdTtsSpeak(text) {
+        if (!text || mdTtsAbort) return;
+        mdTtsSpeaking = true;
+
+        try {
+            const resp = await fetch('/api/chat/tts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: text, voice: 'zh-CN-YunxiNeural' })
+            });
+            if (!resp.ok || mdTtsAbort) return;
+
+            const blob = await resp.blob();
+            if (blob.size < 100 || mdTtsAbort) return;
+
+            const blobUrl = URL.createObjectURL(blob);
+
+            if (!mdTtsAudio) {
+                mdTtsAudio = new Audio();
+            }
+            mdTtsAudio.src = blobUrl;
+
+            await new Promise((resolve, reject) => {
+                mdTtsAudio.onended = resolve;
+                mdTtsAudio.onerror = reject;
+                mdTtsAudio.play().catch(reject);
+            });
+        } catch (e) {
+            // Play error or aborted — just continue
+        } finally {
+            mdTtsSpeaking = false;
+        }
+    }
+
+    /**
+     * Process the MD TTS queue sequentially
+     */
+    async function processMdTtsQueue() {
+        while (mdTtsQueue.length > 0 && !mdTtsAbort) {
+            const text = mdTtsQueue.shift();
+            await mdTtsSpeak(text);
+        }
+        // All done
+        mdTtsActive = false;
+        mdTtsSpeaking = false;
+        mdTtsAbort = false;
+        updateMdTtsButton();
+    }
+
+    /**
+     * Stop MD preview TTS
+     */
+    function stopMdTts() {
+        mdTtsAbort = true;
+        mdTtsQueue = [];
+        if (mdTtsAudio) {
+            try { mdTtsAudio.pause(); mdTtsAudio.currentTime = 0; } catch (e) {}
+        }
+        mdTtsActive = false;
+        mdTtsSpeaking = false;
+        updateMdTtsButton();
+    }
+
+    /**
+     * Toggle MD preview TTS: start reading from current scroll position or stop
+     */
+    function toggleMdTts() {
+        if (mdTtsActive) {
+            stopMdTts();
+            return;
+        }
+
+        const segments = getMdTextFromScroll();
+        if (segments.length === 0) return;
+
+        mdTtsActive = true;
+        mdTtsAbort = false;
+        mdTtsQueue = segments;
+        mdTtsSpeaking = false;
+        updateMdTtsButton();
+        processMdTtsQueue();
+    }
+
+    /**
+     * Update the MD TTS button icon based on state
+     */
+    function updateMdTtsButton() {
+        const btn = document.getElementById('btn-md-tts');
+        if (!btn) return;
+        if (mdTtsActive) {
+            btn.textContent = '⏹';
+            btn.title = '停止朗读';
+            btn.classList.add('active');
+        } else {
+            btn.textContent = '🔊';
+            btn.title = '朗读MD文件';
+            btn.classList.remove('active');
+        }
+    }
+
+    /**
+     * Initialize the MD TTS button click handler
+     */
+    function initMdTtsButton() {
+        const btn = document.getElementById('btn-md-tts');
+        if (btn) {
+            btn.addEventListener('click', toggleMdTts);
         }
     }
 
@@ -3307,6 +3507,8 @@ const EditorManager = (() => {
         syncEditorToPreviewScroll,
         enableScrollSync,
         disableScrollSync,
+        initMdTtsButton,
+        toggleMdTts,
 
         // Tab management
         openTab,

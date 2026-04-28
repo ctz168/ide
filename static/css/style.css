@@ -1219,6 +1219,10 @@ html, body {
     background: var(--bg-hover);
 }
 
+#btn-md-tts.active {
+    color: var(--accent-color);
+}
+
 /* CodeMirror Overrides */
 #editor-container {
     flex: 1;
