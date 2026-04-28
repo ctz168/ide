@@ -47,6 +47,8 @@ const ChatManager = (() => {
     let ttsOverlayEl = null;        // reference to .chat-tts-overlay
     let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
     let ttsStaticWrap = null;       // wrapper div around static button + dropdown
+    let ttsAudioUnlocked = false;   // whether audio playback has been unlocked by user gesture
+    let ttsPersistentAudio = null;  // persistent Audio element to keep context alive
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1387,6 +1389,64 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     /**
      * Set TTS mode and persist to localStorage
      */
+    /**
+     * Unlock audio playback on mobile browsers.
+     * Mobile browsers require audio.play() to be called inside a user-gesture
+     * call stack. We create a persistent Audio element and play a tiny silent
+     * clip during the user's click on TTS option. This unlocks the audio
+     * session so subsequent programmatic play() calls work during SSE streaming.
+     */
+    function unlockTtsAudio() {
+        if (ttsAudioUnlocked) return;
+        try {
+            if (!ttsPersistentAudio) {
+                // Create a tiny silent WAV as a data URI (PCM 8-bit mono, 44100Hz, ~0.05s)
+                const wavHeader = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+                ttsPersistentAudio = new Audio(wavHeader);
+                ttsPersistentAudio.volume = 0.01; // nearly silent
+                ttsPersistentAudio.preload = 'auto';
+            }
+            var p = ttsPersistentAudio.play();
+            if (p && p.then) {
+                p.then(function() {
+                    ttsAudioUnlocked = true;
+                    // Pause immediately — we just needed to unlock the audio context
+                    ttsPersistentAudio.pause();
+                    ttsPersistentAudio.currentTime = 0;
+                }).catch(function() {
+                    // Unlock failed — try Web Audio API fallback
+                    tryTtsAudioContext();
+                });
+            } else {
+                // Some browsers return undefined (synchronous play)
+                ttsAudioUnlocked = true;
+                ttsPersistentAudio.pause();
+                ttsPersistentAudio.currentTime = 0;
+            }
+        } catch(e) {
+            tryTtsAudioContext();
+        }
+    }
+
+    /**
+     * Fallback: use Web Audio API to unlock audio on iOS/Android
+     */
+    function tryTtsAudioContext() {
+        if (ttsAudioUnlocked) return;
+        try {
+            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            if (ctx.state === 'suspended') {
+                ctx.resume().then(function() {
+                    ttsAudioUnlocked = true;
+                    ctx.close().catch(function(){});
+                }).catch(function(){});
+            } else {
+                ttsAudioUnlocked = true;
+                ctx.close().catch(function(){});
+            }
+        } catch(e) {}
+    }
+
     function setTtsMode(mode) {
         ttsMode = mode;
         try { localStorage.setItem(TTS_MODE_KEY, mode); } catch(e) {}
@@ -1396,6 +1456,10 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
         // Also update the static button
         updateStaticTtsIcon();
+        // Unlock audio playback on user gesture (mobile autoplay restriction)
+        if (mode !== TTS_MODES.OFF) {
+            unlockTtsAudio();
+        }
         // If switching OFF, stop any current playback
         if (mode === TTS_MODES.OFF) {
             stopTtsPlayback();
