@@ -49,6 +49,7 @@ const ChatManager = (() => {
     let ttsStaticWrap = null;       // wrapper div around static button + dropdown
     let ttsAudioUnlocked = false;   // whether audio playback has been unlocked by user gesture
     let ttsPersistentAudio = null;  // persistent Audio element to keep context alive
+    let ttsLastBlobUrl = null;     // track blob URL for cleanup when switching audio
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1067,7 +1068,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                     const prevEnd = ttsLastTextBlock.length;
                     if (sentenceEnd > prevEnd) {
                         const segment = streamBuffer.slice(prevEnd, sentenceEnd);
-                        if (segment.trim().length >= 5) {
+                        if (segment.trim().length >= 2) {
                             queueTtsText(segment);
                             ttsLastTextBlock = streamBuffer.slice(0, sentenceEnd);
                         }
@@ -1400,28 +1401,40 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (ttsAudioUnlocked) return;
         try {
             if (!ttsPersistentAudio) {
-                // Create a tiny silent WAV as a data URI (PCM 8-bit mono, 44100Hz, ~0.05s)
-                const wavHeader = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-                ttsPersistentAudio = new Audio(wavHeader);
-                ttsPersistentAudio.volume = 0.01; // nearly silent
+                ttsPersistentAudio = new Audio();
                 ttsPersistentAudio.preload = 'auto';
+                // Set up event handlers once
+                ttsPersistentAudio.onended = function() {
+                    ttsSpeaking = false;
+                    ttsCurrentAudio = null;
+                    updateTtsButtonLabel(ttsBtnEl);
+                    updateStaticTtsIcon();
+                    processTtsQueue();
+                };
+                ttsPersistentAudio.onerror = function() {
+                    console.warn('[TTS] audio error event');
+                    ttsSpeaking = false;
+                    ttsCurrentAudio = null;
+                    updateTtsButtonLabel(ttsBtnEl);
+                    updateStaticTtsIcon();
+                    processTtsQueue();
+                };
             }
+            // Unlock by playing a tiny silent data-URI WAV in user-gesture context
+            const silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+            ttsPersistentAudio.src = silentWav;
+            ttsPersistentAudio.volume = 0.01;
             var p = ttsPersistentAudio.play();
             if (p && p.then) {
                 p.then(function() {
                     ttsAudioUnlocked = true;
-                    // Pause immediately — we just needed to unlock the audio context
-                    ttsPersistentAudio.pause();
-                    ttsPersistentAudio.currentTime = 0;
+                    console.log('[TTS] audio unlocked successfully');
                 }).catch(function() {
                     // Unlock failed — try Web Audio API fallback
                     tryTtsAudioContext();
                 });
             } else {
-                // Some browsers return undefined (synchronous play)
                 ttsAudioUnlocked = true;
-                ttsPersistentAudio.pause();
-                ttsPersistentAudio.currentTime = 0;
             }
         } catch(e) {
             tryTtsAudioContext();
@@ -1471,11 +1484,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * Stop any current TTS playback
      */
     function stopTtsPlayback() {
-        if (ttsCurrentAudio) {
-            ttsCurrentAudio.pause();
-            ttsCurrentAudio = null;
+        if (ttsPersistentAudio) {
+            ttsPersistentAudio.pause();
+            ttsPersistentAudio.currentTime = 0;
+            ttsPersistentAudio.removeAttribute('src');
+            ttsPersistentAudio.load(); // Reset internal state so next play() is clean
         }
+        ttsCurrentAudio = null;
         ttsSpeaking = false;
+        if (ttsLastBlobUrl) {
+            try { URL.revokeObjectURL(ttsLastBlobUrl); } catch(e) {}
+            ttsLastBlobUrl = null;
+        }
         if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
         updateStaticTtsIcon();
     }
@@ -1500,43 +1520,51 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 return;
             }
             const blob = await response.blob();
+            if (blob.size < 100) {
+                console.warn('[TTS] audio too small:', blob.size, 'bytes');
+                return;
+            }
             const url = URL.createObjectURL(blob);
 
-            const audio = new Audio(url);
+            // Reuse the persistent Audio element (unlocked during user gesture)
+            // This is critical for mobile browsers: new Audio() objects created
+            // outside user-gesture context are blocked by autoplay policy.
+            // By reusing the same element that was 'unlocked' in unlockTtsAudio(),
+            // subsequent play() calls work even during SSE streaming.
+            const audio = ttsPersistentAudio || new Audio();
+            if (!ttsPersistentAudio) {
+                ttsPersistentAudio = audio;
+                audio.onended = function() {
+                    ttsSpeaking = false;
+                    ttsCurrentAudio = null;
+                    updateTtsButtonLabel(ttsBtnEl);
+                    updateStaticTtsIcon();
+                    processTtsQueue();
+                };
+                audio.onerror = function() {
+                    console.warn('[TTS] audio error event');
+                    ttsSpeaking = false;
+                    ttsCurrentAudio = null;
+                    updateTtsButtonLabel(ttsBtnEl);
+                    updateStaticTtsIcon();
+                    processTtsQueue();
+                };
+            }
+
+            // Revoke previous blob URL if any
+            if (ttsLastBlobUrl) {
+                try { URL.revokeObjectURL(ttsLastBlobUrl); } catch(e) {}
+            }
+            ttsLastBlobUrl = url;
+
+            audio.src = url;
+            audio.volume = 1.0;
             ttsCurrentAudio = audio;
             ttsSpeaking = true;
             if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
             updateStaticTtsIcon();
 
-            audio.onended = function() {
-                ttsSpeaking = false;
-                ttsCurrentAudio = null;
-                URL.revokeObjectURL(url);
-                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                updateStaticTtsIcon();
-                // Process next in queue
-                processTtsQueue();
-            };
-
-            audio.onerror = function() {
-                ttsSpeaking = false;
-                ttsCurrentAudio = null;
-                URL.revokeObjectURL(url);
-                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                updateStaticTtsIcon();
-                // Process next in queue even on error
-                processTtsQueue();
-            };
-
-            audio.play().catch(function(err) {
-                console.warn('[TTS] play() failed:', err);
-                ttsSpeaking = false;
-                ttsCurrentAudio = null;
-                URL.revokeObjectURL(url);
-                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                updateStaticTtsIcon();
-                processTtsQueue();
-            });
+            await audio.play();
         } catch (err) {
             console.warn('[TTS] error:', err);
             ttsSpeaking = false;
@@ -1564,9 +1592,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      */
     function queueTtsText(text) {
         if (ttsMode === TTS_MODES.OFF || ttsMode === TTS_MODES.LAST) return;
-        if (!text || text.trim().length < 5) return;
+        if (!text || text.trim().length < 2) return;
         const cleaned = cleanTtsText(text);
-        if (cleaned.length < 5) return;
+        if (cleaned.length < 2) return;
         ttsQueue.push(cleaned);
         // Start processing if not already speaking
         if (!ttsSpeaking) {
@@ -1606,8 +1634,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 speakText(ttsLastTextBlock);
             }
         } else if (ttsMode === TTS_MODES.ALL) {
-            // Finalize: add any remaining streamBuffer text, then process queue
-            if (streamBuffer && streamBuffer.length >= 5) {
+            // Finalize: add only the remaining unbuffered text after last spoken sentence
+            if (streamBuffer && ttsLastTextBlock && streamBuffer.length > ttsLastTextBlock.length) {
+                const remaining = streamBuffer.slice(ttsLastTextBlock.length);
+                if (remaining.trim().length >= 2) {
+                    queueTtsText(remaining);
+                }
+            } else if (streamBuffer && streamBuffer.trim().length >= 2 && !ttsLastTextBlock) {
+                // No sentences were spoken yet (text was too short), speak the whole buffer
                 queueTtsText(streamBuffer);
             }
         }
