@@ -35,9 +35,26 @@ const TerminalManager = (() => {
 
     // ── Constants ──────────────────────────────────────────────────
     const MIN_PANEL_HEIGHT = 120;
-    const MAX_PANEL_HEIGHT = window.innerHeight ? Math.floor(window.innerHeight * 0.9) : 600;
     const POLL_INTERVAL = 500;      // ms between poll requests
     const MAX_OUTPUT_LINES = 5000;  // max lines before trimming
+
+    // Dynamic max panel height — based on #main-area's actual visible size,
+    // NOT window.innerHeight (which is inflated in Android WebView due to
+    // system chrome / status bar / nav bar being included in layout viewport).
+    // Must be recalculated on resize, orientation change, and initial load.
+    let MAX_PANEL_HEIGHT = _computeMaxPanelHeight();
+
+    function _computeMaxPanelHeight() {
+        // Prefer #main-area's actual size — it accounts for toolbar (78px top) + footer (24px)
+        const mainArea = document.getElementById('main-area');
+        if (mainArea && mainArea.clientHeight > 0) {
+            return Math.max(MIN_PANEL_HEIGHT, mainArea.clientHeight - 14 - 10);
+            // -14 for the resize handle, -10 safety margin
+        }
+        // Fallback: use visualViewport (more accurate than window.innerHeight on mobile)
+        const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        return Math.max(MIN_PANEL_HEIGHT, Math.floor(vh * 0.92));
+    }
 
     // Restore persisted panel height, or default to 85% of viewport
     let panelHeight = (() => {
@@ -48,7 +65,7 @@ const TerminalManager = (() => {
                 if (!isNaN(h) && h >= MIN_PANEL_HEIGHT && h <= MAX_PANEL_HEIGHT) return h;
             }
         } catch (e) { /* ignore */ }
-        return Math.floor(window.innerHeight * 0.85);
+        return Math.min(Math.floor(window.innerHeight * 0.85), MAX_PANEL_HEIGHT);
     })();
 
     // ── Platform Detection ────────────────────────────────────────
@@ -1269,6 +1286,8 @@ const TerminalManager = (() => {
      * @param {number} height - new height in pixels
      */
     function setPanelHeight(height, persist = true) {
+        // Recalculate max on every set to handle viewport changes (orientation, etc.)
+        MAX_PANEL_HEIGHT = _computeMaxPanelHeight();
         height = Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, height));
         panelHeight = height;
 
@@ -1293,6 +1312,14 @@ const TerminalManager = (() => {
     function initResize() {
         const handle = document.getElementById('bottom-panel-resize');
         if (!handle) return;
+
+        // Recalculate max panel height on viewport changes (orientation, split-screen, etc.)
+        const _onViewportChange = () => { MAX_PANEL_HEIGHT = _computeMaxPanelHeight(); };
+        window.addEventListener('resize', _onViewportChange);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', _onViewportChange);
+        }
+        try { screen.orientation?.addEventListener('change', () => setTimeout(_onViewportChange, 150)); } catch(_) {}
 
         // ── Touch events ──
         handle.addEventListener('touchstart', (e) => {
