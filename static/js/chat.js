@@ -47,10 +47,7 @@ const ChatManager = (() => {
     let ttsOverlayEl = null;        // reference to .chat-tts-overlay
     let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
     let ttsStaticWrap = null;       // wrapper div around static button + dropdown
-    let ttsAudioCtx = null;         // Web Audio API context (primary playback method)
-    let ttsAudioUnlocked = false;   // whether audio playback has been unlocked by user gesture
-    let ttsPersistentAudio = null;  // persistent Audio element (fallback playback method)
-    let ttsLastBlobUrl = null;      // track blob URL for cleanup when switching audio
+    let ttsAudio = new Audio();      // single persistent Audio element for TTS playback
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1388,56 +1385,22 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (ttsOverlayEl) ttsOverlayEl.classList.remove('open');
     }
 
-    /**
-     * Ensure the TTS AudioContext is created and running.
-     * AudioContext is more reliable on mobile WebViews than HTMLAudio elements.
-     * The completion sound (playCompletionSound) already proves AudioContext works.
-     */
-    function getTtsAudioCtx() {
-        if (!ttsAudioCtx) {
-            try {
-                ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            } catch(e) {
-                console.warn('[TTS] AudioContext creation failed:', e);
-                return null;
-            }
-        }
-        if (ttsAudioCtx.state === 'suspended') {
-            ttsAudioCtx.resume().catch(function(){});
-        }
-        return ttsAudioCtx;
-    }
-
-    /**
-     * Unlock audio playback on mobile browsers.
-     * Called during user-gesture (click on TTS dropdown option).
-     * Primary: create/resume AudioContext. Fallback: play silent clip via HTMLAudio.
-     */
-    function unlockTtsAudio() {
-        if (ttsAudioUnlocked) return;
-        // Primary: create AudioContext in user-gesture context
-        var ctx = getTtsAudioCtx();
-        if (ctx && ctx.state === 'running') {
-            ttsAudioUnlocked = true;
-            return;
-        }
-        // Fallback: try HTMLAudio silent clip
-        try {
-            if (!ttsPersistentAudio) {
-                ttsPersistentAudio = new Audio();
-                ttsPersistentAudio.preload = 'auto';
-            }
-            var silentWav = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-            ttsPersistentAudio.src = silentWav;
-            ttsPersistentAudio.volume = 0.01;
-            var p = ttsPersistentAudio.play();
-            if (p && p.then) {
-                p.then(function() { ttsAudioUnlocked = true; }).catch(function() {});
-            } else {
-                ttsAudioUnlocked = true;
-            }
-        } catch(e) {}
-    }
+    // Set up TTS audio event handlers once
+    ttsAudio.addEventListener('ended', function() {
+        ttsSpeaking = false;
+        ttsCurrentAudio = null;
+        updateTtsButtonLabel(ttsBtnEl);
+        updateStaticTtsIcon();
+        processTtsQueue();
+    });
+    ttsAudio.addEventListener('error', function(e) {
+        console.error('[TTS] audio error:', e);
+        ttsSpeaking = false;
+        ttsCurrentAudio = null;
+        updateTtsButtonLabel(ttsBtnEl);
+        updateStaticTtsIcon();
+        processTtsQueue();
+    });
 
     function setTtsMode(mode) {
         ttsMode = mode;
@@ -1446,16 +1409,13 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             ttsBtnEl.classList.toggle('active', mode !== TTS_MODES.OFF);
             updateTtsButtonLabel(ttsBtnEl);
         }
-        // Also update the static button
         updateStaticTtsIcon();
-        // Unlock audio playback on user gesture (mobile autoplay restriction)
-        if (mode !== TTS_MODES.OFF) {
-            unlockTtsAudio();
-        }
-        // If switching OFF, stop any current playback
         if (mode === TTS_MODES.OFF) {
             stopTtsPlayback();
             ttsQueue = [];
+        } else {
+            // Play a test tone immediately to verify TTS works
+            speakText('朗读已开启');
         }
     }
 
@@ -1463,124 +1423,53 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      * Stop any current TTS playback
      */
     function stopTtsPlayback() {
-        if (ttsCurrentAudio) {
-            try {
-                if (ttsCurrentAudio._isWebAudio && typeof ttsCurrentAudio.stop === 'function') {
-                    ttsCurrentAudio.stop(); // AudioBufferSourceNode
-                } else if (ttsCurrentAudio.pause) {
-                    ttsCurrentAudio.pause(); // HTMLAudio element
-                }
-            } catch(e) {}
-        }
-        ttsCurrentAudio = null;
+        ttsAudio.pause();
+        ttsAudio.currentTime = 0;
         ttsSpeaking = false;
-        if (ttsLastBlobUrl) {
-            try { URL.revokeObjectURL(ttsLastBlobUrl); } catch(e) {}
-            ttsLastBlobUrl = null;
-        }
+        ttsCurrentAudio = null;
         if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
         updateStaticTtsIcon();
     }
 
     /**
      * Fetch audio from backend and play it.
-     * Primary method: Web Audio API (AudioContext + decodeAudioData).
-     * Fallback: HTMLAudio element.
-     * Web Audio API is more reliable on mobile WebViews — proven by playCompletionSound.
+     * Same approach as myagent: single Audio element, blob URL, play().
      */
     async function speakText(text) {
         if (!text || text.trim().length < 2) return;
         const cleaned = cleanTtsText(text);
         if (cleaned.length < 2) return;
 
+        console.log('[TTS] speakText called:', cleaned.substring(0, 50));
+
         try {
-            const response = await fetch('/api/chat/tts', {
+            const resp = await fetch('/api/chat/tts', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: cleaned, voice: 'zh-CN-YunxiNeural' })
             });
-            if (!response.ok) {
-                console.warn('[TTS] fetch failed:', response.status);
+            if (!resp.ok) {
+                console.warn('[TTS] fetch failed:', resp.status);
                 return;
             }
-            const arrayBuffer = await response.arrayBuffer();
-            if (arrayBuffer.byteLength < 100) {
-                console.warn('[TTS] audio too small:', arrayBuffer.byteLength, 'bytes');
-                return;
-            }
+            const blob = await resp.blob();
+            console.log('[TTS] got blob, size:', blob.size, 'type:', blob.type);
+            const blobUrl = URL.createObjectURL(blob);
 
-            // === Primary: Web Audio API (same technology as playCompletionSound) ===
-            const ctx = getTtsAudioCtx();
-            if (ctx) {
-                try {
-                    // decodeAudioData detaches the buffer, so clone it
-                    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-                    const source = ctx.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(ctx.destination);
-                    source._isWebAudio = true;
-
-                    ttsSpeaking = true;
-                    ttsCurrentAudio = source;
-                    if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                    updateStaticTtsIcon();
-
-                    source.onended = function() {
-                        ttsSpeaking = false;
-                        ttsCurrentAudio = null;
-                        if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                        updateStaticTtsIcon();
-                        processTtsQueue();
-                    };
-
-                    source.start(0);
-                    return; // Success — don't fall through to HTMLAudio
-                } catch(audioErr) {
-                    console.warn('[TTS] Web Audio decode failed, trying HTMLAudio fallback:', audioErr);
-                }
-            }
-
-            // === Fallback: HTMLAudio element ===
-            const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
-            const url = URL.createObjectURL(blob);
-            if (ttsLastBlobUrl) {
-                try { URL.revokeObjectURL(ttsLastBlobUrl); } catch(e) {}
-            }
-            ttsLastBlobUrl = url;
-
-            const audio = ttsPersistentAudio || new Audio();
-            if (!ttsPersistentAudio) ttsPersistentAudio = audio;
-
-            audio.src = url;
-            audio.volume = 1.0;
-            audio._isWebAudio = false;
-            ttsCurrentAudio = audio;
+            ttsAudio.src = blobUrl;
             ttsSpeaking = true;
-            if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+            ttsCurrentAudio = ttsAudio;
+            updateTtsButtonLabel(ttsBtnEl);
             updateStaticTtsIcon();
 
-            audio.onended = function() {
-                ttsSpeaking = false;
-                ttsCurrentAudio = null;
-                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                updateStaticTtsIcon();
-                processTtsQueue();
-            };
-            audio.onerror = function() {
-                console.warn('[TTS] HTMLAudio error');
-                ttsSpeaking = false;
-                ttsCurrentAudio = null;
-                if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
-                updateStaticTtsIcon();
-                processTtsQueue();
-            };
-
-            await audio.play();
+            console.log('[TTS] calling play()...');
+            await ttsAudio.play();
+            console.log('[TTS] play() succeeded');
         } catch (err) {
             console.warn('[TTS] error:', err);
             ttsSpeaking = false;
             ttsCurrentAudio = null;
-            if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+            updateTtsButtonLabel(ttsBtnEl);
             updateStaticTtsIcon();
             processTtsQueue();
         }
