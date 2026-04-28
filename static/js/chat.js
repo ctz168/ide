@@ -42,9 +42,10 @@ const ChatManager = (() => {
     let ttsSpeaking = false;        // whether currently speaking
     let ttsLastTextBlock = '';      // the last assistant text block seen
     let ttsStopRowEl = null;        // reference to #chat-stop-row
-    let ttsBtnEl = null;            // reference to .chat-tts-btn
+    let ttsBtnEl = null;            // reference to .chat-tts-btn (dynamic, in stop row)
     let ttsDropdownEl = null;       // reference to .chat-tts-dropdown
     let ttsOverlayEl = null;        // reference to .chat-tts-overlay
+    let ttsStaticBtn = null;        // reference to #chat-tts-toggle (always-visible in send row)
 
     // ── Pending Message Queue ──────────────────────────────────────
     // When user sends a message while AI is processing, it gets queued.
@@ -1376,6 +1377,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             ttsBtnEl.classList.toggle('active', mode !== TTS_MODES.OFF);
             updateTtsButtonLabel(ttsBtnEl);
         }
+        // Also update the static button
+        updateStaticTtsIcon();
         // If switching OFF, stop any current playback
         if (mode === TTS_MODES.OFF) {
             stopTtsPlayback();
@@ -1393,6 +1396,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
         ttsSpeaking = false;
         if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+        updateStaticTtsIcon();
     }
 
     /**
@@ -1421,12 +1425,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             ttsCurrentAudio = audio;
             ttsSpeaking = true;
             if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+            updateStaticTtsIcon();
 
             audio.onended = function() {
                 ttsSpeaking = false;
                 ttsCurrentAudio = null;
                 URL.revokeObjectURL(url);
                 if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
                 // Process next in queue
                 processTtsQueue();
             };
@@ -1436,6 +1442,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 ttsCurrentAudio = null;
                 URL.revokeObjectURL(url);
                 if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
                 // Process next in queue even on error
                 processTtsQueue();
             };
@@ -1446,12 +1453,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 ttsCurrentAudio = null;
                 URL.revokeObjectURL(url);
                 if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+                updateStaticTtsIcon();
                 processTtsQueue();
             });
         } catch (err) {
             console.warn('[TTS] error:', err);
             ttsSpeaking = false;
             if (ttsBtnEl) updateTtsButtonLabel(ttsBtnEl);
+            updateStaticTtsIcon();
             processTtsQueue();
         }
     }
@@ -1533,6 +1542,77 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
+     * Initialize the always-visible TTS toggle button in the send row.
+     * Called once during init().
+     */
+    function initStaticTtsButton() {
+        ttsStaticBtn = document.getElementById('chat-tts-toggle');
+        if (!ttsStaticBtn) return;
+
+        // Update icon based on persisted mode
+        updateStaticTtsIcon();
+
+        // Create dropdown (reused for both static and dynamic buttons)
+        const dropdown = createTtsDropdown();
+        ttsStaticBtn.appendChild(dropdown);
+
+        // Create overlay (shared)
+        const overlay = document.createElement('div');
+        overlay.className = 'chat-tts-overlay';
+        overlay.id = 'chat-tts-static-overlay';
+        overlay.addEventListener('click', function() {
+            closeStaticTtsDropdown();
+        });
+        // Insert overlay into body
+        document.body.appendChild(overlay);
+
+        ttsStaticBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const dd = ttsStaticBtn.querySelector('.chat-tts-dropdown');
+            const ov = document.getElementById('chat-tts-static-overlay');
+            if (!dd || !ov) return;
+            if (dd.classList.contains('open')) {
+                closeStaticTtsDropdown();
+            } else {
+                // Update active states
+                const opts = dd.querySelectorAll('.chat-tts-option');
+                opts.forEach(function(opt) {
+                    const isActive = opt.dataset.mode === ttsMode;
+                    const checkEl = opt.querySelector('.tts-check');
+                    if (checkEl) {
+                        checkEl.textContent = '✓';
+                        checkEl.classList.toggle('empty', !isActive);
+                    }
+                });
+                dd.classList.add('open');
+                ov.classList.add('open');
+            }
+        });
+    }
+
+    function closeStaticTtsDropdown() {
+        if (ttsStaticBtn) {
+            const dd = ttsStaticBtn.querySelector('.chat-tts-dropdown');
+            if (dd) dd.classList.remove('open');
+        }
+        const ov = document.getElementById('chat-tts-static-overlay');
+        if (ov) ov.classList.remove('open');
+    }
+
+    function updateStaticTtsIcon() {
+        if (!ttsStaticBtn) return;
+        if (ttsMode === TTS_MODES.ALL) {
+            ttsStaticBtn.textContent = '🔊';
+        } else if (ttsMode === TTS_MODES.LAST) {
+            ttsStaticBtn.textContent = '🔉';
+        } else {
+            ttsStaticBtn.textContent = '🔇';
+        }
+        ttsStaticBtn.classList.toggle('active', ttsMode !== TTS_MODES.OFF);
+        ttsStaticBtn.classList.toggle('chat-tts-speaking', ttsSpeaking);
+    }
+
+    /**
      * Create and show the stop button + TTS button row during generation
      * @returns {HTMLElement} the stop row element
      */
@@ -1541,6 +1621,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
 
         const inputArea = document.getElementById('chat-input-area');
         if (!inputArea) return null;
+
+        // Hide the static TTS button in send row while stop row is visible
+        if (ttsStaticBtn) ttsStaticBtn.style.display = 'none';
 
         // Create wrapper row
         const row = document.createElement('div');
@@ -1591,6 +1674,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         ttsBtnEl = null;
         ttsDropdownEl = null;
         ttsOverlayEl = null;
+
+        // Restore the static TTS button in send row
+        if (ttsStaticBtn) ttsStaticBtn.style.display = '';
     }
 
     /**
@@ -4893,6 +4979,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     async function init() {
         injectSettingsStyles();  // Ensure all chat UI styles (todo panel, messages, tools, etc.) are available
         wireEvents();
+        initStaticTtsButton();  // Initialize the always-visible TTS toggle button
         await loadHistory();
         autoResizeInput();
         // Load pending message queue from localStorage (crash/refresh recovery)

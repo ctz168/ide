@@ -3433,13 +3433,14 @@ button, .file-item, .search-result-item, .git-change-item {
 /* ==================== TTS (Text-to-Speech) ==================== */
 #chat-stop-row {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 4px;
+    align-items: stretch;
+    gap: 6px;
+    margin-bottom: 6px;
 }
 
 #chat-stop-row .chat-stop-btn {
-    flex-shrink: 0;
+    flex: 1;
+    width: auto;
 }
 
 .chat-tts-btn {
@@ -3447,18 +3448,19 @@ button, .file-item, .search-result-item, .git-change-item {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    padding: 4px 10px;
+    padding: 4px 12px;
     border: 1px solid var(--border);
     background: var(--bg-tertiary);
     color: var(--text-secondary);
-    font-size: 12px;
-    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     flex-shrink: 0;
     position: relative;
     transition: all 0.15s ease;
     white-space: nowrap;
-    min-height: 32px;
+    min-height: 36px;
 }
 
 .chat-tts-btn:active {
@@ -3563,4 +3565,38 @@ button, .file-item, .search-result-item, .git-change-item {
 
 .chat-tts-overlay.open {
     display: block;
+}
+
+/* Static TTS toggle button in send row (always visible) */
+.chat-tts-toggle {
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 16px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    transition: all 0.15s ease;
+    padding: 0;
+}
+
+.chat-tts-toggle:active {
+    background: var(--bg-hover);
+    transform: scale(0.92);
+}
+
+.chat-tts-toggle.active {
+    background: rgba(232, 133, 61, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.chat-tts-speaking {
+    animation: tts-pulse 1s ease-in-out infinite;
 }
