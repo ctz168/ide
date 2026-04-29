@@ -321,6 +321,13 @@ const EditorManager = (() => {
                 clearTimeout(window._mdPreviewTimer);
                 window._mdPreviewTimer = setTimeout(function() { renderMarkdownPreview(); }, 300);
             }
+            // Auto-refresh browser preview iframe when editing MD/HTML
+            if (_browserPreviewActive && (isMarkdownFile() || isPreviewableFile())) {
+                clearTimeout(window._browserPreviewTimer);
+                window._browserPreviewTimer = setTimeout(function() {
+                    refreshBrowserPreview();
+                }, 800);
+            }
         });
 
         // Track history for clean detection (CodeMirror clearHistory)
@@ -1445,6 +1452,7 @@ const EditorManager = (() => {
 
     // ── Markdown Preview ─────────────────────────────────────────
     let mdPreviewMode = false;
+    let _browserPreviewActive = false;  // true when 🌐 browser preview iframe is showing a file
     // Last known source line for scroll sync (used during live re-render)
     let _mdLastCursorLine = 0;
 
@@ -2385,6 +2393,35 @@ const EditorManager = (() => {
     /**
      * Preview the current file in the browser panel
      */
+
+    function refreshBrowserPreview() {
+        if (!currentFilePath) return;
+        // Auto-save first so the preview shows latest content
+        if (editor && !editor.isClean()) {
+            if (window.EditorManager && window.EditorManager.saveCurrentFile) {
+                window.EditorManager.saveCurrentFile();
+            }
+        }
+        const iframe = document.getElementById('preview-frame');
+        if (!iframe) return;
+        // Check that the browser tab is actually visible
+        const bottomPanel = document.getElementById('bottom-panel');
+        if (!bottomPanel || bottomPanel.style.display === 'none') {
+            _browserPreviewActive = false;
+            return;
+        }
+        const browserTab = document.querySelector('[data-btab="browser"]');
+        if (!browserTab || !browserTab.classList.contains('active')) {
+            _browserPreviewActive = false;
+            return;
+        }
+        // Reload the preview URL
+        let relPath = window.FileManager ? window.FileManager.currentFilePath : currentFilePath;
+        relPath = (relPath || '').replace(/^\/workspace\/?/, '');
+        let previewUrl = '/preview/' + relPath;
+        iframe.src = previewUrl;
+    }
+
     function previewInBrowser() {
         if (!currentFilePath) return;
 
@@ -2454,6 +2491,9 @@ const EditorManager = (() => {
             iframe.src = '';
             iframe.src = previewUrl;
         }
+
+        // Mark browser preview as active (enables auto-refresh on edit)
+        _browserPreviewActive = true;
 
         // Enable bidirectional scroll sync for MD files
         if (isMarkdownFile()) {
