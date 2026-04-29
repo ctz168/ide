@@ -1230,6 +1230,22 @@ html, body {
     position: relative;
 }
 
+/* Markdown split-view: editor (left) + preview (right) */
+#editor-container.md-split {
+    display: flex;
+    flex-direction: row;
+}
+#editor-container.md-split > .CodeMirror {
+    flex: 1 1 50%;
+    min-width: 0;
+    border-right: 1px solid var(--border);
+}
+#editor-container.md-split > #markdown-preview {
+    flex: 1 1 50%;
+    min-width: 0;
+    display: block !important;
+}
+
 .CodeMirror {
     height: 100% !important;
     font-family: var(--font-mono) !important;

@@ -363,6 +363,12 @@ const EditorManager = (() => {
             previewBtn.addEventListener('click', previewInBrowser);
         }
 
+        // Markdown toggle preview button (split-view)
+        const mdToggleBtn = document.getElementById('btn-md-toggle');
+        if (mdToggleBtn) {
+            mdToggleBtn.addEventListener('click', toggleMarkdownPreview);
+        }
+
         // ── Selection Mode: Exit button ────────────────────────────
         const exitSelBtn = document.getElementById('editor-exit-selection-btn');
         if (exitSelBtn) {
@@ -2030,7 +2036,8 @@ const EditorManager = (() => {
 
         mdPreviewMode = !mdPreviewMode;
         const previewEl = document.getElementById('markdown-preview');
-        const cmWrapper = editor ? editor.getWrapperElement() : null;
+        const container = document.getElementById('editor-container');
+        const cmWrapper = editor ? editor.getWrapperElement().parentElement : null;
         const toggleBtn = document.getElementById('btn-md-toggle');
         const ttsBtn = document.getElementById('btn-md-tts');
 
@@ -2039,30 +2046,27 @@ const EditorManager = (() => {
             var cursorLine = editor ? editor.getCursor().line : 0;
             _mdLastCursorLine = cursorLine;
 
-            renderMarkdownPreview(cursorLine);
-            if (cmWrapper) cmWrapper.style.display = 'none';
+            // Switch to split-view: editor (left) + preview (right)
+            if (container) container.classList.add('md-split');
+            if (previewEl) previewEl.classList.remove('hidden');
             if (previewEl) previewEl.style.display = '';
-            if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '切换编辑'; }
+            renderMarkdownPreview(cursorLine);
+            if (toggleBtn) { toggleBtn.textContent = '📝'; toggleBtn.title = '关闭预览'; }
             if (ttsBtn) ttsBtn.style.display = '';
+            // Refresh CodeMirror after layout change
+            setTimeout(() => { if (editor) editor.refresh(); }, 50);
         } else {
             // Stop any MD TTS playback
             stopMdTts();
 
-            // Before closing preview, get the corresponding source line
-            var sourceLine = getSourceLineFromPreviewScroll();
-
-            if (cmWrapper) cmWrapper.style.display = '';
+            // Switch back to editor-only view
+            if (container) container.classList.remove('md-split');
             if (previewEl) previewEl.style.display = 'none';
+            if (previewEl) previewEl.classList.add('hidden');
             if (toggleBtn) { toggleBtn.textContent = '📖'; toggleBtn.title = '切换预览'; }
-            // Keep TTS button visible (it works in both modes)
 
-            // Scroll the editor to the corresponding source line
-            if (editor && sourceLine > 0) {
-                requestAnimationFrame(function() {
-                    editor.scrollTo(0, editor.charCoords({ line: sourceLine, ch: 0 }, 'local').top - 10);
-                });
-            }
-            setTimeout(() => resize(), 50);
+            // Refresh CodeMirror after layout change
+            setTimeout(() => { resize(); }, 50);
         }
     }
 
@@ -2082,9 +2086,10 @@ const EditorManager = (() => {
         if (!isMarkdownFile() && mdPreviewMode) {
             mdPreviewMode = false;
             const previewEl = document.getElementById('markdown-preview');
-            const cmWrapper = editor ? editor.getWrapperElement() : null;
+            const container = document.getElementById('editor-container');
             if (previewEl) previewEl.style.display = 'none';
-            if (cmWrapper) cmWrapper.style.display = '';
+            if (previewEl) previewEl.classList.add('hidden');
+            if (container) container.classList.remove('md-split');
         }
         // Update the browser preview button visibility
         updatePreviewButton();
