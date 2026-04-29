@@ -2419,6 +2419,17 @@ const EditorManager = (() => {
         let relPath = window.FileManager ? window.FileManager.currentFilePath : currentFilePath;
         relPath = (relPath || '').replace(/^\/workspace\/?/, '');
         let previewUrl = '/preview/' + relPath;
+        // Pass anchor so the preview scrolls to the current editor position
+        if (isMarkdownFile() && editor) {
+            _updateVisibleLines();
+            var anchorText = _getAnchorText();
+            if (anchorText) {
+                var anchor = btoa(unescape(encodeURIComponent(anchorText)));
+                previewUrl += '?anchor=' + encodeURIComponent(anchor);
+            }
+        }
+        // Force reload even if URL is identical to previous
+        iframe.src = '';
         iframe.src = previewUrl;
     }
 
