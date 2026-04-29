@@ -371,6 +371,38 @@ def _decompress_body(raw_body, content_encoding):
     return raw_body
 
 
+def _rewrite_set_cookie(cookie_str):
+    """Rewrite a Set-Cookie header value for proxy compatibility.
+
+    The target server sends cookies scoped to its own domain (e.g. localhost:3000).
+    Since the browser receives the response from the proxy (localhost:12345), the
+    browser would reject cookies with a Domain that doesn't match.  We strip the
+    Domain attribute and set Path=/ so the browser stores the cookie under the
+    proxy's origin and sends it on every proxy request.
+    """
+    # Split into name=value and attributes
+    parts = cookie_str.split(';')
+    if not parts:
+        return cookie_str
+    name_value = parts[0].strip()
+    attrs = []
+    for part in parts[1:]:
+        attr = part.strip()
+        attr_lower = attr.lower()
+        # Strip Domain attribute — let browser use the proxy's domain
+        if attr_lower.startswith('domain='):
+            continue
+        # Strip SameSite=None if Secure is not present (browser rejects it)
+        if attr_lower == 'samesite=none':
+            continue
+        # Rewrite Path to / so cookie is sent on all proxy requests
+        if attr_lower.startswith('path='):
+            attrs.append('Path=/')
+            continue
+        attrs.append(attr)
+    return name_value + '; ' + '; '.join(attrs)
+
+
 def _proxy_response(target_resp, proxy_base):
     """Build a Flask Response from a target response, rewriting URLs if needed."""
     content_type = target_resp.headers.get('content-type', '')
@@ -447,13 +479,15 @@ def _proxy_response(target_resp, proxy_base):
 
     # Forward Set-Cookie headers from target to browser
     # Set-Cookie can appear multiple times, so handle it specially.
-    # We use the raw headers dict (which may have multiple Set-Cookie entries)
-    # stored on _ProxyResponse._raw_headers.
+    # CRITICAL: strip Domain attribute so the browser stores cookies under
+    # the proxy's domain (localhost:12345) instead of the target's domain.
+    # Otherwise the browser will reject/ignore the cookie since the domains
+    # don't match.  Also set Path=/ so the cookie is sent on all proxy requests.
     raw_hdrs = getattr(target_resp, '_raw_headers', None)
     if raw_hdrs:
         for k, v in raw_hdrs:
             if k.lower() == 'set-cookie':
-                resp.headers.add('Set-Cookie', v)
+                resp.headers.add('Set-Cookie', _rewrite_set_cookie(v))
 
     # Prevent caching of proxied content (URLs are rewritten per-session)
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -1260,7 +1294,8 @@ def proxy():
 
             raw_resp = conn.getresponse()
             status_code = raw_resp.status
-            resp_headers = dict(raw_resp.getheaders())
+            raw_headers_list = raw_resp.getheaders()
+            resp_headers = dict(raw_headers_list)
             _redirect_count += 1
 
         content_type = resp_headers.get('Content-Type', '') or resp_headers.get('content-type', '')
@@ -1294,6 +1329,10 @@ def proxy():
             # Set content type
             if content_type:
                 resp.headers['Content-Type'] = content_type
+            # Forward Set-Cookie headers (rewrite Domain for proxy compatibility)
+            for k, v in raw_headers_list:
+                if k.lower() == 'set-cookie':
+                    resp.headers.add('Set-Cookie', _rewrite_set_cookie(v))
             # Pass through CORS headers
             resp.headers['Access-Control-Allow-Origin'] = '*'
             resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
