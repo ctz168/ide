@@ -425,9 +425,18 @@ def git_pull():
     r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
 
     # Detect merge conflicts in output
-    has_conflicts = False
-    if not r['ok'] and r['stderr']:
-        has_conflicts = 'CONFLICT' in r['stderr'] or 'Merge conflict' in r['stderr']
+    # Git may output CONFLICT messages to stdout or stderr depending on version/platform
+    combined_output = (r.get('stdout') or '') + (r.get('stderr') or '')
+    has_conflicts = 'CONFLICT' in combined_output or 'Merge conflict' in combined_output
+
+    # Fallback: check git status for unmerged files (UU, AA, DU, UD prefixes)
+    if not has_conflicts and not r['ok']:
+        st = git_cmd('status --porcelain', cwd=cwd)
+        if st['ok'] and st['stdout']:
+            for line in st['stdout'].strip().split('\n'):
+                if len(line) >= 2 and line[:2] in ('UU', 'AA', 'DU', 'UD'):
+                    has_conflicts = True
+                    break
 
     return jsonify({
         'ok': r['ok'],
