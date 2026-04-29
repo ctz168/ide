@@ -876,13 +876,13 @@ const GitManager = (() => {
                 const cols = document.createElement('div');
                 cols.className = 'conflict-cols';
 
-                // === Local (theirs in git terms = remote incoming) bubble ===
+                // === Ours (git 'ours' = HEAD = local) ===
                 const oursCol = document.createElement('div');
                 oursCol.className = 'conflict-col conflict-col-ours';
 
                 const oursLabel = document.createElement('div');
                 oursLabel.className = 'conflict-bubble-label conflict-label-ours';
-                oursLabel.textContent = '远程';
+                oursLabel.textContent = '本地';
                 if (conflict.ours_label) {
                     oursLabel.title = conflict.ours_label;
                 }
@@ -901,19 +901,19 @@ const GitManager = (() => {
 
                 const oursBtn = document.createElement('button');
                 oursBtn.className = 'conflict-adopt-btn conflict-adopt-ours';
-                oursBtn.textContent = '✓ 采用远程';
-                oursBtn.title = '保留远程代码，丢弃本地代码';
+                oursBtn.textContent = '✓ 采用本地';
+                oursBtn.title = '保留本地代码，丢弃远程代码';
                 oursCol.appendChild(oursBtn);
 
                 cols.appendChild(oursCol);
 
-                // === Remote (theirs bubble = local HEAD) ===
+                // === Theirs (git 'theirs' = remote incoming) ===
                 const theirsCol = document.createElement('div');
                 theirsCol.className = 'conflict-col conflict-col-theirs';
 
                 const theirsLabel = document.createElement('div');
                 theirsLabel.className = 'conflict-bubble-label conflict-label-theirs';
-                theirsLabel.textContent = '本地';
+                theirsLabel.textContent = '远程';
                 if (conflict.theirs_label) {
                     theirsLabel.title = conflict.theirs_label;
                 }
@@ -931,8 +931,8 @@ const GitManager = (() => {
 
                 const theirsBtn = document.createElement('button');
                 theirsBtn.className = 'conflict-adopt-btn conflict-adopt-theirs';
-                theirsBtn.textContent = '✓ 采用本地';
-                theirsBtn.title = '保留本地代码，丢弃远程代码';
+                theirsBtn.textContent = '✓ 采用远程';
+                theirsBtn.title = '保留远程代码，丢弃本地代码';
                 theirsCol.appendChild(theirsBtn);
 
                 cols.appendChild(theirsCol);
@@ -975,7 +975,9 @@ const GitManager = (() => {
                 <button class="conflict-abort-footer-btn" id="conflict-abort-footer-btn">❌ 中止合并</button>
             </div>
         `;
-        body.appendChild(footer);
+        // Append body and footer to container (footer outside scrollable area)
+        container.appendChild(body);
+        container.appendChild(footer);
 
         // Replace loading with actual content
         const oldBody = container.querySelector('.conflict-body');
