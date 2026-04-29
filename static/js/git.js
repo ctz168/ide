@@ -582,6 +582,10 @@ const GitManager = (() => {
                 if (window.FileManager) {
                     await window.FileManager.refresh();
                 }
+            } else if (data.has_conflicts) {
+                // Merge conflicts detected — open conflict resolution dialog
+                showToast('检测到合并冲突，请解决冲突', 'warning');
+                await showConflictDialog();
             } else {
                 const errLines = data.stderr
                     ? data.stderr.trim().split('\n').filter(l => l.trim())
@@ -674,6 +678,396 @@ const GitManager = (() => {
         const pushResult = await push();
         if (!pushResult || !pushResult.ok) return;
         showToast('Sync complete', 'success');
+    }
+
+    // ── Conflict Resolution ─────────────────────────────────────────
+
+    /**
+     * Show the merge conflict resolution dialog.
+     * Fetches conflict data from server and renders interactive UI.
+     */
+    async function showConflictDialog() {
+        // Remove any existing conflict overlay
+        const existing = document.getElementById('conflict-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'conflict-overlay';
+        overlay.id = 'conflict-overlay';
+
+        // Show loading state
+        overlay.innerHTML = `
+            <div class="conflict-container">
+                <div class="conflict-header">
+                    <span class="conflict-title">🔀 合并冲突解决</span>
+                    <div class="conflict-actions">
+                        <button class="conflict-abort-btn" title="中止合并">✕ 中止</button>
+                    </div>
+                </div>
+                <div class="conflict-body" style="display:flex;align-items:center;justify-content:center;padding:40px;">
+                    <span style="color:var(--text-muted)">正在加载冲突信息...</span>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        // Bind abort button
+        overlay.querySelector('.conflict-abort-btn').addEventListener('click', async () => {
+            await abortMerge();
+            overlay.remove();
+        });
+
+        // Fetch conflict data
+        const gitCwd = getGitCwd();
+        try {
+            const resp = await fetch(`/api/git/conflicts?path=${encodeURIComponent(gitCwd)}`);
+            if (!resp.ok) {
+                throw new Error('Failed to fetch conflicts');
+            }
+            const data = await resp.json();
+            if (!data.ok || !data.files || data.files.length === 0) {
+                showToast('没有找到冲突', 'info');
+                overlay.remove();
+                return;
+            }
+            renderConflictUI(overlay, data.files);
+        } catch (e) {
+            showToast('获取冲突信息失败: ' + e.message, 'error');
+            overlay.remove();
+        }
+    }
+
+    /**
+     * Render the conflict resolution UI into the overlay.
+     * @param {HTMLElement} overlay - The overlay element
+     * @param {Array} files - [{file, conflicts: [{index, start_line, ours, ours_start, ours_label, theirs, theirs_start, theirs_label}]}]
+     */
+    function renderConflictUI(overlay, files) {
+        const container = overlay.querySelector('.conflict-container');
+        const header = container.querySelector('.conflict-header');
+
+        // Count total conflicts
+        let totalConflicts = 0;
+        files.forEach(f => { totalConflicts += f.conflicts.length; });
+
+        // Track state
+        const state = {
+            totalConflicts: totalConflicts,
+            resolvedConflicts: 0,
+            overlay: overlay,
+        };
+
+        // Build conflict body
+        const body = document.createElement('div');
+        body.className = 'conflict-body';
+
+        files.forEach((fileData, fileIdx) => {
+            if (fileData.error || !fileData.conflicts || fileData.conflicts.length === 0) return;
+
+            // File section
+            const fileSection = document.createElement('div');
+            fileSection.className = 'conflict-file-section';
+            fileSection.setAttribute('data-filepath', fileData.file);
+
+            // File header
+            const fileHeader = document.createElement('div');
+            fileHeader.className = 'conflict-file-header';
+            const fileIcon = getFileIcon(fileData.file);
+            fileHeader.innerHTML = `<span class="conflict-file-icon">${fileIcon}</span><span class="conflict-file-name">${escapeAttr(fileData.file)}</span><span class="conflict-file-count">${fileData.conflicts.length} 个冲突</span>`;
+            fileSection.appendChild(fileHeader);
+
+            // Render each conflict section
+            fileData.conflicts.forEach((conflict, confIdx) => {
+                const section = document.createElement('div');
+                section.className = 'conflict-section';
+                section.setAttribute('data-file', fileData.file);
+                section.setAttribute('data-index', conflict.index);
+
+                // Conflict heading
+                const heading = document.createElement('div');
+                heading.className = 'conflict-section-heading';
+                heading.innerHTML = `冲突 ${confIdx + 1} <span class="conflict-line-info">第 ${conflict.start_line} 行</span>`;
+                section.appendChild(heading);
+
+                // Two-column wrapper for ours and theirs
+                const cols = document.createElement('div');
+                cols.className = 'conflict-cols';
+
+                // === Local (ours) bubble ===
+                const oursCol = document.createElement('div');
+                oursCol.className = 'conflict-col conflict-col-ours';
+
+                const oursLabel = document.createElement('div');
+                oursLabel.className = 'conflict-bubble-label conflict-label-ours';
+                oursLabel.textContent = '本地';
+                if (conflict.ours_label) {
+                    oursLabel.title = conflict.ours_label;
+                }
+                oursCol.appendChild(oursLabel);
+
+                const oursBubble = document.createElement('div');
+                oursBubble.className = 'conflict-bubble conflict-bubble-ours';
+                // Render code lines with line numbers
+                let oursHTML = '';
+                conflict.ours.forEach((line, li) => {
+                    const lineNum = conflict.ours_start + li;
+                    oursHTML += `<div class="conflict-code-line"><span class="conflict-code-lnum">${lineNum}</span><span class="conflict-code-text">${escapeHTML(line)}</span></div>`;
+                });
+                oursBubble.innerHTML = oursHTML;
+                oursCol.appendChild(oursBubble);
+
+                const oursBtn = document.createElement('button');
+                oursBtn.className = 'conflict-adopt-btn conflict-adopt-ours';
+                oursBtn.textContent = '✓ 采用本地';
+                oursBtn.title = '保留本地代码，丢弃远程代码';
+                oursCol.appendChild(oursBtn);
+
+                cols.appendChild(oursCol);
+
+                // === Remote (theirs) bubble ===
+                const theirsCol = document.createElement('div');
+                theirsCol.className = 'conflict-col conflict-col-theirs';
+
+                const theirsLabel = document.createElement('div');
+                theirsLabel.className = 'conflict-bubble-label conflict-label-theirs';
+                theirsLabel.textContent = '远程';
+                if (conflict.theirs_label) {
+                    theirsLabel.title = conflict.theirs_label;
+                }
+                theirsCol.appendChild(theirsLabel);
+
+                const theirsBubble = document.createElement('div');
+                theirsBubble.className = 'conflict-bubble conflict-bubble-theirs';
+                let theirsHTML = '';
+                conflict.theirs.forEach((line, li) => {
+                    const lineNum = conflict.theirs_start + li;
+                    theirsHTML += `<div class="conflict-code-line"><span class="conflict-code-lnum">${lineNum}</span><span class="conflict-code-text">${escapeHTML(line)}</span></div>`;
+                });
+                theirsBubble.innerHTML = theirsHTML;
+                theirsCol.appendChild(theirsBubble);
+
+                const theirsBtn = document.createElement('button');
+                theirsBtn.className = 'conflict-adopt-btn conflict-adopt-theirs';
+                theirsBtn.textContent = '✓ 采用远程';
+                theirsBtn.title = '保留远程代码，丢弃本地代码';
+                theirsCol.appendChild(theirsBtn);
+
+                cols.appendChild(theirsCol);
+                section.appendChild(cols);
+
+                // Event handlers for adopt buttons
+                oursBtn.addEventListener('click', () => {
+                    resolveConflict(fileData.file, conflict.index, 'ours', section, state);
+                });
+                theirsBtn.addEventListener('click', () => {
+                    resolveConflict(fileData.file, conflict.index, 'theirs', section, state);
+                });
+
+                fileSection.appendChild(section);
+            });
+
+            body.appendChild(fileSection);
+        });
+
+        // Footer with merge commit button
+        const footer = document.createElement('div');
+        footer.className = 'conflict-footer';
+        footer.innerHTML = `
+            <div class="conflict-progress">
+                <span class="conflict-progress-text">已解决 <span id="conflict-resolved-count">0</span> / <span id="conflict-total-count">${totalConflicts}</span> 个冲突</span>
+            </div>
+            <div class="conflict-footer-buttons">
+                <button class="conflict-merge-btn" id="conflict-merge-btn" disabled>✅ 合并提交</button>
+                <button class="conflict-abort-footer-btn" id="conflict-abort-footer-btn">❌ 中止合并</button>
+            </div>
+        `;
+        body.appendChild(footer);
+
+        // Replace loading with actual content
+        const oldBody = container.querySelector('.conflict-body');
+        oldBody.replaceWith(body);
+
+        // Store state for button handlers
+        state.container = container;
+        state.mergeBtn = footer.querySelector('#conflict-merge-btn');
+        state.resolvedCountEl = footer.querySelector('#conflict-resolved-count');
+        state.abortBtn = footer.querySelector('#conflict-abort-footer-btn');
+
+        // Merge commit handler
+        state.mergeBtn.addEventListener('click', async () => {
+            state.mergeBtn.disabled = true;
+            state.mergeBtn.textContent = '合并中...';
+            const result = await completeMerge();
+            if (result && result.ok) {
+                showToast('合并提交成功', 'success');
+                overlay.remove();
+                await refresh();
+                if (window.FileManager) await window.FileManager.refresh();
+            } else {
+                showToast('合并提交失败: ' + (result ? result.error : ''), 'error');
+                state.mergeBtn.disabled = false;
+                state.mergeBtn.textContent = '✅ 合并提交';
+            }
+        });
+
+        // Abort handler
+        state.abortBtn.addEventListener('click', async () => {
+            await abortMerge();
+            overlay.remove();
+        });
+
+        // Close on overlay click (outside container)
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                // Don't close — conflicts need resolution. Flash a warning.
+                showToast('请先解决冲突或中止合并', 'warning');
+            }
+        });
+
+        // Escape key — abort
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                // Don't auto-abort on escape, just show hint
+                showToast('按住 Shift+Esc 可中止合并', 'info');
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    /**
+     * Resolve a single conflict section.
+     */
+    async function resolveConflict(filepath, conflictIndex, choice, sectionEl, state) {
+        // Visual feedback: disable buttons immediately
+        const adoptBtns = sectionEl.querySelectorAll('.conflict-adopt-btn');
+        adoptBtns.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+
+        // Highlight chosen side, fade out the other
+        const oursCol = sectionEl.querySelector('.conflict-col-ours');
+        const theirsCol = sectionEl.querySelector('.conflict-col-theirs');
+
+        if (choice === 'ours') {
+            oursCol.classList.add('conflict-col-chosen');
+            theirsCol.classList.add('conflict-col-discarded');
+        } else {
+            theirsCol.classList.add('conflict-col-chosen');
+            oursCol.classList.add('conflict-col-discarded');
+        }
+
+        // Call API
+        try {
+            const gitCwd = getGitCwd();
+            const resp = await fetch('/api/git/conflict-resolve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file: filepath,
+                    index: conflictIndex,
+                    choice: choice,
+                    path: gitCwd,
+                })
+            });
+            const data = await resp.json();
+
+            if (data.ok) {
+                // Mark as resolved
+                sectionEl.classList.add('conflict-section-resolved');
+                state.resolvedConflicts++;
+                state.resolvedCountEl.textContent = state.resolvedConflicts;
+
+                // If all conflicts resolved, enable merge button
+                if (state.resolvedConflicts >= state.totalConflicts) {
+                    state.mergeBtn.disabled = false;
+                    state.mergeBtn.classList.add('conflict-merge-btn-ready');
+                    showToast('所有冲突已解决，可以提交合并', 'success');
+                }
+            } else {
+                showToast('解决冲突失败: ' + (data.error || ''), 'error');
+                // Revert visual state
+                oursCol.classList.remove('conflict-col-chosen', 'conflict-col-discarded');
+                theirsCol.classList.remove('conflict-col-chosen', 'conflict-col-discarded');
+                adoptBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+            }
+        } catch (e) {
+            showToast('解决冲突失败: ' + e.message, 'error');
+            oursCol.classList.remove('conflict-col-chosen', 'conflict-col-discarded');
+            theirsCol.classList.remove('conflict-col-chosen', 'conflict-col-discarded');
+            adoptBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+        }
+    }
+
+    /**
+     * Complete the merge by staging all resolved files and committing.
+     */
+    async function completeMerge() {
+        const gitCwd = getGitCwd();
+        const resp = await fetch('/api/git/merge-complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: gitCwd })
+        });
+        if (!resp.ok) {
+            return { ok: false, error: 'Request failed' };
+        }
+        return await resp.json();
+    }
+
+    /**
+     * Abort the current merge.
+     */
+    async function abortMerge() {
+        const gitCwd = getGitCwd();
+        try {
+            const resp = await fetch('/api/git/merge-abort', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: gitCwd })
+            });
+            const data = await resp.json();
+            if (data.ok) {
+                showToast('合并已中止', 'info');
+                await refresh();
+                if (window.FileManager) await window.FileManager.refresh();
+            } else {
+                showToast('中止合并失败: ' + (data.stderr || ''), 'error');
+            }
+            return data;
+        } catch (e) {
+            showToast('中止合并失败: ' + e.message, 'error');
+        }
+    }
+
+    /**
+     * Get file icon based on extension (reuse from utils)
+     */
+    function getFileIcon(filename) {
+        if (!filename) return '📄';
+        const ext = filename.split('.').pop().toLowerCase();
+        const iconMap = {
+            'py': '🐍', 'js': '📜', 'ts': '📘', 'jsx': '⚛️', 'tsx': '⚛️',
+            'json': '📋', 'md': '📝', 'html': '🌐', 'css': '🎨', 'scss': '🎨',
+            'sh': '⚙️', 'bash': '⚙️', 'yml': '📋', 'yaml': '📋', 'toml': '📋',
+            'txt': '📄', 'csv': '📊', 'sql': '🗃️', 'go': '🔵', 'rs': '🦀',
+            'java': '☕', 'kt': '🟣', 'swift': '🍎', 'c': '🔧', 'cpp': '🔧',
+            'h': '🔧', 'hpp': '🔧', 'rb': '💎', 'php': '🐘', 'vue': '💚',
+            'svelte': '🔥', 'dockerfile': '🐳', 'gitignore': '⚙️', 'env': '🔒',
+        };
+        return iconMap[ext] || '📄';
+    }
+
+    /**
+     * Escape HTML entities for safe rendering.
+     */
+    function escapeHTML(str) {
+        if (!str) return '';
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    /**
+     * Escape HTML attribute value.
+     */
+    function escapeAttr(str) {
+        return escapeHTML(str);
     }
 
     // ── API: Add ───────────────────────────────────────────────────
@@ -2124,6 +2518,8 @@ const GitManager = (() => {
         deleteGitFile,
         showCloneDialog,
         showDeviceCodeDialog,
+        showConflictDialog,
+        abortMerge,
 
         // Getters
         get currentBranch() { return currentBranch; },

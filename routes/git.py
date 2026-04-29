@@ -424,6 +424,276 @@ def git_pull():
 
     r = git_cmd(f'pull {remote} {branch}', cwd=cwd, timeout=120)
 
+    # Detect merge conflicts in output
+    has_conflicts = False
+    if not r['ok'] and r['stderr']:
+        has_conflicts = 'CONFLICT' in r['stderr'] or 'Merge conflict' in r['stderr']
+
+    return jsonify({
+        'ok': r['ok'],
+        'stdout': r['stdout'],
+        'stderr': r['stderr'],
+        'has_conflicts': has_conflicts,
+    })
+
+
+# ==================== Conflict Resolution ====================
+
+def _parse_conflict_markers(content):
+    """Parse git conflict markers from file content.
+
+    Returns list of dicts:
+      {
+        'index': int,
+        'start_line': int (1-based, the <<<<<<< line),
+        'ours': [str, ...],
+        'ours_start': int (1-based),
+        'ours_label': str,
+        'theirs': [str, ...],
+        'theirs_start': int (1-based),
+        'theirs_label': str,
+      }
+    """
+    conflicts = []
+    lines = content.split('\n')
+    i = 0
+    conflict_idx = 0
+
+    while i < len(lines):
+        if lines[i].startswith('<<<<<<<'):
+            marker_start_0 = i  # 0-based index of <<<<<<<
+            ours_label = lines[i][7:].strip() or 'HEAD'
+            ours = []
+            i += 1
+
+            # Collect ours section (stop at ======= or |||||||)
+            while i < len(lines) and not lines[i].startswith('=======') and not lines[i].startswith('|||||||'):
+                ours.append(lines[i])
+                i += 1
+
+            # Skip optional base/ancestor section
+            if i < len(lines) and lines[i].startswith('|||||||'):
+                i += 1
+                while i < len(lines) and not lines[i].startswith('======='):
+                    i += 1
+
+            # Skip ========
+            if i < len(lines) and lines[i].startswith('======='):
+                i += 1
+
+            # Collect theirs section
+            theirs = []
+            theirs_label = ''
+            while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                theirs.append(lines[i])
+                i += 1
+
+            if i < len(lines) and lines[i].startswith('>>>>>>>'):
+                theirs_label = lines[i][7:].strip()
+                i += 1
+
+            ours_start_1 = marker_start_0 + 2  # 1-based, first code line
+            theirs_start_1 = marker_start_0 + 2 + len(ours) + 1  # skip ours + =======
+
+            conflicts.append({
+                'index': conflict_idx,
+                'start_line': marker_start_0 + 1,  # 1-based
+                'ours': ours,
+                'ours_start': ours_start_1,
+                'ours_label': ours_label,
+                'theirs': theirs,
+                'theirs_start': theirs_start_1,
+                'theirs_label': theirs_label,
+            })
+            conflict_idx += 1
+        else:
+            i += 1
+
+    return conflicts
+
+
+@bp.route('/api/git/conflicts', methods=['GET'])
+@handle_error
+def git_conflicts():
+    """Get structured conflict information for the current merge.
+
+    Returns:
+        { ok, files: [{ file, conflicts: [{index, start_line, ours, ours_start, ours_label,
+                                            theirs, theirs_start, theirs_label}] }] }
+    """
+    cwd = resolve_cwd()
+
+    # Check for unmerged paths (UU, AA, DU, UD status prefixes)
+    r = git_cmd('status --porcelain', cwd=cwd)
+    if not r['ok']:
+        return jsonify({'ok': False, 'error': 'Failed to get git status'})
+
+    status_lines = r['stdout'].strip().split('\n') if r['stdout'].strip() else []
+    # Git shows both-side conflicts as "UU" (both modified),
+    # "AA" (both added), "DU"/"UD" (one deleted, one modified)
+    conflict_prefixes = ('UU', 'AA', 'DU', 'UD')
+    conflicted_files = []
+    for line in status_lines:
+        if len(line) >= 2 and line[:2] in conflict_prefixes:
+            fp = line[3:].strip().strip('"')
+            conflicted_files.append(fp)
+
+    if not conflicted_files:
+        return jsonify({'ok': True, 'files': []})
+
+    result = []
+    for filepath in conflicted_files:
+        full_path = os.path.join(cwd, filepath)
+        if not os.path.isfile(full_path):
+            continue
+
+        # Read with encoding detection
+        content = None
+        for enc in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']:
+            try:
+                with open(full_path, 'r', encoding=enc) as f:
+                    content = f.read()
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        if content is None:
+            result.append({'file': filepath, 'conflicts': [], 'error': 'Cannot read file'})
+            continue
+
+        conflicts = _parse_conflict_markers(content)
+        result.append({'file': filepath, 'conflicts': conflicts})
+
+    return jsonify({'ok': True, 'files': result})
+
+
+@bp.route('/api/git/conflict-resolve', methods=['POST'])
+@handle_error
+def git_conflict_resolve():
+    """Resolve a single conflict section in a file by choosing 'ours' or 'theirs'."""
+    data = request.json
+    filepath = data.get('file', '')
+    conflict_index = data.get('index', 0)
+    choice = data.get('choice', 'ours')  # 'ours' or 'theirs'
+
+    if choice not in ('ours', 'theirs'):
+        return jsonify({'ok': False, 'error': 'Invalid choice, must be "ours" or "theirs"'})
+
+    cwd = resolve_cwd()
+    full_path = os.path.join(cwd, filepath)
+
+    if not os.path.isfile(full_path):
+        return jsonify({'ok': False, 'error': 'File not found'})
+
+    # Read file with encoding detection
+    content = None
+    encoding = 'utf-8'
+    for enc in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']:
+        try:
+            with open(full_path, 'r', encoding=enc) as f:
+                content = f.read()
+            encoding = enc
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    if content is None:
+        return jsonify({'ok': False, 'error': 'Cannot read file'})
+
+    # Walk through the file, replacing only the targeted conflict
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    current_conflict = -1
+
+    while i < len(lines):
+        if lines[i].startswith('<<<<<<<'):
+            current_conflict += 1
+            if current_conflict == conflict_index:
+                # This is the conflict to resolve — skip markers, keep chosen side
+                i += 1  # skip <<<<<<<
+
+                # Collect ours lines
+                while i < len(lines) and not lines[i].startswith('=======') and not lines[i].startswith('|||||||'):
+                    if choice == 'ours':
+                        new_lines.append(lines[i])
+                    i += 1
+
+                # Skip optional base/ancestor section
+                if i < len(lines) and lines[i].startswith('|||||||'):
+                    i += 1
+                    while i < len(lines) and not lines[i].startswith('======='):
+                        i += 1
+
+                # Skip ========
+                if i < len(lines) and lines[i].startswith('======='):
+                    i += 1
+
+                # Collect theirs lines
+                while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                    if choice == 'theirs':
+                        new_lines.append(lines[i])
+                    i += 1
+
+                # Skip >>>>>>>
+                if i < len(lines) and lines[i].startswith('>>>>>>>'):
+                    i += 1
+                continue  # already advanced i
+            else:
+                new_lines.append(lines[i])
+                i += 1
+        else:
+            new_lines.append(lines[i])
+            i += 1
+
+    # Write back
+    new_content = '\n'.join(new_lines)
+    try:
+        with open(full_path, 'w', encoding=encoding, errors='replace') as f:
+            f.write(new_content)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'Write failed: {e}'})
+
+    # Count remaining conflicts in this file
+    remaining = _parse_conflict_markers(new_content)
+
+    # Check total remaining across all conflicted files
+    r = git_cmd('diff --name-only --diff-filter=U', cwd=cwd)
+    unmerged = [l.strip() for l in r['stdout'].strip().split('\n') if l.strip()] if r['stdout'].strip() else []
+
+    return jsonify({
+        'ok': True,
+        'remaining_in_file': len(remaining),
+        'total_unmerged_files': len(unmerged),
+        'file': filepath,
+    })
+
+
+@bp.route('/api/git/merge-complete', methods=['POST'])
+@handle_error
+def git_merge_complete():
+    """Stage all resolved files and complete the merge commit."""
+    cwd = resolve_cwd()
+
+    # Stage all resolved files
+    r = git_cmd('add -A', cwd=cwd)
+    if not r['ok']:
+        return jsonify({'ok': False, 'error': f'git add failed: {r["stderr"]}'})
+
+    # Commit with default merge message
+    r = git_cmd('commit --no-edit', cwd=cwd)
+    if not r['ok']:
+        return jsonify({'ok': False, 'error': f'git commit failed: {r["stderr"]}', 'stderr': r['stderr']})
+
+    return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})
+
+
+@bp.route('/api/git/merge-abort', methods=['POST'])
+@handle_error
+def git_merge_abort():
+    """Abort the current merge and restore pre-merge state."""
+    cwd = resolve_cwd()
+    r = git_cmd('merge --abort', cwd=cwd)
     return jsonify({'ok': r['ok'], 'stdout': r['stdout'], 'stderr': r['stderr']})
 
 
