@@ -577,8 +577,6 @@ const GitManager = (() => {
             if (data.ok) {
                 showToast('Pull successful', 'success');
                 await refresh();
-
-                // Refresh file list
                 if (window.FileManager) {
                     await window.FileManager.refresh();
                 }
@@ -587,14 +585,22 @@ const GitManager = (() => {
                 showToast('检测到合并冲突，请解决冲突', 'warning');
                 await showConflictDialog();
             } else {
-                const errLines = data.stderr
-                    ? data.stderr.trim().split('\n').filter(l => l.trim())
-                    : [];
-                // Toast: show last 2 lines for context (e.g. "hint: ..." + "fatal: ...")
-                const errMsg = errLines.length > 1
-                    ? errLines.slice(-2).join(' | ')
-                    : (errLines[0] || 'Unknown error');
-                showToast(`Pull failed: ${errMsg}`, 'error');
+                // Check if it's a "dirty working tree" error (needs stash)
+                const combined = (data.stdout || '') + (data.stderr || '');
+                const needsStash = combined.includes('commit your changes or stash them') ||
+                    combined.includes('would be overwritten by merge') ||
+                    combined.includes('local changes to the following');
+
+                if (needsStash) {
+                    await handleDirtyPull(gitCwd);
+                } else {
+                    const errLines = (data.stderr || data.stdout || '')
+                        .trim().split('\n').filter(l => l.trim());
+                    const errMsg = errLines.length > 1
+                        ? errLines.slice(-2).join(' | ')
+                        : (errLines[0] || 'Unknown error');
+                    showToast(`Pull failed: ${errMsg}`, 'error');
+                }
             }
 
             return data;
@@ -602,6 +608,83 @@ const GitManager = (() => {
             showToast(`Pull error: ${err.message}`, 'error');
             gitLogSimple(`pull`, err.message);
         }
+    }
+
+    /**
+     * Handle pull when working tree is dirty — offer to auto stash → pull → pop.
+     * If stash pop causes conflicts, opens conflict resolution dialog.
+     */
+    async function handleDirtyPull(gitCwd) {
+        const actions = [
+            { label: '📦 自动暂存并拉取 (stash → pull → pop)', value: 'stash-pull-pop' },
+            { label: '📝 先提交再拉取', value: 'commit-first' },
+            { label: '❌ 取消', value: 'cancel' },
+        ];
+        const choice = await choiceDialog(
+            '本地有未提交的修改',
+            '远程有新提交，但本地有未提交的修改会被覆盖。请选择操作：',
+            actions
+        );
+
+        if (choice === 'stash-pull-pop') {
+            showToast('正在暂存本地修改...', 'info');
+            // Step 1: git stash
+            const stashResult = await stash('push');
+            if (!stashResult || !stashResult.ok) {
+                showToast('Stash 失败，无法自动拉取', 'error');
+                return;
+            }
+
+            // Step 2: git pull (working tree is now clean)
+            showToast('正在拉取远程更改...', 'info');
+            try {
+                const resp = await fetch('/api/git/pull', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: gitCwd })
+                });
+                const data = await resp.json();
+                gitLog(`pull (after stash)`, data);
+
+                if (data.ok) {
+                    showToast('拉取成功，正在恢复暂存的修改...', 'info');
+                    // Step 3: git stash pop — this may create conflicts
+                    const popResult = await stash('pop');
+                    if (popResult && !popResult.ok) {
+                        // stash pop had conflicts — check if real merge conflicts exist
+                        const combined = (popResult.stdout || '') + (popResult.stderr || '') + (popResult.stderr || '');
+                        const hasConflicts = combined.includes('CONFLICT') || combined.includes('Merge conflict');
+
+                        if (hasConflicts) {
+                            showToast('暂存恢复时出现冲突，请解决', 'warning');
+                            await showConflictDialog();
+                            return;
+                        }
+                        // Other stash pop error
+                        showToast('恢复暂存失败，请手动 stash pop', 'warning');
+                    } else {
+                        showToast('拉取并恢复暂存成功', 'success');
+                        await refresh();
+                        if (window.FileManager) await window.FileManager.refresh();
+                    }
+                } else if (data.has_conflicts) {
+                    // Pull itself had conflicts (rare after stash, but possible with unrelated histories)
+                    showToast('拉取时出现合并冲突', 'warning');
+                    await showConflictDialog();
+                } else {
+                    showToast(`拉取失败: ${data.stderr || 'unknown error'}`, 'error');
+                    // Restore stash since pull failed
+                    await stash('pop');
+                }
+            } catch (e) {
+                showToast(`拉取失败: ${e.message}`, 'error');
+                // Try to restore stash
+                await stash('pop');
+            }
+        } else if (choice === 'commit-first') {
+            showToast('请先提交本地修改，然后再拉取', 'info');
+        }
+        // choice === 'cancel' → do nothing
     }
 
     // ── API: Push ──────────────────────────────────────────────────
