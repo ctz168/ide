@@ -321,10 +321,11 @@ _SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 class _ProxyResponse:
     """Lightweight wrapper to mimic requests.Response interface for _proxy_response."""
-    def __init__(self, raw_body, status_code, headers):
+    def __init__(self, raw_body, status_code, headers, raw_headers=None):
         self.content = raw_body
         self.status_code = status_code
         self.headers = _CaseInsensitiveDict(headers)
+        self._raw_headers = raw_headers or []  # preserve original (name, value) list for multi-value headers
         # Try to detect encoding from content-type
         ct = headers.get('Content-Type', '')
         self.encoding = 'utf-8'
@@ -443,6 +444,16 @@ def _proxy_response(target_resp, proxy_base):
         val = target_resp.headers.get(key)
         if val:
             resp.headers[key] = val
+
+    # Forward Set-Cookie headers from target to browser
+    # Set-Cookie can appear multiple times, so handle it specially.
+    # We use the raw headers dict (which may have multiple Set-Cookie entries)
+    # stored on _ProxyResponse._raw_headers.
+    raw_hdrs = getattr(target_resp, '_raw_headers', None)
+    if raw_hdrs:
+        for k, v in raw_hdrs:
+            if k.lower() == 'set-cookie':
+                resp.headers.add('Set-Cookie', v)
 
     # Prevent caching of proxied content (URLs are rewritten per-session)
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -1161,6 +1172,11 @@ def proxy():
         auth = request.headers.get('Authorization', '')
         if auth:
             forward_headers['Authorization'] = auth
+        # Cookie header — critical for session management (login, auth tokens)
+        # Must forward to target so session-based apps work through the proxy
+        cookie = request.headers.get('Cookie', '')
+        if cookie:
+            forward_headers['Cookie'] = cookie
         # Accept header
         accept = request.headers.get('Accept', '*/*')
         if accept:
@@ -1187,7 +1203,8 @@ def proxy():
         raw_resp = conn.getresponse()
 
         status_code = raw_resp.status
-        resp_headers = dict(raw_resp.getheaders())
+        raw_headers_list = raw_resp.getheaders()  # list of (name, value) tuples — preserves duplicates
+        resp_headers = dict(raw_headers_list)
 
         # ── Follow redirects server-side (like urllib did before 8dbd8ed) ──
         # MUST follow redirects on the server side, NOT return 3xx to the browser.
@@ -1305,7 +1322,7 @@ def proxy():
         proxy_base = f'{self_origin}/api/browser/proxy?url={urllib.parse.quote(target_url, safe="")}'
         proxy_base += f'&base={urllib.parse.quote(dir_url, safe="")}'
 
-        wrapped = _ProxyResponse(raw_body, status_code, resp_headers)
+        wrapped = _ProxyResponse(raw_body, status_code, resp_headers, raw_headers_list)
         return _proxy_response(wrapped, proxy_base)
 
     except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, OSError) as e:
