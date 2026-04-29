@@ -629,6 +629,14 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         else if (role === 'warning') div.classList.add('warning');
         else if (role === 'system') div.classList.add('system');
 
+        // Store message index for deletion support
+        if (extra.msgIndex !== undefined) {
+            div.dataset.msgIndex = extra.msgIndex;
+        }
+        if (extra.deleted) {
+            div.classList.add('deleted');
+        }
+
         // Role badge for assistant
         if (role === 'assistant') {
             const badge = document.createElement('div');
@@ -763,7 +771,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             // Regular text content with markdown-lite
             const textEl = document.createElement('div');
             textEl.className = 'chat-content';
-            textEl.innerHTML = renderMarkdownLite(content);
+            if (role === 'user' && extra.deleted) {
+                textEl.innerHTML = '<em>[This message has been deleted]</em>';
+            } else {
+                textEl.innerHTML = renderMarkdownLite(content);
+            }
             div.appendChild(textEl);
         }
 
@@ -775,7 +787,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         div.appendChild(timeEl);
 
         // Message-level copy button for user and assistant messages
-        if ((role === 'user' || role === 'assistant') && content) {
+        if ((role === 'user' || role === 'assistant') && content && !extra.deleted) {
             const plainText = content.replace(/<[^>]*>/g, ''); // strip HTML tags
             if (plainText.trim()) {
                 div.appendChild(createMsgCopyBtn(plainText));
@@ -808,6 +820,116 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         return (ms / 1000).toFixed(1) + 's';
     }
 
+    // ── Message Context Menu (Delete) ──────────────────────────────
+
+    let msgCtxTimer = null;
+
+    function bindMessageContextMenu(el) {
+        // Desktop right-click
+        el.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const msgIndex = el.dataset.msgIndex;
+            if (msgIndex === undefined) return;
+            showMsgContextMenu(e.clientX, e.clientY, parseInt(msgIndex), el);
+        });
+
+        // Mobile long-press
+        el.addEventListener('touchstart', (e) => {
+            const msgIndex = el.dataset.msgIndex;
+            if (msgIndex === undefined) return;
+            msgCtxTimer = setTimeout(() => {
+                const touch = e.touches[0];
+                showMsgContextMenu(touch.clientX, touch.clientY, parseInt(msgIndex), el);
+            }, 500);
+        }, { passive: true });
+        el.addEventListener('touchend', () => { clearTimeout(msgCtxTimer); });
+        el.addEventListener('touchmove', () => { clearTimeout(msgCtxTimer); });
+    }
+
+    function bindMessageContextMenus(container) {
+        container.querySelectorAll('.chat-msg.user').forEach(el => {
+            bindMessageContextMenu(el);
+        });
+    }
+
+    function showMsgContextMenu(x, y, msgIndex, msgEl) {
+        removeMsgContextMenu();
+
+        const menu = document.createElement('div');
+        menu.className = 'context-menu visible';
+        menu.id = 'msg-context-menu';
+        menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
+        menu.style.top = `${Math.min(y, window.innerHeight - 100)}px`;
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'context-menu-item danger';
+        deleteBtn.textContent = '🗑 Delete';
+        deleteBtn.addEventListener('click', () => {
+            removeMsgContextMenu();
+            deleteMessage(msgIndex, msgEl);
+        });
+        menu.appendChild(deleteBtn);
+
+        document.body.appendChild(menu);
+
+        setTimeout(() => {
+            document.addEventListener('click', dismissMsgContextMenu, { once: true });
+            document.addEventListener('touchstart', dismissMsgContextMenu, { once: true });
+        }, 10);
+    }
+
+    function dismissMsgContextMenu(e) {
+        if (!e.target.closest('#msg-context-menu')) {
+            removeMsgContextMenu();
+        }
+    }
+
+    function removeMsgContextMenu() {
+        const menu = document.getElementById('msg-context-menu');
+        if (menu) menu.remove();
+    }
+
+    async function deleteMessage(msgIndex, msgEl) {
+        if (!currentConvId) {
+            if (window.showToast) window.showToast('Cannot delete: no active conversation', 'warning');
+            return;
+        }
+
+        const msg = messages[msgIndex];
+        if (!msg || msg.role !== 'user') {
+            if (window.showToast) window.showToast('Only user messages can be deleted', 'warning');
+            return;
+        }
+
+        try {
+            const resp = await fetch(`/api/conversations/${currentConvId}/messages/${msgIndex}`, {
+                method: 'DELETE'
+            });
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed: ${resp.statusText}`);
+            }
+
+            // Update local state
+            messages[msgIndex].deleted = true;
+
+            // Update DOM — replace content with deleted notice
+            const contentEl = msgEl.querySelector('.chat-content');
+            if (contentEl) {
+                contentEl.innerHTML = '<em>[This message has been deleted]</em>';
+            }
+            msgEl.classList.add('deleted');
+
+            // Remove copy button if present
+            const copyBtn = msgEl.querySelector('.msg-copy-btn');
+            if (copyBtn) copyBtn.remove();
+
+            if (window.showToast) window.showToast('Message deleted', 'success');
+        } catch (err) {
+            if (window.showToast) window.showToast('Delete failed: ' + err.message, 'error');
+        }
+    }
+
     function renderMessages(msgs) {
         const container = document.getElementById('chat-messages');
         if (!container) return;
@@ -820,14 +942,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             return;
         }
 
-        for (const msg of messages) {
-            const el = createMessageEl(msg.role, msg.content, msg);
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            const el = createMessageEl(msg.role, msg.content, { ...msg, msgIndex: i });
             container.appendChild(el);
         }
 
         bindCopyButtons(container);
         forceScrollToBottom();
         updateContextRing();
+
+        // Bind right-click/long-press for user messages
+        bindMessageContextMenus(container);
     }
 
     function addMessage(role, content, extra) {
@@ -840,6 +966,9 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         extra = extra || {};
         extra.time = extra.time || new Date();
 
+        // Store the index this message will have in the messages array
+        extra.msgIndex = messages.length;
+
         const el = createMessageEl(role, content, extra);
         container.appendChild(el);
 
@@ -848,6 +977,11 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         bindCopyButtons(container);
         forceScrollToBottom();
         updateContextRing();
+
+        // Bind right-click/long-press for user messages
+        if (role === 'user') {
+            bindMessageContextMenu(el);
+        }
 
         return el;
     }

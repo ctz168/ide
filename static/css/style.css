@@ -1830,6 +1830,21 @@ body.panel-resizing * {
     color: rgba(0,0,0,0.5);
 }
 
+/* Deleted user messages */
+.chat-msg.user.deleted {
+    opacity: 0.5;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    border: 1px dashed var(--border);
+}
+[data-theme="claude"] .chat-msg.user.deleted {
+    background: rgba(0,0,0,0.05);
+    color: var(--text-secondary);
+}
+.chat-msg.user.deleted .chat-time {
+    color: var(--text-tertiary);
+}
+
 .chat-msg pre {
     background: var(--bg-tertiary);
     padding: 8px;

@@ -7529,6 +7529,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         user_msg = {'role': 'user', 'content': user_message, 'time': datetime.now().isoformat()}
         history.append(user_msg)
 
+    # Filter out soft-deleted messages so they are never used as context
+    history = [m for m in history if not m.get('deleted')]
+
     # Compress context if needed (with AI summarization for history-level compression)
     context, _ = _compress_context(history, max_tokens=_get_context_budget(llm_config), llm_config=llm_config)
 
@@ -8329,6 +8332,35 @@ def update_conv(conv_id):
         return jsonify({'error': 'Conversation not found'}), 404
     save_conversations(convs)
     return jsonify({'ok': True})
+
+@bp.route('/api/conversations/<conv_id>/messages/<int:msg_index>', methods=['DELETE'])
+@handle_error
+def delete_message(conv_id, msg_index):
+    """Soft-delete a message from a conversation.
+
+    Marks the message with 'deleted: true' so it is excluded from future
+    LLM context. The message stays in storage for audit/display purposes.
+    """
+    convs = load_conversations()
+    conv = None
+    for c in convs:
+        if c.get('id') == conv_id:
+            conv = c
+            break
+    if not conv:
+        return jsonify({'error': 'Conversation not found'}), 404
+
+    msgs = conv.get('messages', [])
+    if msg_index < 0 or msg_index >= len(msgs):
+        return jsonify({'error': 'Message index out of range'}), 400
+
+    # Only allow deleting user messages
+    if msgs[msg_index].get('role') != 'user':
+        return jsonify({'error': 'Only user messages can be deleted'}), 400
+
+    msgs[msg_index]['deleted'] = True
+    save_conversations(convs)
+    return jsonify({'ok': True, 'index': msg_index})
 
 @bp.route('/api/chat/send', methods=['POST'])
 @handle_error
