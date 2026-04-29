@@ -15,6 +15,7 @@ const FileManager = (() => {
     let historyIndex = -1;
     let isNavigating = false;
     let projectRoot = null;      // project root path (relative to workspace), null = no project
+    let fileClipboard = null;    // { operation: 'copy'|'cut', path: string, name: string }
 
     // ── Persistence ────────────────────────────────────────────────
     const STORAGE_KEY = 'phoneide_files';
@@ -761,6 +762,93 @@ const FileManager = (() => {
 
     // ── Context Menu ───────────────────────────────────────────────
 
+    // ── File Clipboard (Copy / Cut / Paste) ──────────────────────────
+
+    function copyFile(path) {
+        const name = path.split('/').pop();
+        fileClipboard = { operation: 'copy', path, name };
+        safeToast(`Copied: ${name}`, 'info');
+    }
+
+    function cutFile(path) {
+        const name = path.split('/').pop();
+        fileClipboard = { operation: 'cut', path, name };
+        safeToast(`Cut: ${name}`, 'info');
+    }
+
+    async function pasteFile(targetDir) {
+        if (!fileClipboard) {
+            safeToast('Nothing to paste', 'warning');
+            return;
+        }
+
+        const srcPath = fileClipboard.path;
+        const srcName = fileClipboard.name;
+        const op = fileClipboard.operation;
+
+        // Determine destination path
+        let dstRel;
+        if (targetDir) {
+            dstRel = (targetDir ? targetDir.replace(/^\/workspace\/?/, '') : '') + '/' + srcName;
+        } else {
+            // Paste into current directory
+            const dir = currentPath ? currentPath.replace(/^\/workspace\/?/, '') : '';
+            dstRel = dir ? dir + '/' + srcName : srcName;
+        }
+
+        const srcRel = srcPath.replace(/^\/workspace\/?/, '');
+
+        // If source and destination are the same, do nothing
+        if (srcRel === dstRel) {
+            safeToast('Source and destination are the same', 'warning');
+            fileClipboard = null;
+            return;
+        }
+
+        const apiEndpoint = op === 'copy' ? '/api/files/copy' : '/api/files/move';
+        const actionLabel = op === 'copy' ? 'Copied' : 'Moved';
+
+        try {
+            const resp = await fetch(apiEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ src: srcRel, dst: dstRel })
+            });
+
+            if (!resp.ok) {
+                const errData = await resp.json().catch(() => ({}));
+                throw new Error(errData.error || `Failed to ${op}: ${resp.statusText}`);
+            }
+
+            const data = await resp.json();
+            const finalDst = data.dst || dstRel;
+            safeToast(`${actionLabel}: ${srcName}`, 'success');
+
+            // If cut, clear clipboard (it's a one-time operation)
+            if (op === 'cut') {
+                // Update cache if the moved file was open
+                if (fileCache[srcPath]) {
+                    fileCache[finalDst] = fileCache[srcPath];
+                    delete fileCache[srcPath];
+                }
+                if (currentFilePath === srcPath) {
+                    currentFilePath = finalDst;
+                    currentFileName = srcName;
+                }
+                fileClipboard = null;
+            }
+
+            // Refresh file list
+            await loadFileList(currentPath);
+        } catch (err) {
+            safeToast(`Error: ${err.message}`, 'error');
+        }
+    }
+
+    function hasClipboard() {
+        return fileClipboard !== null;
+    }
+
     /**
      * Show a context menu for a file/folder
      */
@@ -771,18 +859,22 @@ const FileManager = (() => {
         const menu = document.createElement('div');
         menu.className = 'context-menu visible';
         menu.style.left = `${Math.min(x, window.innerWidth - 200)}px`;
-        menu.style.top = `${Math.min(y, window.innerHeight - 250)}px`;
+        menu.style.top = `${Math.min(y, window.innerHeight - 350)}px`;
 
         const items = [];
 
         if (type === 'file') {
             items.push({ label: 'Open', action: () => openFile(path) });
             items.push({ label: '📥 Download', action: () => downloadFile(path) });
+            items.push({ label: 'Copy', action: () => copyFile(path) });
+            items.push({ label: 'Cut', action: () => cutFile(path) });
             items.push({ label: 'Rename', action: () => renameFile(path) });
             items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
         } else {
             items.push({ label: 'Open Folder', action: () => openFolder(path) });
             items.push({ label: '📥 Download ZIP', action: () => downloadFile(path) });
+            items.push({ label: 'Copy', action: () => copyFile(path) });
+            items.push({ label: 'Cut', action: () => cutFile(path) });
             items.push({ label: 'Rename', action: () => renameFile(path) });
             items.push({ label: 'Delete', action: () => deleteFile(path), cls: 'danger' });
         }
@@ -803,6 +895,14 @@ const FileManager = (() => {
 
         items.push({ label: 'New File', action: () => createFileIn(path) });
         items.push({ label: 'New Folder', action: () => createFolderIn(path) });
+
+        // Show Paste option if clipboard has content and target is a directory
+        if (hasClipboard()) {
+            const pasteTarget = type === 'directory' ? path : parentPath(path);
+            const clipName = fileClipboard.name;
+            const opLabel = fileClipboard.operation === 'cut' ? 'Move' : 'Paste';
+            items.push({ label: `${opLabel}: ${clipName}`, action: () => pasteFile(pasteTarget) });
+        }
 
         for (const item of items) {
             const btn = document.createElement('button');
@@ -1054,6 +1154,9 @@ const FileManager = (() => {
         createFolder,
         deleteFile,
         renameFile,
+        copyFile,
+        cutFile,
+        pasteFile,
         openFolder,
         renderFileTree,
         navigateBack,

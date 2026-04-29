@@ -1045,7 +1045,100 @@ def rename_file():
     os.makedirs(os.path.dirname(new_target), exist_ok=True)
     os.rename(old_target, new_target)
 
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'new_path': new_path})
+
+
+@bp.route('/api/files/copy', methods=['POST'])
+@handle_error
+def copy_file():
+    """Copy a file or directory (recursively) to a destination path."""
+    data = request.json
+    src = data.get('src', '')
+    dst = data.get('dst', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    src_target = os.path.realpath(os.path.join(base, src))
+    dst_target = os.path.realpath(os.path.join(base, dst))
+
+    if not src_target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied (source)'}), 403
+    if not dst_target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied (destination)'}), 403
+
+    if not os.path.exists(src_target):
+        return jsonify({'error': 'Source not found'}), 404
+
+    os.makedirs(os.path.dirname(dst_target), exist_ok=True)
+
+    # Auto-rename if destination already exists
+    final_dst = dst_target
+    if os.path.exists(dst_target):
+        base_name, ext = os.path.splitext(os.path.basename(dst_target))
+        parent = os.path.dirname(dst_target)
+        counter = 1
+        while os.path.exists(final_dst):
+            candidate = os.path.join(parent, f"{base_name} ({counter}){ext}") if ext else os.path.join(parent, f"{base_name} ({counter})")
+            if not os.path.exists(candidate):
+                final_dst = candidate
+                break
+            counter += 1
+
+    if os.path.isdir(src_target):
+        shutil.copytree(src_target, final_dst)
+    else:
+        shutil.copy2(src_target, final_dst)
+
+    final_rel = os.path.relpath(final_dst, os.path.realpath(base))
+    return jsonify({'ok': True, 'dst': final_rel})
+
+
+@bp.route('/api/files/move', methods=['POST'])
+@handle_error
+def move_file():
+    """Move (cut + paste) a file or directory to a destination path."""
+    data = request.json
+    src = data.get('src', '')
+    dst = data.get('dst', '')
+    config = load_config()
+    base = config.get('workspace', WORKSPACE)
+
+    src_target = os.path.realpath(os.path.join(base, src))
+    dst_target = os.path.realpath(os.path.join(base, dst))
+
+    if not src_target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied (source)'}), 403
+    if not dst_target.startswith(os.path.realpath(base)):
+        return jsonify({'error': 'Access denied (destination)'}), 403
+
+    if not os.path.exists(src_target):
+        return jsonify({'error': 'Source not found'}), 404
+
+    # Prevent moving a directory into itself
+    if os.path.isdir(src_target) and dst_target.startswith(src_target + os.sep):
+        return jsonify({'error': 'Cannot move directory into itself'}), 400
+
+    os.makedirs(os.path.dirname(dst_target), exist_ok=True)
+
+    # Auto-rename if destination already exists
+    final_dst = dst_target
+    if os.path.exists(dst_target) and os.path.realpath(dst_target) != os.path.realpath(src_target):
+        base_name, ext = os.path.splitext(os.path.basename(dst_target))
+        parent = os.path.dirname(dst_target)
+        counter = 1
+        while os.path.exists(final_dst):
+            candidate = os.path.join(parent, f"{base_name} ({counter}){ext}") if ext else os.path.join(parent, f"{base_name} ({counter})")
+            if not os.path.exists(candidate):
+                final_dst = candidate
+                break
+            counter += 1
+    else:
+        final_dst = dst_target
+
+    shutil.move(src_target, final_dst)
+
+    final_rel = os.path.relpath(final_dst, os.path.realpath(base))
+    return jsonify({'ok': True, 'dst': final_rel})
 
 
 @bp.route('/api/files/open_folder', methods=['POST'])
