@@ -904,6 +904,28 @@ const FileManager = (() => {
             items.push({ label: `${opLabel}: ${clipName}`, action: () => pasteFile(pasteTarget) });
         }
 
+        // Copy relative path name to clipboard
+        const _copyPath = path;
+        items.push({
+            label: 'Copy Name',
+            action: () => {
+                navigator.clipboard.writeText(_copyPath).then(() => {
+                    if (window.showToast) window.showToast('已复制: ' + _copyPath, 'success');
+                }).catch(() => {
+                    // Fallback for older browsers / non-HTTPS
+                    const ta = document.createElement('textarea');
+                    ta.value = _copyPath;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    if (window.showToast) window.showToast('已复制: ' + _copyPath, 'success');
+                });
+            }
+        });
+
         for (const item of items) {
             const btn = document.createElement('button');
             btn.className = `context-menu-item${item.cls ? ' ' + item.cls : ''}`;
