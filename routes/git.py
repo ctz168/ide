@@ -689,10 +689,18 @@ def git_merge_complete():
     if not r['ok']:
         return jsonify({'ok': False, 'error': f'git add failed: {r["stderr"]}'})
 
-    # Commit with default merge message
+    # Commit with default merge message (from .git/MERGE_MSG)
     r = git_cmd('commit --no-edit', cwd=cwd)
     if not r['ok']:
-        return jsonify({'ok': False, 'error': f'git commit failed: {r["stderr"]}', 'stderr': r['stderr']})
+        stderr = r.get('stderr', '')
+        # Fallback: if MERGE_MSG is missing/empty, provide an explicit message
+        if 'empty commit message' in stderr or 'Aborting' in stderr:
+            r2 = git_cmd('commit -m "Merge remote changes"', cwd=cwd)
+            if not r2['ok']:
+                return jsonify({'ok': False, 'error': f'git commit failed: {r2["stderr"]}', 'stderr': r2['stderr']})
+            r = r2
+        else:
+            return jsonify({'ok': False, 'error': f'git commit failed: {stderr}', 'stderr': stderr})
 
     return jsonify({'ok': True, 'stdout': r['stdout'], 'stderr': r['stderr']})
 
