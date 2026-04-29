@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import fnmatch
 import zipfile
 from pathlib import Path
@@ -1087,11 +1088,21 @@ def create_file():
     return jsonify({'ok': True, 'path': path})
 
 
+def _force_remove_readonly(func, path, exc_info):
+    """Error handler for shutil.rmtree on Windows.
+
+    On Windows, .git directories contain read-only files that cause
+    PermissionError during deletion. This handler clears the read-only
+    bit and retries the removal.
+    """
+    # Try to clear the read-only attribute
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 @bp.route('/api/files/delete', methods=['POST'])
 @handle_error
 def delete_file():
-    import shutil
-
     data = request.json
     path = data.get('path', '')
     config = load_config()
@@ -1105,9 +1116,14 @@ def delete_file():
         return jsonify({'error': 'Not found'}), 404
 
     if os.path.isdir(target):
-        shutil.rmtree(target)
+        shutil.rmtree(target, onerror=_force_remove_readonly)
     else:
-        os.remove(target)
+        try:
+            os.remove(target)
+        except PermissionError:
+            # Clear read-only attribute and retry (Windows)
+            os.chmod(target, stat.S_IWRITE)
+            os.remove(target)
 
     return jsonify({'ok': True})
 
