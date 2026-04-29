@@ -2396,7 +2396,7 @@ const EditorManager = (() => {
 
     function refreshBrowserPreview() {
         if (!currentFilePath) return;
-        // Auto-save first so the preview shows latest content
+        // Auto-save first so the file on disk is up to date
         if (editor && !editor.isClean()) {
             if (window.EditorManager && window.EditorManager.saveCurrentFile) {
                 window.EditorManager.saveCurrentFile();
@@ -2415,22 +2415,22 @@ const EditorManager = (() => {
             _browserPreviewActive = false;
             return;
         }
-        // Reload the preview URL
+        // For Markdown: send content via postMessage for in-place re-render
+        // (no page reload → preserves scroll position and scroll sync)
+        if (isMarkdownFile() && editor && iframe.contentWindow) {
+            try {
+                iframe.contentWindow.postMessage({
+                    type: 'updateContent',
+                    md: editor.getValue()
+                }, '*');
+            } catch(e) {}
+            return;
+        }
+        // For HTML/other files: fall back to full iframe reload
         let relPath = window.FileManager ? window.FileManager.currentFilePath : currentFilePath;
         relPath = (relPath || '').replace(/^\/workspace\/?/, '');
-        let previewUrl = '/preview/' + relPath;
-        // Pass anchor so the preview scrolls to the current editor position
-        if (isMarkdownFile() && editor) {
-            _updateVisibleLines();
-            var anchorText = _getAnchorText();
-            if (anchorText) {
-                var anchor = btoa(unescape(encodeURIComponent(anchorText)));
-                previewUrl += '?anchor=' + encodeURIComponent(anchor);
-            }
-        }
-        // Force reload even if URL is identical to previous
         iframe.src = '';
-        iframe.src = previewUrl;
+        iframe.src = '/preview/' + relPath;
     }
 
     function previewInBrowser() {

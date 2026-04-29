@@ -904,8 +904,98 @@ input[type="checkbox"] {{ margin-right: 6px; accent-color: var(--link); }}
       // Parent wants to know our current position (e.g. when closing panel)
       var sourceLine = _getFirstVisibleSourceLine();
       window.parent.postMessage({{ type: 'currentScrollSourceLine', sourceLine: sourceLine }}, '*');
+    }} else if (event.data.type === 'updateContent') {{
+      // Parent editor edited MD → re-render content in-place (no page reload)
+      _reRenderContent(event.data.md);
     }}
   }});
+
+  /**
+   * Re-render the markdown content in-place without reloading the page.
+   * Preserves scroll position and scroll sync state.
+   */
+  function _reRenderContent(newMdRaw) {{
+    if (typeof newMdRaw !== 'string') return;
+    originalContent = newMdRaw;
+    var mdRaw = newMdRaw;
+
+    // ── Step 1: Protect code blocks from math regex ──
+    codeStore = [];
+    codeIdx = 0;
+    mdRaw = mdRaw.replace(/`{{3}}[\\s\\S]*?`{{3}}/g, storeCode);
+    mdRaw = mdRaw.replace(/`[^`]+`/g, storeCode);
+
+    // ── Step 2: Protect math expressions from marked ──
+    mathStore = [];
+    mathIdx = 0;
+    mdRaw = mdRaw.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, function(m) {{ return storeMath(m); }});
+    mdRaw = mdRaw.replace(/\\$([^\\$\\n]+?)\\$/g, function(m) {{ return storeMath(m); }});
+    mdRaw = mdRaw.replace(/\\\\\\(([\\s\\S]*?)\\\\\\)/g, function(m) {{ return storeMath(m); }});
+    mdRaw = mdRaw.replace(/\\\\\\[([\\s\\S]*?)\\\\\\]/g, function(m) {{ return storeMath(m); }});
+
+    // ── Step 3: Restore code blocks ──
+    for (var ci = 0; ci < codeStore.length; ci++) {{
+      mdRaw = mdRaw.replace(codeStore[ci].id, codeStore[ci].code);
+    }}
+
+    // ── Step 4: Render markdown ──
+    var html = marked.parse(mdRaw);
+
+    // ── Step 5: Restore math expressions ──
+    for (var i = 0; i < mathStore.length; i++) {{
+      html = html.replace(mathStore[i].id, mathStore[i].math);
+    }}
+
+    var contentEl = document.getElementById('content');
+    if (!contentEl) return;
+
+    // Save current scroll position
+    var scrollTop = window.scrollY || document.documentElement.scrollTop;
+
+    contentEl.innerHTML = html;
+
+    // ── Step 6: Re-inject data-source-line attributes ──
+    sourceLines = originalContent.split('\\n');
+    lastAssignedLine = -1;
+    var blockEls = document.querySelectorAll(
+      '#content > h1, #content > h2, #content > h3, #content > h4, #content > h5, #content > h6, ' +
+      '#content > p, #content > pre, #content > blockquote, #content > ul, #content > ol, ' +
+      '#content > table, #content > hr'
+    );
+    for (var bi = 0; bi < blockEls.length; bi++) {{
+      var el = blockEls[bi];
+      var text = (el.textContent || '').trim();
+      var matchText = text.substring(0, 80);
+      if (el.tagName === 'UL' || el.tagName === 'OL') {{
+        var items = el.querySelectorAll(':scope > li');
+        for (var j = 0; j < items.length; j++) {{
+          var liText = (items[j].textContent || '').trim().substring(0, 80);
+          var liLine = findLineForRenderedText(liText);
+          if (liLine >= 0) {{ items[j].setAttribute('data-source-line', liLine); lastAssignedLine = liLine; }}
+          else {{ items[j].setAttribute('data-source-line', lastAssignedLine + 1); lastAssignedLine++; }}
+        }}
+        el.setAttribute('data-source-line', lastAssignedLine);
+        continue;
+      }}
+      var line = findLineForRenderedText(matchText);
+      if (line >= 0) {{ el.setAttribute('data-source-line', line); lastAssignedLine = line; }}
+      else {{ el.setAttribute('data-source-line', lastAssignedLine + 1); lastAssignedLine++; }}
+    }}
+
+    // ── Step 7: Re-render math ──
+    renderMathInElement(contentEl, {{
+      delimiters: [
+        {{left: "$$", right: "$$", display: true}},
+        {{left: "$", right: "$", display: false}},
+        {{left: "\\\\(", right: "\\\\)", display: false}},
+        {{left: "\\\\[", right: "\\\\]", display: true}}
+      ],
+      throwOnError: false
+    }});
+
+    // Restore scroll position
+    window.scrollTo(0, scrollTop);
+  }}
 }})();
 </script>
 </body></html>'''
