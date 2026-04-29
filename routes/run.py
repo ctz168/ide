@@ -265,12 +265,20 @@ def run_npm_script():
     except Exception:
         pass
 
+    # Also scan project config files for ports
+    detected_ports.update(_scan_project_for_ports(base))
+
     if detected_ports:
         killed_ports = _kill_port_occupants(detected_ports)
         if killed_ports:
-            time.sleep(0.3)
+            time.sleep(0.5)
 
     proc_id = run_process(cmd, cwd=base)
+
+    # Monitor for port-in-use errors and auto-retry
+    if detected_ports:
+        _schedule_port_error_retry(proc_id, cmd, base, detected_ports)
+
     result = {'ok': True, 'proc_id': proc_id, 'cwd': base, 'cmd': cmd}
     if detected_ports:
         result['detected_ports'] = sorted(detected_ports)
@@ -280,28 +288,91 @@ def run_npm_script():
 
 
 def _extract_ports_from_code(code_text):
-    """Extract port numbers from Python code.
+    """Extract port numbers from source code.
     Detects patterns like:
       port=5000, port = 8080, app.run(port=3000)
       .listen(3000), HOST:5000, 0.0.0.0:8000
       socket.bind(('0.0.0.0', 9000))
+      { port: 3000 }, ("port", 3000), PORT=5000
+      vite.config, next.config, webpack, etc.
     """
     ports = set()
     # Pattern 1: port=NNNN or port = NNNN (most common: Flask, Django, etc.)
-    for m in re.finditer(r'port\s*=\s*(\d{2,5})', code_text):
+    for m in re.finditer(r'port\s*=\s*(\d{2,5})', code_text, re.IGNORECASE):
         port = int(m.group(1))
         if 10 <= port <= 65535:
             ports.add(port)
     # Pattern 2: host:port pattern like '0.0.0.0:8000' or 'localhost:5000'
-    for m in re.finditer(r'(?:\d+\.\d+\.\d+\.\d+|localhost):(\d{2,5})', code_text):
+    for m in re.finditer(r'(?:\d+\.\d+\.\d+\.\d+|localhost|127\.0\.0\.1):(\d{2,5})', code_text):
         port = int(m.group(1))
         if 10 <= port <= 65535:
             ports.add(port)
-    # Pattern 3: .listen(NNNN) (Node.js/Express style)
-    for m in re.finditer(r'\.listen\s*\(\s*(\d{2,5})', code_text):
+    # Pattern 3: .listen(NNNN) or .listen({ port: NNNN }) (Node.js/Express style)
+    for m in re.finditer(r'\.listen\s*\(\s*(?:\{[^}]*?port\s*:\s*)?(\d{2,5})', code_text):
         port = int(m.group(1))
         if 10 <= port <= 65535:
             ports.add(port)
+    # Pattern 4: ("port", NNNN) or ('port', NNNN) — tuple/dict style
+    for m in re.finditer(r'[\'"]port[\'"\s,]+(\d{2,5})', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    # Pattern 5: { port: NNNN } or {port: NNNN} — JS object style
+    for m in re.finditer(r'\{\s*port\s*:\s*(\d{2,5})\s*\}', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    # Pattern 6: PORT = NNNN (uppercase env var assignment)
+    for m in re.finditer(r'PORT\s*=\s*(\d{2,5})', code_text):
+        port = int(m.group(1))
+        if 10 <= port <= 65535:
+            ports.add(port)
+    return ports
+
+
+def _scan_project_for_ports(base_dir):
+    """Scan common project config files for port numbers.
+    Checks: .env, .env.local, .env.development, vite.config.*, next.config.*,
+    webpack.config.*, docker-compose.*, Dockerfile, package.json scripts, etc.
+    """
+    ports = set()
+    config_files = [
+        '.env', '.env.local', '.env.development', '.env.dev',
+        'vite.config.js', 'vite.config.ts', 'vite.config.mjs',
+        'next.config.js', 'next.config.mjs', 'next.config.ts',
+        'webpack.config.js', 'webpack.config.ts',
+        'docker-compose.yml', 'docker-compose.yaml',
+        'Dockerfile',
+        '.flaskenv',
+        'config.py', 'settings.py', 'config.json', 'config.yaml', 'config.yml',
+        'application.yml', 'application.properties',
+    ]
+    for fname in config_files:
+        fpath = os.path.join(base_dir, fname)
+        if os.path.isfile(fpath):
+            try:
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+                ports.update(_extract_ports_from_code(text))
+            except Exception:
+                pass
+
+    # Also check all npm scripts in package.json for port references
+    pkg_path = os.path.join(base_dir, 'package.json')
+    if os.path.isfile(pkg_path):
+        try:
+            with open(pkg_path, 'r', encoding='utf-8') as f:
+                pkg = json.load(f)
+            for script_cmd in pkg.get('scripts', {}).values():
+                ports.update(_extract_ports_from_code(script_cmd))
+                # Also check --port and -p flags in script commands
+                for m in re.finditer(r'(?:--port|-p)\s+(\d{2,5})', script_cmd):
+                    port = int(m.group(1))
+                    if 10 <= port <= 65535:
+                        ports.add(port)
+        except Exception:
+            pass
+
     return ports
 
 
@@ -350,6 +421,71 @@ def _kill_port_occupants(ports):
                 stop_process(proc_id)
                 killed.append({'port': port, 'managed_proc': proc_id})
     return killed
+
+
+# Track which procs we've already retried to avoid infinite loops
+_port_retry_tried = set()
+
+
+def _schedule_port_error_retry(proc_id, cmd, cwd, detected_ports):
+    """Monitor a process output for port-in-use errors and auto-restart.
+
+    After spawning, waits a few seconds then checks if the process died
+    with an EADDRINUSE / address-already-in-use error. If so, kills
+    whatever is on that port and re-launches the same command.
+    """
+    import threading
+
+    def _check():
+        # Wait for the process to produce output (up to 5s)
+        time.sleep(3)
+        if proc_id not in running_processes:
+            return
+        info = running_processes.get(proc_id, {})
+        if info.get('running'):
+            return  # Process is fine, no error
+
+        # Process has exited — check if it's a port error
+        output_lines = process_outputs.get(proc_id, [])
+        output_text = '\n'.join(output_lines).lower()
+        port_error_keywords = [
+            'eaddrinuse', 'address already in use',
+            'port is already in use', 'only one usage of each socket address',
+            'errno 98', 'errno 10048', 'error: listen econnrefused',
+            'bind: address already in use',
+        ]
+        has_port_error = any(kw in output_text for kw in port_error_keywords)
+
+        if not has_port_error:
+            return  # Different error, don't retry
+
+        # Avoid infinite retry
+        retry_key = f"{proc_id}:{','.join(str(p) for p in sorted(detected_ports))}"
+        if retry_key in _port_retry_tried:
+            return
+        _port_retry_tried.add(retry_key)
+
+        # Find which specific port from the error message
+        retry_port = None
+        for port in detected_ports:
+            if str(port) in output_text:
+                retry_port = port
+                break
+        if not retry_port and detected_ports:
+            retry_port = list(detected_ports)[0]
+
+        # Kill the port occupant
+        if retry_port:
+            _kill_port_occupants({retry_port})
+            time.sleep(0.5)
+
+        # Re-launch the same command
+        new_proc_id = run_process(cmd, cwd=cwd)
+        if new_proc_id:
+            print(f'[run] Auto-restarted proc {new_proc_id} after port {retry_port} conflict (original: {proc_id})')
+
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
 
 
 @bp.route('/api/run/execute', methods=['POST'])
@@ -408,13 +544,21 @@ def execute_code():
         if 10 <= port <= 65535:
             detected_ports.add(port)
 
+    # Also scan project config files for ports
+    detected_ports.update(_scan_project_for_ports(base))
+
     if detected_ports:
         killed_ports = _kill_port_occupants(detected_ports)
-        # Small delay to let OS release the port
-        if killed_ports:
-            time.sleep(0.3)
+        # Delay to let OS fully release the port
+        time.sleep(0.5)
 
     proc_id = run_process(cmd, cwd=base)
+
+    # Monitor output for EADDRINUSE / address already in use errors
+    # If detected, kill the occupying process and auto-restart
+    if detected_ports:
+        _schedule_port_error_retry(proc_id, cmd, base, detected_ports)
+
     result = {'ok': True, 'proc_id': proc_id, 'no_venv': no_venv, 'cwd': base}
     if detected_ports:
         result['detected_ports'] = sorted(detected_ports)
@@ -450,8 +594,27 @@ def execute_shell():
     else:
         cmd = command  # shell=True already uses bash
 
+    # Auto-detect and kill port occupants from the command
+    killed_ports = []
+    detected_ports = _extract_ports_from_code(command)
+    detected_ports.update(_scan_project_for_ports(base))
+
+    if detected_ports:
+        killed_ports = _kill_port_occupants(detected_ports)
+        if killed_ports:
+            time.sleep(0.5)
+
     proc_id = run_process(cmd, cwd=base)
-    return jsonify({'ok': True, 'proc_id': proc_id, 'cwd': base})
+
+    if detected_ports:
+        _schedule_port_error_retry(proc_id, cmd, base, detected_ports)
+
+    result = {'ok': True, 'proc_id': proc_id, 'cwd': base}
+    if detected_ports:
+        result['detected_ports'] = sorted(detected_ports)
+    if killed_ports:
+        result['killed_ports'] = killed_ports
+    return jsonify(result)
 
 
 @bp.route('/api/run/stop', methods=['POST'])
