@@ -7580,10 +7580,12 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                 yield f"data: {json.dumps({'type': 'thinking', 'content': _phoneide_msg})}\n\n"
                 log_write(f'[phoneide] SSE: .phoneide/ loaded from {_phoneide_check}: {_md_files}')
             else:
-                yield f"data: {json.dumps({'type': 'thinking', 'content': '\u26a0\ufe0f .phoneide/ exists but has no content files'})}\n\n"
+                _phoneide_warn = '\u26a0\ufe0f .phoneide/ exists but has no content files'
+                yield f"data: {json.dumps({'type': 'thinking', 'content': _phoneide_warn})}\n\n"
                 log_write(f'[phoneide] SSE: .phoneide/ empty at {_phoneide_check}')
         else:
-            yield f"data: {json.dumps({'type': 'thinking', 'content': '\u26a0\ufe0f .phoneide/ not found — no project knowledge loaded'})}\n\n"
+            _phoneide_notfound = '\u26a0\ufe0f .phoneide/ not found \u2014 no project knowledge loaded'
+            yield f"data: {json.dumps({'type': 'thinking', 'content': _phoneide_notfound})}\n\n"
             log_write(f'[phoneide] SSE: .phoneide/ not found, checked {_pdir_check} and {os.path.dirname(SERVER_DIR)}')
     except Exception as _e:
         log_write(f'[phoneide] SSE check error: {_e}')
