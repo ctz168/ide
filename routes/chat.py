@@ -7575,7 +7575,9 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         if os.path.isdir(_phoneide_check):
             _md_files = [f for f in ['rules.md', 'architecture.md', 'conventions.md'] if os.path.isfile(os.path.join(_phoneide_check, f))]
             if _md_files:
-                yield f"data: {json.dumps({'type': 'thinking', 'content': f'\U0001f4c2 .phoneide/ loaded: {', '.join(_md_files)}'})}\n\n"
+                _phoneide_icon = '\U0001f4c2'
+                _phoneide_msg = _phoneide_icon + ' .phoneide/ loaded: ' + ', '.join(_md_files)
+                yield f"data: {json.dumps({'type': 'thinking', 'content': _phoneide_msg})}\n\n"
                 log_write(f'[phoneide] SSE: .phoneide/ loaded from {_phoneide_check}: {_md_files}')
             else:
                 yield f"data: {json.dumps({'type': 'thinking', 'content': '\u26a0\ufe0f .phoneide/ exists but has no content files'})}\n\n"
