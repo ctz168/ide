@@ -197,20 +197,56 @@ const TerminalManager = (() => {
             clearTimeout(_scrollPauseTimer);
         }, { passive: true });
 
-        // On touchend, check if user scrolled to bottom
+        // On touchend, check if user has text selected or scrolled to bottom
         container.addEventListener('touchend', () => {
-            _userScrolling = false;
-            // If already at bottom, resume auto-scroll immediately
-            const threshold = 50;
-            const atBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < threshold;
-            if (atBottom) {
-                _autoScrollPaused = false;
-            } else {
-                // Resume after a delay
-                clearTimeout(_scrollPauseTimer);
-                _scrollPauseTimer = setTimeout(() => {
+            // If user has selected text, keep _userScrolling true longer
+            // to prevent batch flush from breaking the selection.
+            // Use a short delay to let the selection settle after touchend.
+            setTimeout(() => {
+                const sel = window.getSelection();
+                if (sel && sel.toString().length > 0) {
+                    // User is selecting text — keep paused, don't flush yet
+                    return;
+                }
+                _userScrolling = false;
+                // If already at bottom, resume auto-scroll immediately
+                const threshold = 50;
+                const atBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < threshold;
+                if (atBottom) {
                     _autoScrollPaused = false;
-                }, 3000);
+                } else {
+                    // Resume after a delay
+                    clearTimeout(_scrollPauseTimer);
+                    _scrollPauseTimer = setTimeout(() => {
+                        _autoScrollPaused = false;
+                    }, 3000);
+                }
+            }, 300); // 300ms delay to detect long-press selection
+        }, { passive: true });
+
+        // On mouseup (desktop), check if user has selected text
+        container.addEventListener('mouseup', () => {
+            const sel = window.getSelection();
+            if (sel && sel.toString().length > 0) {
+                // User selected text — pause auto-scroll to keep selection
+                _autoScrollPaused = true;
+                _userScrolling = true;
+                clearTimeout(_scrollPauseTimer);
+                // Resume after selection is cleared (polled)
+                const checkSel = () => {
+                    const s = window.getSelection();
+                    if (!s || s.toString().length === 0 || s.isCollapsed) {
+                        _userScrolling = false;
+                        _autoScrollPaused = false;
+                        // Flush any pending output
+                        if (_pendingAppends.length > 0) {
+                            _flushPendingAppends();
+                        }
+                    } else {
+                        setTimeout(checkSel, 500);
+                    }
+                };
+                setTimeout(checkSel, 1000);
             }
         }, { passive: true });
     }
@@ -912,6 +948,15 @@ const TerminalManager = (() => {
     function cleanupProcess() {
         closeEventSource();
         stopPolling();
+        // Flush any pending batched output before finishing
+        if (_pendingAppends.length > 0) {
+            _userScrolling = false;  // force flush
+            _flushPendingAppends();
+            if (_appendBatchTimer) {
+                cancelAnimationFrame(_appendBatchTimer);
+                _appendBatchTimer = null;
+            }
+        }
         finishCmdBlock();
         clearPersistedProcId();
         currentProcId = null;
@@ -1112,11 +1157,9 @@ const TerminalManager = (() => {
      * @param {string} [type='stdout'] - type class: stdout, stderr, error, status, info, success, system
      */
     function appendOutput(text, type) {
-        const container = document.getElementById('output-content');
-        if (!container) return;
-
         type = type || 'stdout';
 
+        // Pre-build the line element (lightweight — no DOM insertion yet)
         const line = document.createElement('div');
         line.className = `output-line ${type}`;
 
@@ -1131,9 +1174,52 @@ const TerminalManager = (() => {
         const textSpan = document.createTextNode(text || '');
         line.appendChild(textSpan);
 
-        // Append to current command block if exists, otherwise directly to container
+        // ── Batch DOM updates ──
+        // Instead of inserting into DOM immediately on every call (which causes
+        // layout thrashing and breaks text selection on mobile when output is
+        // streaming fast), we queue the line and flush in a single rAF frame.
+        _pendingAppends.push(line);
+
+        if (!_appendBatchTimer) {
+            _appendBatchTimer = requestAnimationFrame(() => {
+                _appendBatchTimer = null;
+                _flushPendingAppends();
+            });
+        }
+    }
+
+    /**
+     * Flush all pending output lines into the DOM in one batch.
+     * This minimizes layout reflows and preserves text selection.
+     */
+    function _flushPendingAppends() {
+        if (_pendingAppends.length === 0) return;
+
+        const container = document.getElementById('output-content');
+        if (!container) {
+            _pendingAppends = [];
+            return;
+        }
+
+        // If user is actively touching/scrolling, defer flush to avoid
+        // breaking text selection on mobile. Retry after a short delay.
+        if (_userScrolling) {
+            _appendBatchTimer = requestAnimationFrame(() => {
+                _appendBatchTimer = null;
+                _flushPendingAppends();
+            });
+            return;
+        }
+
         const target = currentCmdBlock || container;
-        target.appendChild(line);
+
+        // Batch-insert all pending lines using a DocumentFragment
+        const fragment = document.createDocumentFragment();
+        for (const line of _pendingAppends) {
+            fragment.appendChild(line);
+        }
+        target.appendChild(fragment);
+        _pendingAppends = [];
 
         // Trim if too many lines (debounced)
         if (!_trimScheduled) {
