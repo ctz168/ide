@@ -3008,6 +3008,7 @@ button, .file-item, .search-result-item, .git-change-item {
 .diff-content {
     flex: 1;
     overflow-y: auto;
+    overflow-x: auto;
     padding: 4px 0;
     font-family: var(--font-mono);
     font-size: 11px;
@@ -3020,6 +3021,29 @@ button, .file-item, .search-result-item, .git-change-item {
     padding: 0 8px;
     min-height: 18px;
     white-space: pre;
+}
+
+/* Line number columns in diff view */
+.diff-lnum {
+    width: 40px;
+    flex-shrink: 0;
+    text-align: right;
+    padding-right: 6px;
+    color: var(--text-muted);
+    user-select: none;
+    font-size: 10px;
+    opacity: 0.7;
+    box-sizing: border-box;
+}
+
+.diff-lnum-old {
+    border-right: 1px solid var(--border);
+    margin-right: 6px;
+}
+
+.diff-lnum-new {
+    border-right: 1px solid var(--border);
+    margin-right: 6px;
 }
 
 .diff-line .diff-sign {
@@ -3087,6 +3111,10 @@ button, .file-item, .search-result-item, .git-change-item {
 [data-theme="claude"] .diff-line.diff-meta {
     color: #C4621A;
     background: rgba(196, 98, 26, 0.08);
+}
+
+[data-theme="claude"] .diff-lnum {
+    opacity: 0.5;
 }
 
 /* Diff file sections (grouped by file) */
@@ -3162,6 +3190,127 @@ button, .file-item, .search-result-item, .git-change-item {
     font-size: 10px;
     padding: 2px 8px;
     min-height: 14px;
+}
+
+/* ==================== Diff View Mobile Responsive ==================== */
+@media (max-width: 768px) {
+    .diff-overlay {
+        padding: 0;
+        align-items: stretch;
+        justify-content: stretch;
+    }
+
+    .diff-container {
+        max-width: 100vw;
+        max-height: 100vh;
+        height: 100vh;
+        width: 100vw;
+        border-radius: 0;
+        border: none;
+    }
+
+    .diff-header {
+        padding: 10px 12px;
+    }
+
+    .diff-title {
+        font-size: 13px;
+        max-width: 70vw;
+    }
+
+    .diff-close-btn {
+        width: 36px;
+        height: 36px;
+        font-size: 18px;
+    }
+
+    .diff-content {
+        font-size: 11px;
+        line-height: 1.6;
+        /* Allow horizontal scroll for long lines on mobile */
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Compact line numbers on tablets */
+    .diff-lnum {
+        width: 32px;
+        padding-right: 4px;
+        font-size: 9px;
+    }
+
+    .diff-lnum-old,
+    .diff-lnum-new {
+        margin-right: 4px;
+    }
+
+    .diff-line {
+        padding: 0 4px;
+        min-height: 20px;
+    }
+
+    .diff-file-header {
+        padding: 8px 10px;
+    }
+
+    .diff-file-path {
+        font-size: 11px;
+        max-width: 60vw;
+    }
+
+    .diff-hunk-rollback-btn {
+        height: 30px;
+        padding: 0 10px;
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 480px) {
+    /* On very small screens, hide line numbers to save space */
+    .diff-lnum {
+        width: 0;
+        padding: 0;
+        margin: 0;
+        border: none;
+        overflow: hidden;
+        display: none;
+    }
+
+    .diff-content {
+        font-size: 10px;
+    }
+
+    .diff-line {
+        padding: 0 4px;
+        min-height: 18px;
+    }
+
+    .diff-line .diff-sign {
+        width: 16px;
+        font-size: 10px;
+    }
+
+    .diff-file-path {
+        font-size: 10px;
+    }
+
+    .diff-hunk-rollback-btn {
+        height: 28px;
+        padding: 0 8px;
+        font-size: 10px;
+    }
+
+    .diff-hunk {
+        font-size: 9px;
+    }
+}
+
+/* Landscape phone: give more height */
+@media (max-height: 500px) and (orientation: landscape) {
+    .diff-container {
+        max-height: 100vh;
+        height: 100vh;
+    }
 }
 
 /* ==================== Browser Preview Panel ==================== */

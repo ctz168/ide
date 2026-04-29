@@ -2649,13 +2649,15 @@ const EditorManager = (() => {
     }
 
     /**
-     * Parse unified diff text into file groups.
-     * Each group has: { filePath, lines: [{text, type}] }
+     * Parse unified diff text into file groups with line numbers.
+     * Each group has: { filePath, lines: [{text, type, oldLine, newLine}] }
      * Types: 'meta', 'hunk', 'add', 'del', 'ctx', 'empty', 'file-header'
      */
     function parseDiffIntoFileGroups(diffText) {
         const groups = [];
         let currentGroup = null;
+        let oldLine = 0;
+        let newLine = 0;
         const lines = diffText.split('\n');
 
         for (const line of lines) {
@@ -2667,6 +2669,8 @@ const EditorManager = (() => {
                 currentGroup = { filePath, lines: [] };
                 groups.push(currentGroup);
                 currentGroup.lines.push({ text: line, type: 'file-header' });
+                oldLine = 0;
+                newLine = 0;
                 continue;
             }
 
@@ -2688,17 +2692,27 @@ const EditorManager = (() => {
             if (line === '') {
                 currentGroup.lines.push({ text: line, type: 'empty' });
             } else if (line.startsWith('@@')) {
+                // Parse hunk header for line numbers: @@ -oldStart,oldCount +newStart,newCount @@
+                const hunkMatch = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+                if (hunkMatch) {
+                    oldLine = parseInt(hunkMatch[1], 10);
+                    newLine = parseInt(hunkMatch[3], 10);
+                }
                 currentGroup.lines.push({ text: line, type: 'hunk' });
             } else if (line.startsWith('--- ') || line.startsWith('+++ ')) {
                 currentGroup.lines.push({ text: line, type: 'meta' });
             } else if (line.startsWith('+')) {
-                currentGroup.lines.push({ text: line, type: 'add' });
+                currentGroup.lines.push({ text: line, type: 'add', oldLine: null, newLine: newLine });
+                newLine++;
             } else if (line.startsWith('-')) {
-                currentGroup.lines.push({ text: line, type: 'del' });
+                currentGroup.lines.push({ text: line, type: 'del', oldLine: oldLine, newLine: null });
+                oldLine++;
             } else if (line.startsWith('index ') || line.startsWith('new file ') || line.startsWith('deleted ') || line.startsWith('old mode') || line.startsWith('new mode') || line.startsWith('Binary files') || line.startsWith('similarity ')) {
                 currentGroup.lines.push({ text: line, type: 'meta' });
             } else {
-                currentGroup.lines.push({ text: line, type: 'ctx' });
+                currentGroup.lines.push({ text: line, type: 'ctx', oldLine: oldLine, newLine: newLine });
+                oldLine++;
+                newLine++;
             }
         }
 
@@ -2706,55 +2720,75 @@ const EditorManager = (() => {
     }
 
     /**
-     * Render a single diff line as HTML
+     * Render a single diff line as HTML with line numbers
      */
     function renderDiffLine(lineObj) {
         const escaped = escapeHTML(lineObj.text);
+        const hasLineNum = (lineObj.oldLine != null || lineObj.newLine != null);
+        const oldNum = lineObj.oldLine != null ? lineObj.oldLine : '';
+        const newNum = lineObj.newLine != null ? lineObj.newLine : '';
+        const numCol = hasLineNum
+            ? `<span class="diff-lnum diff-lnum-old">${oldNum}</span><span class="diff-lnum diff-lnum-new">${newNum}</span>`
+            : '<span class="diff-lnum diff-lnum-old"></span><span class="diff-lnum diff-lnum-new"></span>';
+
         switch (lineObj.type) {
             case 'empty':
                 return '<div class="diff-line diff-empty"></div>';
             case 'hunk':
-                return `<div class="diff-line diff-hunk">${escaped}</div>`;
+                return `<div class="diff-line diff-hunk">${numCol}${escaped}</div>`;
             case 'meta':
-                return `<div class="diff-line diff-meta">${escaped}</div>`;
+                return `<div class="diff-line diff-meta">${numCol}${escaped}</div>`;
             case 'file-header':
                 return `<div class="diff-line diff-file-header-line">${escaped}</div>`;
             case 'add': {
                 const code = escaped.substring(1);
-                return `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
+                return `<div class="diff-line diff-add">${numCol}<span class="diff-sign">+</span>${code || ' '}</div>`;
             }
             case 'del': {
                 const code = escaped.substring(1);
-                return `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
+                return `<div class="diff-line diff-del">${numCol}<span class="diff-sign">-</span>${code || ' '}</div>`;
             }
             case 'ctx':
             default:
-                return `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+                return `<div class="diff-line diff-ctx">${numCol}<span class="diff-sign"> </span>${escaped}</div>`;
         }
     }
 
     /**
-     * Fallback: render raw diff without file grouping
+     * Fallback: render raw diff without file grouping (with line numbers)
      */
     function renderRawDiff(diffText) {
         const lines = diffText.split('\n');
         let html = '';
+        let oldLine = 0;
+        let newLine = 0;
+        const numCol = '<span class="diff-lnum diff-lnum-old"></span><span class="diff-lnum diff-lnum-new"></span>';
+
         for (const line of lines) {
             const escaped = escapeHTML(line);
             if (escaped === '') {
                 html += '<div class="diff-line diff-empty"></div>';
             } else if (escaped.startsWith('@@')) {
-                html += `<div class="diff-line diff-hunk">${escaped}</div>`;
+                const hunkMatch = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+                if (hunkMatch) {
+                    oldLine = parseInt(hunkMatch[1], 10);
+                    newLine = parseInt(hunkMatch[3], 10);
+                }
+                html += `<div class="diff-line diff-hunk">${numCol}${escaped}</div>`;
             } else if (escaped.startsWith('---') || escaped.startsWith('+++')) {
-                html += `<div class="diff-line diff-meta">${escaped}</div>`;
+                html += `<div class="diff-line diff-meta">${numCol}${escaped}</div>`;
             } else if (escaped.startsWith('+')) {
                 const code = escaped.substring(1);
-                html += `<div class="diff-line diff-add"><span class="diff-sign">+</span>${code || ' '}</div>`;
+                html += `<div class="diff-line diff-add"><span class="diff-lnum diff-lnum-old"></span><span class="diff-lnum diff-lnum-new">${newLine}</span><span class="diff-sign">+</span>${code || ' '}</div>`;
+                newLine++;
             } else if (escaped.startsWith('-')) {
                 const code = escaped.substring(1);
-                html += `<div class="diff-line diff-del"><span class="diff-sign">-</span>${code || ' '}</div>`;
+                html += `<div class="diff-line diff-del"><span class="diff-lnum diff-lnum-old">${oldLine}</span><span class="diff-lnum diff-lnum-new"></span><span class="diff-sign">-</span>${code || ' '}</div>`;
+                oldLine++;
             } else {
-                html += `<div class="diff-line diff-ctx"><span class="diff-sign"> </span>${escaped}</div>`;
+                html += `<div class="diff-line diff-ctx"><span class="diff-lnum diff-lnum-old">${oldLine}</span><span class="diff-lnum diff-lnum-new">${newLine}</span><span class="diff-sign"> </span>${escaped}</div>`;
+                oldLine++;
+                newLine++;
             }
         }
         return html;
