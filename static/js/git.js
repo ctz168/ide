@@ -876,13 +876,13 @@ const GitManager = (() => {
                 const cols = document.createElement('div');
                 cols.className = 'conflict-cols';
 
-                // === Local (ours) bubble ===
+                // === Local (theirs in git terms = remote incoming) bubble ===
                 const oursCol = document.createElement('div');
                 oursCol.className = 'conflict-col conflict-col-ours';
 
                 const oursLabel = document.createElement('div');
                 oursLabel.className = 'conflict-bubble-label conflict-label-ours';
-                oursLabel.textContent = '本地';
+                oursLabel.textContent = '远程';
                 if (conflict.ours_label) {
                     oursLabel.title = conflict.ours_label;
                 }
@@ -901,19 +901,19 @@ const GitManager = (() => {
 
                 const oursBtn = document.createElement('button');
                 oursBtn.className = 'conflict-adopt-btn conflict-adopt-ours';
-                oursBtn.textContent = '✓ 采用本地';
-                oursBtn.title = '保留本地代码，丢弃远程代码';
+                oursBtn.textContent = '✓ 采用远程';
+                oursBtn.title = '保留远程代码，丢弃本地代码';
                 oursCol.appendChild(oursBtn);
 
                 cols.appendChild(oursCol);
 
-                // === Remote (theirs) bubble ===
+                // === Remote (theirs bubble = local HEAD) ===
                 const theirsCol = document.createElement('div');
                 theirsCol.className = 'conflict-col conflict-col-theirs';
 
                 const theirsLabel = document.createElement('div');
                 theirsLabel.className = 'conflict-bubble-label conflict-label-theirs';
-                theirsLabel.textContent = '远程';
+                theirsLabel.textContent = '本地';
                 if (conflict.theirs_label) {
                     theirsLabel.title = conflict.theirs_label;
                 }
@@ -931,11 +931,19 @@ const GitManager = (() => {
 
                 const theirsBtn = document.createElement('button');
                 theirsBtn.className = 'conflict-adopt-btn conflict-adopt-theirs';
-                theirsBtn.textContent = '✓ 采用远程';
-                theirsBtn.title = '保留远程代码，丢弃本地代码';
+                theirsBtn.textContent = '✓ 采用本地';
+                theirsBtn.title = '保留本地代码，丢弃远程代码';
                 theirsCol.appendChild(theirsBtn);
 
                 cols.appendChild(theirsCol);
+
+                // === "Adopt Both" button spanning full width ===
+                const bothBtn = document.createElement('button');
+                bothBtn.className = 'conflict-adopt-btn conflict-adopt-both';
+                bothBtn.textContent = '⇅ 同时采用两者';
+                bothBtn.title = '保留本地和远程的代码（本地在前，远程在后）';
+                cols.appendChild(bothBtn);
+
                 section.appendChild(cols);
 
                 // Event handlers for adopt buttons
@@ -944,6 +952,9 @@ const GitManager = (() => {
                 });
                 theirsBtn.addEventListener('click', () => {
                     resolveConflict(fileData.file, conflict.index, 'theirs', section, state);
+                });
+                bothBtn.addEventListener('click', () => {
+                    resolveConflict(fileData.file, conflict.index, 'both', section, state);
                 });
 
                 fileSection.appendChild(section);
@@ -1032,9 +1043,13 @@ const GitManager = (() => {
         if (choice === 'ours') {
             oursCol.classList.add('conflict-col-chosen');
             theirsCol.classList.add('conflict-col-discarded');
-        } else {
+        } else if (choice === 'theirs') {
             theirsCol.classList.add('conflict-col-chosen');
             oursCol.classList.add('conflict-col-discarded');
+        } else if (choice === 'both') {
+            // Both sides are kept — show them as chosen
+            oursCol.classList.add('conflict-col-chosen');
+            theirsCol.classList.add('conflict-col-chosen');
         }
 
         // Call API

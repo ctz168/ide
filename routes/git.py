@@ -583,10 +583,10 @@ def git_conflict_resolve():
     data = request.json
     filepath = data.get('file', '')
     conflict_index = data.get('index', 0)
-    choice = data.get('choice', 'ours')  # 'ours' or 'theirs'
+    choice = data.get('choice', 'ours')  # 'ours', 'theirs', or 'both'
 
-    if choice not in ('ours', 'theirs'):
-        return jsonify({'ok': False, 'error': 'Invalid choice, must be "ours" or "theirs"'})
+    if choice not in ('ours', 'theirs', 'both'):
+        return jsonify({'ok': False, 'error': 'Invalid choice, must be "ours", "theirs", or "both"'})
 
     cwd = resolve_cwd()
     full_path = os.path.join(cwd, filepath)
@@ -624,7 +624,7 @@ def git_conflict_resolve():
 
                 # Collect ours lines
                 while i < len(lines) and not lines[i].startswith('=======') and not lines[i].startswith('|||||||'):
-                    if choice == 'ours':
+                    if choice in ('ours', 'both'):
                         new_lines.append(lines[i])
                     i += 1
 
@@ -640,7 +640,7 @@ def git_conflict_resolve():
 
                 # Collect theirs lines
                 while i < len(lines) and not lines[i].startswith('>>>>>>>'):
-                    if choice == 'theirs':
+                    if choice in ('theirs', 'both'):
                         new_lines.append(lines[i])
                     i += 1
 

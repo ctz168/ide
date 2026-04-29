@@ -3600,6 +3600,23 @@ button, .file-item, .search-result-item, .git-change-item {
     border-color: #E67E22;
 }
 
+.conflict-adopt-both {
+    flex: none;
+    width: 100%;
+    margin-top: 4px;
+    border-style: dashed;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.conflict-adopt-both:hover,
+.conflict-adopt-both:active {
+    background: rgba(142, 68, 173, 0.12);
+    color: #8E44AD;
+    border-color: #8E44AD;
+    border-style: solid;
+}
+
 .conflict-adopt-btn:disabled {
     cursor: default;
     pointer-events: none;
