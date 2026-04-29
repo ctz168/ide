@@ -1636,15 +1636,16 @@ const TerminalManager = (() => {
                     shellInput.focus();
                 }
             });
-            // Also restore focus when selection is cleared (e.g. user clicked
-            // elsewhere or tapped without dragging)
+            // Restore focus to shell-input after a brief idle period if user
+            // didn't select any text (e.g. they just clicked on the output area).
+            // Use 300ms delay to avoid interfering with text selection gestures.
             outputContent.addEventListener('mouseup', () => {
                 setTimeout(() => {
                     const sel = window.getSelection();
                     if (!sel || sel.isCollapsed || sel.toString().length === 0) {
                         shellInput.focus();
                     }
-                }, 10);
+                }, 300);
             });
         }
     }
@@ -1777,16 +1778,34 @@ const TerminalManager = (() => {
 
         function _fallbackCopy(text) {
             try {
+                // Save the current selection so we can restore it after copy.
+                // ta.focus() below will move focus away from the output panel
+                // and clear the browser's text selection.
+                const sel = window.getSelection();
+                const savedRanges = [];
+                if (sel && sel.rangeCount > 0) {
+                    for (let i = 0; i < sel.rangeCount; i++) {
+                        savedRanges.push(sel.getRangeAt(i).cloneRange());
+                    }
+                }
+
                 const ta = document.createElement('textarea');
                 ta.value = text;
                 ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
                 document.body.appendChild(ta);
-                // Use setSelectionRange instead of select() to avoid
-                // clearing the user's text selection in the output panel
                 ta.focus();
                 ta.setSelectionRange(0, text.length);
                 document.execCommand('copy');
                 document.body.removeChild(ta);
+
+                // Restore the user's text selection in the output panel
+                if (savedRanges.length > 0) {
+                    sel.removeAllRanges();
+                    for (const range of savedRanges) {
+                        sel.addRange(range);
+                    }
+                }
+
                 showToast('已复制: ' + (text.length > 30 ? text.substring(0, 30) + '...' : text), 'success');
             } catch (_e) {
                 showToast('复制失败', 'error');
