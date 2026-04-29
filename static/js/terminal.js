@@ -1625,11 +1625,26 @@ const TerminalManager = (() => {
             }
         }
 
-        // Focus shell input when clicking on output area
+        // Focus shell input when clicking on output area (but NOT when user
+        // is selecting text — focus() on shell-input clears the selection)
         const outputContent = document.getElementById('output-content');
         if (outputContent) {
             outputContent.addEventListener('click', () => {
-                shellInput.focus();
+                const sel = window.getSelection();
+                // Only focus shell input if user didn't select text
+                if (!sel || sel.isCollapsed || sel.toString().length === 0) {
+                    shellInput.focus();
+                }
+            });
+            // Also restore focus when selection is cleared (e.g. user clicked
+            // elsewhere or tapped without dragging)
+            outputContent.addEventListener('mouseup', () => {
+                setTimeout(() => {
+                    const sel = window.getSelection();
+                    if (!sel || sel.isCollapsed || sel.toString().length === 0) {
+                        shellInput.focus();
+                    }
+                }, 10);
             });
         }
     }
@@ -1766,7 +1781,10 @@ const TerminalManager = (() => {
                 ta.value = text;
                 ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
                 document.body.appendChild(ta);
-                ta.select();
+                // Use setSelectionRange instead of select() to avoid
+                // clearing the user's text selection in the output panel
+                ta.focus();
+                ta.setSelectionRange(0, text.length);
                 document.execCommand('copy');
                 document.body.removeChild(ta);
                 showToast('已复制: ' + (text.length > 30 ? text.substring(0, 30) + '...' : text), 'success');
