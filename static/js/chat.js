@@ -1502,7 +1502,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
             '\\text': '', '\\mathrm': '', '\\mathbf': '', '\\mathit': '', '\\mathcal': '', '\\mathbb': '',
             '\\hat': '帽子', '\\bar': '平均', '\\vec': '向量', '\\tilde': '波浪', '\\dot': '点', '\\ddot': '双点',
             '\\widehat': '帽子', '\\overline': '上划线', '\\underline': '下划线',
-            '\\quad': ' ', '\\qquad': ' ', '\\,', ' ', '\\;', ' ', '\\!': '', '\\:': ' ',
+            '\\quad': ' ', '\\qquad': ' ', '\\,': ' ', '\\;': ' ', '\\!': '', '\\:': ' ',
             '\\oplus': '直加', '\\otimes': '张量积', '\\odot': '点积',
             '\\le': '小于等于', '\\ge': '大于等于',
             '\\lt': '小于', '\\gt': '大于',
