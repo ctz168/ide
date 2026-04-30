@@ -91,7 +91,7 @@ const AppManager = (() => {
                 const handleBtn = () => {
                     overlay.classList.add('hidden');
                     const input = dialogBody.querySelector('input, textarea, select');
-                    resolve({ confirmed: btn.value === 'ok', value: input ? input.value : undefined });
+                    resolve({ confirmed: btn.value === 'ok', value: input ? input.value : btn.value });
                 };
                 // Use bindTouchButton for dialog buttons too (Android WebView fix)
                 if (window.bindTouchButton) {
