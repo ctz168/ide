@@ -1559,13 +1559,12 @@ const AppManager = (() => {
             try {
                 const formData = new FormData();
                 for (const f of files) {
-                    formData.append('files[]', f, f.name);
-                }
-                // For folder uploads, detect the common relative path
-                // webkitdirectory gives f.webkitRelativePath like "folderName/sub/file.txt"
-                if (isFolder && files[0] && files[0].webkitRelativePath) {
-                    const topDir = files[0].webkitRelativePath.split('/')[0];
-                    formData.append('relative_path', topDir);
+                    // For folder uploads, use webkitRelativePath to preserve directory structure
+                    if (isFolder && f.webkitRelativePath) {
+                        formData.append('files[]', f, f.webkitRelativePath);
+                    } else {
+                        formData.append('files[]', f, f.name);
+                    }
                 }
 
                 const resp = await fetch('/api/files/upload', {

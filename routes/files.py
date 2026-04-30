@@ -1754,6 +1754,10 @@ def upload_files():
     """
     config = load_config()
     base = config.get('workspace', WORKSPACE)
+    # If a project is open, upload into the project directory
+    project = config.get('project', None)
+    if project:
+        base = os.path.join(base, project)
     base_real = os.path.realpath(base)
 
     if 'files[]' not in request.files:
