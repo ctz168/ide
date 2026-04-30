@@ -3830,6 +3830,128 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         }
     }
 
+    async function showDuckDnsDialog() {
+        const overlay = document.createElement('div');
+        overlay.className = 'chat-settings-overlay';
+        overlay.id = 'duckdns-overlay';
+        overlay.innerHTML = `
+            <div class="chat-settings-dialog" style="max-width:480px">
+                <div class="chat-settings-header">
+                    <span>🌐 动态域名</span>
+                    <button class="chat-settings-close" title="Close" id="duckdns-close-btn">✕</button>
+                </div>
+                <div class="chat-settings-body" style="padding:14px">
+                    <div style="background:var(--bg-code,#1a1a2e);border-radius:6px;padding:12px;margin-bottom:14px;border:1px solid var(--border,#333)">
+                        <p style="font-size:12px;color:#888;margin:0 0 6px">系统每3分钟自动检测公网IP并更新DuckDNS记录。优先IPv6，无IPv6时使用IPv4。</p>
+                        <div style="display:flex;gap:10px;font-size:11px;color:#666;flex-wrap:wrap">
+                            <span>IPv4: <span id="duckdns-ipv4" style="color:#4fc3f7;font-family:monospace">--</span></span>
+                            <span>IPv6: <span id="duckdns-ipv6" style="color:#4fc3f7;font-family:monospace">--</span></span>
+                            <span>域名: <span id="duckdns-domain-display" style="color:#81c784;font-family:monospace">--</span></span>
+                        </div>
+                    </div>
+                    <div style="margin-bottom:12px">
+                        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:4px">DuckDNS 子域名</label>
+                        <input type="text" id="duckdns-domain-input" placeholder="如：myide（不含 .duckdns.org）"
+                               style="width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#222;color:#eee;font-size:14px">
+                        <p style="font-size:11px;color:#666;margin:4px 0 0">只需填写子域名部分，完整域名为 myide.duckdns.org</p>
+                    </div>
+                    <div style="margin-bottom:14px">
+                        <label style="display:block;font-size:13px;color:#aaa;margin-bottom:4px">DuckDNS Token</label>
+                        <input type="text" id="duckdns-token-input" placeholder="如：ae3b49b7-1637-41b2-83ed-df45342b194f"
+                               style="width:100%;box-sizing:border-box;padding:8px;border-radius:4px;border:1px solid #444;background:#222;color:#eee;font-size:13px;font-family:monospace">
+                        <p style="font-size:11px;color:#666;margin:4px 0 0">在 <a href="https://www.duckdns.org/" target="_blank" style="color:#4fc3f7">duckdns.org</a> 登录后可查看Token</p>
+                    </div>
+                    <div id="duckdns-status" style="font-size:12px;color:#888;min-height:20px"></div>
+                </div>
+                <div class="chat-settings-footer">
+                    <button class="btn-cancel" id="duckdns-cancel-btn">取消</button>
+                    <button class="btn-confirm" id="duckdns-update-btn" style="margin-left:8px">🔄 立即更新</button>
+                    <button class="btn-confirm" id="duckdns-save-btn" style="margin-left:8px">保存配置</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+        injectSettingsStyles();
+
+        // Load current config
+        try {
+            const resp = await fetch('/api/duckdns');
+            if (resp.ok) {
+                const data = await resp.json();
+                document.getElementById('duckdns-domain-input').value = data.domain || '';
+                document.getElementById('duckdns-token-input').value = data.token || '';
+                document.getElementById('duckdns-ipv4').textContent = data.current_ipv4 || '无';
+                document.getElementById('duckdns-ipv6').textContent = data.current_ipv6 || '无';
+                document.getElementById('duckdns-domain-display').textContent = data.full_domain || '--';
+            }
+        } catch (e) {
+            console.error('[DuckDNS] Failed to load config:', e);
+        }
+
+        function closeDuckDns() {
+            overlay.remove();
+        }
+
+        overlay.querySelector('#duckdns-close-btn').addEventListener('click', closeDuckDns);
+        overlay.querySelector('#duckdns-cancel-btn').addEventListener('click', closeDuckDns);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closeDuckDns(); });
+
+        // Save config
+        overlay.querySelector('#duckdns-save-btn').addEventListener('click', async () => {
+            const domain = document.getElementById('duckdns-domain-input').value.trim();
+            const token = document.getElementById('duckdns-token-input').value.trim();
+            if (!domain) { document.getElementById('duckdns-status').textContent = '请输入子域名'; return; }
+            if (!token) { document.getElementById('duckdns-status').textContent = '请输入Token'; return; }
+            try {
+                const resp = await fetch('/api/duckdns', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ domain, token })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    document.getElementById('duckdns-domain-display').textContent = domain + '.duckdns.org';
+                    document.getElementById('duckdns-status').textContent = data.msg || '已保存';
+                    document.getElementById('duckdns-status').style.color = '#81c784';
+                } else {
+                    document.getElementById('duckdns-status').textContent = data.error || '保存失败';
+                    document.getElementById('duckdns-status').style.color = '#e57373';
+                }
+            } catch (e) {
+                document.getElementById('duckdns-status').textContent = '请求失败: ' + e.message;
+                document.getElementById('duckdns-status').style.color = '#e57373';
+            }
+        });
+
+        // Manual update
+        overlay.querySelector('#duckdns-update-btn').addEventListener('click', async () => {
+            const btn = overlay.querySelector('#duckdns-update-btn');
+            btn.disabled = true;
+            btn.textContent = '更新中...';
+            document.getElementById('duckdns-status').textContent = '';
+            try {
+                const resp = await fetch('/api/duckdns/update', { method: 'POST' });
+                const data = await resp.json();
+                if (resp.ok) {
+                    document.getElementById('duckdns-status').textContent = data.msg || '更新成功';
+                    document.getElementById('duckdns-status').style.color = '#81c784';
+                    if (data.ipv4) document.getElementById('duckdns-ipv4').textContent = data.ipv4;
+                    if (data.ipv6) document.getElementById('duckdns-ipv6').textContent = data.ipv6;
+                } else {
+                    document.getElementById('duckdns-status').textContent = data.error || '更新失败';
+                    document.getElementById('duckdns-status').style.color = '#e57373';
+                }
+            } catch (e) {
+                document.getElementById('duckdns-status').textContent = '请求失败: ' + e.message;
+                document.getElementById('duckdns-status').style.color = '#e57373';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔄 立即更新';
+            }
+        });
+    }
+
     // ── Inject Styles ──────────────────────────────────────────────
 
     let _settingsStylesInjected = false;
@@ -5472,6 +5594,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         loadHistory,
         scrollToBottom: forceScrollToBottom,
         showSettingsDialog,
+        showDuckDnsDialog,
         removeSettingsDialog,
         loadLLMConfig,
         saveLLMConfig,

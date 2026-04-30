@@ -2461,6 +2461,21 @@ const AppManager = (() => {
                 }
             }
 
+            // DuckDNS dynamic domain button
+            const chatDuckdnsBtn = document.getElementById('chat-duckdns-btn');
+            if (chatDuckdnsBtn && window.ChatManager && ChatManager.showDuckDnsDialog) {
+                const openDuckDns = () => {
+                    ChatManager.showDuckDnsDialog().catch(err => {
+                        console.error('[PhoneIDE] DuckDNS dialog error:', err);
+                    });
+                };
+                if (typeof bindTouchButton === 'function') {
+                    bindTouchButton(chatDuckdnsBtn, openDuckDns);
+                } else {
+                    chatDuckdnsBtn.addEventListener('click', openDuckDns);
+                }
+            }
+
             showToast('PhoneIDE 就绪', 'success', 1500);
             console.log('[PhoneIDE] Ready!');
         } catch (err) {

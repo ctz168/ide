@@ -9163,3 +9163,178 @@ def tts_endpoint():
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# ==================== DuckDNS Dynamic Domain ====================
+
+_DUCKDNS_CONFIG_FILE = os.path.join(SERVER_DIR, 'duckdns_config.json')
+_DUCKDNS_UPDATE_INTERVAL = 180  # 3 minutes
+
+
+def _load_duckdns_config():
+    """Load DuckDNS config from JSON file."""
+    defaults = {"domain": "", "token": ""}
+    try:
+        if os.path.exists(_DUCKDNS_CONFIG_FILE):
+            with open(_DUCKDNS_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {"domain": data.get("domain", ""), "token": data.get("token", "")}
+    except Exception as e:
+        log_write(f'[duckdns] Failed to load config: {e}')
+    return defaults
+
+
+def _save_duckdns_config(domain, token):
+    """Save DuckDNS config to JSON file."""
+    try:
+        with open(_DUCKDNS_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({"domain": domain, "token": token}, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_write(f'[duckdns] Failed to save config: {e}')
+
+
+def _get_global_ipv6_addresses():
+    """Detect global-scope IPv6 addresses on this machine."""
+    import socket
+    ipv6_addrs = []
+    try:
+        hostname = socket.gethostname()
+        addrs = socket.getaddrinfo(hostname, None, socket.AF_INET6, socket.SOCK_STREAM)
+        for addr_info in addrs:
+            addr = addr_info[4][0]
+            if addr == '::1' or addr.lower().startswith('fe80:') or addr.lower().startswith('fc') or addr.lower().startswith('fd'):
+                continue
+            if addr not in ipv6_addrs:
+                ipv6_addrs.append(addr)
+    except Exception:
+        pass
+    # Linux ip command fallback
+    if not ipv6_addrs and platform.system() != 'Windows':
+        try:
+            result = subprocess.run(['ip', '-6', 'addr', 'show', 'scope', 'global'],
+                                   capture_output=True, text=True, timeout=5)
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith('inet6 '):
+                    addr = line.split()[1].split('/')[0]
+                    if addr not in ipv6_addrs:
+                        ipv6_addrs.append(addr)
+        except Exception:
+            pass
+    return ipv6_addrs
+
+
+def _get_public_ipv4():
+    """Detect public IPv4 via external API (ipify.org)."""
+    try:
+        req = urllib.request.Request('https://api.ipify.org', headers={'User-Agent': 'PhoneIDE/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            text = resp.read().decode('utf-8').strip()
+            if re.match(r'^\d+\.\d+\.\d+\.\d+$', text):
+                return text
+    except Exception:
+        pass
+    return ''
+
+
+def _duckdns_do_update():
+    """Perform a single DuckDNS update. Returns dict with success/msg/ipv4/ipv6."""
+    config = _load_duckdns_config()
+    domain = config.get('domain', '').strip()
+    token = config.get('token', '').strip()
+    if not domain or not token:
+        return {"success": False, "msg": "域名或Token未配置", "ipv4": "", "ipv6": ""}
+
+    ipv6_addrs = _get_global_ipv6_addresses()
+    ipv6 = ipv6_addrs[0] if ipv6_addrs else ''
+    ipv4 = _get_public_ipv4()
+
+    if not ipv4 and not ipv6:
+        return {"success": False, "msg": "未检测到公网IP", "ipv4": "", "ipv6": ""}
+
+    url = f"https://www.duckdns.org/update?domains={domain}&token={token}&verbose=true"
+    if ipv4:
+        url += f"&ip={ipv4}"
+    if ipv6:
+        url += f"&ipv6={ipv6}"
+
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode('utf-8').strip()
+    except Exception as e:
+        return {"success": False, "msg": f"请求失败: {e}", "ipv4": ipv4, "ipv6": ipv6}
+
+    if text.startswith('OK'):
+        parts = []
+        if ipv4:
+            parts.append(f"IPv4={ipv4}")
+        if ipv6:
+            parts.append(f"IPv6=[{ipv6}]")
+        return {"success": True, "msg": f"{domain}.duckdns.org → {', '.join(parts)}", "ipv4": ipv4, "ipv6": ipv6}
+    else:
+        return {"success": False, "msg": f"DuckDNS返回: {text}", "ipv4": ipv4, "ipv6": ipv6}
+
+
+def _duckdns_background_updater():
+    """Background thread: update DuckDNS every 3 minutes."""
+    while True:
+        try:
+            config = _load_duckdns_config()
+            if config.get('domain') and config.get('token'):
+                result = _duckdns_do_update()
+                if result['success']:
+                    log_write(f'[duckdns] Updated: {result["msg"]}')
+                else:
+                    log_write(f'[duckdns] Update failed: {result["msg"]}')
+        except Exception as e:
+            log_write(f'[duckdns] Background error: {e}')
+        time.sleep(_DUCKDNS_UPDATE_INTERVAL)
+
+
+# Start background updater on module load
+_duckdns_thread = threading.Thread(target=_duckdns_background_updater, daemon=True)
+_duckdns_thread.start()
+
+
+@bp.route('/api/duckdns', methods=['GET'])
+@handle_error
+def get_duckdns_config():
+    """Get current DuckDNS configuration and detected IPs."""
+    config = _load_duckdns_config()
+    ipv6_addrs = _get_global_ipv6_addresses()
+    ipv4 = _get_public_ipv4()
+    return jsonify({
+        'domain': config.get('domain', ''),
+        'token': config.get('token', ''),
+        'full_domain': f"{config.get('domain', '')}.duckdns.org" if config.get('domain') else '',
+        'current_ipv4': ipv4,
+        'current_ipv6': ipv6_addrs[0] if ipv6_addrs else '',
+    })
+
+
+@bp.route('/api/duckdns', methods=['POST'])
+@handle_error
+def save_duckdns_config():
+    """Save DuckDNS domain and token."""
+    data = request.json or {}
+    domain = data.get('domain', '').strip()
+    token = data.get('token', '').strip()
+    if not domain:
+        return jsonify({'error': '域名不能为空'}), 400
+    if not token:
+        return jsonify({'error': 'Token不能为空'}), 400
+    _save_duckdns_config(domain, token)
+    log_write(f'[duckdns] Config saved: {domain}.duckdns.org')
+    return jsonify({'msg': f'动态域名配置已保存：{domain}.duckdns.org'})
+
+
+@bp.route('/api/duckdns/update', methods=['POST'])
+@handle_error
+def update_duckdns_now():
+    """Trigger immediate DuckDNS update."""
+    result = _duckdns_do_update()
+    if result['success']:
+        return jsonify({'msg': f"更新成功：{result['msg']}", 'ipv4': result['ipv4'], 'ipv6': result['ipv6']})
+    else:
+        return jsonify({'error': f"更新失败：{result['msg']}", 'ipv4': result['ipv4'], 'ipv6': result['ipv6']}), 500
