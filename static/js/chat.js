@@ -1043,6 +1043,28 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     // ── Tool Progress Visualization ────────────────────────────────
 
     /**
+     * After AI file mutations, sync open editor tabs with disk content.
+     * If a modified file is open in a tab:
+     *   - clean tab → silently reload from disk
+     *   - dirty tab (user has unsaved edits) → ask user to confirm overwrite
+     * Also handles delete_path (close tab) and move_file (close old, reload new).
+     */
+    function syncEditorAfterTool() {
+        if (!window.EditorManager || !lastToolArgs) return;
+        const filePath = lastToolArgs.path || lastToolArgs.file;
+        if (filePath && ['write_file', 'edit_file', 'append_file'].includes(lastToolName)) {
+            window.EditorManager.reloadIfOpen(filePath);
+        }
+        if (lastToolName === 'delete_path' && filePath) {
+            window.EditorManager.closeTabByPath(filePath);
+        }
+        if (lastToolName === 'move_file') {
+            if (lastToolArgs.old_path) window.EditorManager.closeTabByPath(lastToolArgs.old_path);
+            if (lastToolArgs.new_path) window.EditorManager.reloadIfOpen(lastToolArgs.new_path);
+        }
+    }
+
+    /**
      * Show a tool execution in progress with spinning indicator
      * @returns {HTMLElement} the tool element for later updating
      */
@@ -2271,6 +2293,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
+                        syncEditorAfterTool();
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
                                 'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
@@ -2683,6 +2706,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
+                        syncEditorAfterTool();
                         // Dispatch AI debug activity event for debugger UI
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
@@ -3054,6 +3078,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
+                        syncEditorAfterTool();
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
                                 'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',

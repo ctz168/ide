@@ -834,6 +834,104 @@ const EditorManager = (() => {
     }
 
     /**
+     * Find the matching tab path for a raw file path (from AI tool args).
+     * AI paths may be relative (src/app.js) or absolute (/workspace/project/src/app.js).
+     * Tab paths are always /workspace/project/... format.
+     * @param {string} rawPath
+     * @returns {string|null} matching tab path or null
+     */
+    function resolveTabPath(rawPath) {
+        if (!rawPath) return null;
+        // Normalize slashes
+        const normalized = rawPath.replace(/\\/g, '/');
+        // Direct match
+        if (tabs[normalized]) return normalized;
+        // Try with /workspace/ prefix
+        const withWs = normalized.startsWith('/workspace/') ? normalized : '/workspace/' + normalized.replace(/^\/+/, '');
+        if (tabs[withWs]) return withWs;
+        // Try with /workspace/{project}/ prefix
+        const proj = window.ProjectManager && window.ProjectManager.getCurrentProject();
+        if (proj && proj.project) {
+            const withProj = '/workspace/' + proj.project + '/' + normalized.replace(/^\/+/, '');
+            if (tabs[withProj]) return withProj;
+            // Also try stripping workspace from the raw path and adding project
+            const stripped = normalized.replace(/^\/workspace\/+/, '');
+            const withProj2 = '/workspace/' + proj.project + '/' + stripped;
+            if (tabs[withProj2]) return withProj2;
+        }
+        // Fuzzy: check if any tab ends with this path
+        const tail = normalized.replace(/^\/+/, '');
+        for (const tp of tabOrder) {
+            if (tp.endsWith('/' + tail) || tp.endsWith(tail)) return tp;
+        }
+        return null;
+    }
+
+    /**
+     * Reload an open tab from disk after AI modifies the file.
+     * If the tab has unsaved user changes, show a confirmation dialog.
+     * @param {string} rawPath - file path from AI tool args
+     */
+    function reloadIfOpen(rawPath) {
+        const tabPath = resolveTabPath(rawPath);
+        if (!tabPath) return;
+        const tab = tabs[tabPath];
+        if (!tab) return;
+
+        if (tab.dirty) {
+            // User has unsaved changes — ask before overwriting
+            if (window.showConfirmDialog) {
+                window.showConfirmDialog(
+                    '文件已被 AI 修改',
+                    `AI 助手修改了 ${tabPath.split('/').pop()}，你有未保存的更改。是否用 AI 的版本覆盖？`,
+                    (confirmed) => {
+                        if (confirmed) doReload(tabPath);
+                    }
+                );
+            } else {
+                // No dialog available — auto-reload
+                doReload(tabPath);
+            }
+        } else {
+            // Tab is clean — silently reload
+            doReload(tabPath);
+        }
+    }
+
+    /**
+     * Actually fetch content from server and update the tab
+     */
+    function doReload(tabPath) {
+        const relPath = tabPath.replace(/^\/workspace\/?/, '');
+        fetch(`/api/files/read?path=${encodeURIComponent(relPath)}`)
+            .then(resp => resp.json())
+            .then(data => {
+                const content = data.content !== undefined ? data.content : '';
+                tabs[tabPath].content = content;
+                if (tabPath === activeTab && editor) {
+                    _switching = true;
+                    editor.setValue(content);
+                    _switching = false;
+                    editor.clearHistory();
+                    _historySize = 0;
+                    markClean();
+                }
+            })
+            .catch(err => {
+                console.warn('[EditorManager] reloadIfOpen failed:', err);
+            });
+    }
+
+    /**
+     * Close a tab by raw file path (e.g. after AI deletes or moves a file).
+     * @param {string} rawPath - file path from AI tool args
+     */
+    function closeTabByPath(rawPath) {
+        const tabPath = resolveTabPath(rawPath);
+        if (tabPath) closeTab(tabPath);
+    }
+
+    /**
      * Update the dirty state of a specific tab
      * @param {string} path
      * @param {boolean} isDirty
@@ -3699,6 +3797,10 @@ const EditorManager = (() => {
 
         // Diff view
         showDiff,
+
+        // AI file sync
+        reloadIfOpen,
+        closeTabByPath,
         
         // Multi-Select API
         isMultiSelectMode,
