@@ -8841,7 +8841,7 @@ def _check_edge_tts():
 
 
 def _clean_tts_text(text):
-    """Clean text for TTS: remove code blocks, markdown formatting, URLs, formulas."""
+    """Clean text for TTS: remove code blocks, markdown formatting, URLs, emojis, convert formulas."""
     if not text:
         return ''
     # Remove fenced code blocks
@@ -8852,21 +8852,101 @@ def _clean_tts_text(text):
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # Remove bold/italic
     text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
-    # Remove display formulas ($$...$$)
-    text = re.sub(r'\$\$[\s\S]*?\$\$', '', text)
-    # Remove inline formulas ($...$)
-    text = re.sub(r'(?<!\$)\$(?!\$)[^\$]+(?<!\$)\$(?!\$)', '', text)
     # Remove URLs
     text = re.sub(r'https?://\S+', '', text)
     # Remove markdown links: [text](url) -> text
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    # Remove extra whitespace
+    # Remove images ![alt](url)
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+    # ── Display math ($$...$$): speak as "公式" ──
+    text = re.sub(r'\$\$[\s\S]*?\$\$', '，公式，', text)
+    # ── Inline math ($...$): convert LaTeX to readable text ──
+    def _inline_math(m):
+        return _latex_to_speech(m.group(1))
+    text = re.sub(r'(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)', _inline_math, text)
+    # ── Remove emojis and icons ──
+    emoji_pattern = re.compile(
+        r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF'
+        r'\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF'
+        r'\U00002600-\U000026FF\U00002700-\U000027BF\U0000FE00-\U0000FE0F'
+        r'\U0001F000-\U0001F02F\U0001F0A0-\U0001F0FF\U0001F100-\U0001F1FF'
+        r'\U00002300-\U000023FF\U0001F1E0-\U0001F1FF\U00002B50\U00002B55'
+        r'\U00002702\U00002705\U00002708-\U0000270D\U0000270F\U00002712'
+        r'\U00002714\U00002716\U0000271D\U00002721\U00002728\U00002733'
+        r'\U00002734\U00002744\U00002747\U0000274C\U0000274E\U00002753'
+        r'\U00002754\U00002755\U00002757\U00002763\U00002764\U00002795'
+        r'\U00002796\U00002797\U000027A1\U000027B0\U00002934\U00002935'
+        r'\U000023CF\U000023E9-\U000023F3\U000023F8-\U000023FA]'
+    )
+    text = emoji_pattern.sub(' ', text)
+    # Remove remaining lines that are just symbols/punctuation
     text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    # Remove lines that are just symbols/punctuation
-    text = re.sub(r'^[^\w\u4e00-\u9fff]{3,}$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[^\w\u4e00-\u9fff]{2,}$', '', text, flags=re.MULTILINE)
     # Collapse whitespace
     text = re.sub(r' {2,}', ' ', text)
     return text.strip()
+
+
+def _latex_to_speech(latex):
+    """Convert a LaTeX inline formula to readable Chinese text."""
+    if not latex:
+        return ''
+    s = latex.strip()
+    # Too complex → just say "公式"
+    if len(s) > 80 or any(k in s for k in ('\\matrix', '\\begin', '\\array', '\\cases')):
+        return '，公式，'
+    # Common LaTeX symbols → Chinese
+    symbols = {
+        r'\\geq': '大于等于', r'\\ge': '大于等于', r'\\leq': '小于等于', r'\\le': '小于等于',
+        r'\\neq': '不等于', r'\\ne': '不等于', r'\\approx': '约等于', r'\\equiv': '恒等于',
+        r'\\times': '乘', r'\\div': '除以', r'\\pm': '加减', r'\\mp': '减加',
+        r'\\infty': '无穷大', r'\\partial': '偏', r'\\nabla': '梯度',
+        r'\\int': '积分', r'\\sum': '求和', r'\\prod': '乘积', r'\\lim': '极限',
+        r'\\sin': '正弦', r'\\cos': '余弦', r'\\tan': '正切', r'\\log': '对数', r'\\ln': '自然对数',
+        r'\\exp': 'e的', r'\\cdot': '点', r'\\ldots': '等等', r'\\cdots': '等等',
+        r'\\forall': '对于所有', r'\\exists': '存在', r'\\in': '属于', r'\\notin': '不属于',
+        r'\\subset': '包含于', r'\\supset': '包含', r'\\cup': '并', r'\\cap': '交',
+        r'\\rightarrow': '趋近于', r'\\leftarrow': '左指', r'\\Rightarrow': '推出',
+        r'\\Leftarrow': '当且仅当', r'\\iff': '当且仅当',
+        r'\\alpha': '阿尔法', r'\\beta': '贝塔', r'\\gamma': '伽马', r'\\delta': '德尔塔',
+        r'\\epsilon': '艾普西隆', r'\\zeta': '泽塔', r'\\eta': '伊塔', r'\\theta': '西塔',
+        r'\\lambda': '兰姆达', r'\\mu': '缪', r'\\sigma': '西格玛', r'\\omega': '欧米伽',
+        r'\\pi': '派', r'\\phi': '斐', r'\\psi': '普赛', r'\\rho': '柔',
+    }
+    for cmd, spoken in symbols.items():
+        s = re.sub(cmd, f' {spoken} ', s)
+    # \frac{a}{b} → a 分之 b
+    s = re.sub(r'\\frac\{([^{}]*)\}\{([^{}]*)\}', r'\1 分之 \2', s)
+    # \sqrt[n]{x} → x 的 n 次根号
+    s = re.sub(r'\\sqrt\[([^\]]*)\]\{([^{}]*)\}', r'\2 的 \1 次根号', s)
+    # \sqrt{x} → 根号 x
+    s = re.sub(r'\\sqrt\{([^{}]*)\}', r'根号 \1', s)
+    # x^{abc} → x 的 abc 次方
+    def _superscript(m):
+        inner = re.sub(r'[{}]', '', m.group(1) or m.group(2) or '')
+        return f' 的 {inner} 次方'
+    s = re.sub(r'\^{(\{[^{}]*\})|(\{[^{}]*\})', lambda m: _superscript(m), s)
+    # Simple ^2, ^3, ^n
+    def _simple_sup(m):
+        n = m.group(1)
+        if n == '2': return '的平方'
+        if n == '3': return '的立方'
+        return f' 的 {n} 次方'
+    s = re.sub(r'\^(\d+)', _simple_sup, s)
+    # x_{abc} → x 下标 abc
+    def _subscript(m):
+        inner = re.sub(r'[{}]', '', m.group(1) or m.group(2) or '')
+        return f' 下标 {inner}'
+    s = re.sub(r'_{(\{[^{}]*\})|(\{[^{}]*\})', lambda m: _subscript(m), s)
+    # Remove remaining backslash commands
+    s = re.sub(r'\\[a-zA-Z]+', '', s)
+    # Remove remaining braces
+    s = s.replace('{', '').replace('}', '')
+    # Clean up
+    s = re.sub(r'\s+', ' ', s).strip()
+    if not s:
+        return '，公式，'
+    return f'，{s}，'
 
 
 @bp.route('/api/chat/tts', methods=['POST'])

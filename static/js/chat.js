@@ -1409,19 +1409,97 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         text = text.replace(/^#{1,6}\s+/gm, '');
         // Remove bold/italic
         text = text.replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1');
-        // Remove display formulas ($$...$$)
-        text = text.replace(/\$\$[\s\S]*?\$\$/g, '');
-        // Remove inline formulas ($...$)
-        text = text.replace(/\$[^$]+\$/g, '');
         // Remove URLs
         text = text.replace(/https?:\/\/\S+/g, '');
         // Remove markdown links
         text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-        // Remove extra whitespace
+        // Remove images ![alt](url)
+        text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+        // ── Display math ($$...$$): speak as "公式" ──
+        text = text.replace(/\$\$[\s\S]*?\$\$/g, '，公式，');
+        // ── Inline math ($...$): convert LaTeX to readable text ──
+        text = text.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, (_, latex) => {
+            return _latexToSpeech(latex);
+        });
+        // ── Remove emojis and icons ──
+        // Common emoji ranges + pictographic symbols + dingbats + misc symbols
+        text = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{2300}-\u{23FF}\u{2B50}\u{2B55}\u{2934}\u{2935}\u{25AA}-\u{25FE}\u{2601}-\u{2604}\u{260E}\u{2614}\u{2615}\u{2648}-\u{2653}\u{267F}\u{2693}\u{26A1}\u{26AA}\u{26AB}\u{26BD}\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2702}\u{2705}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}\u{27BF}\u{2934}\u{2935}\u{23CF}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25FB}-\u{25FE}\u{261D}\u{263A}-\u{263C}\u{2640}-\u{2640}\u{2642}\u{265F}-\u{2660}\u{2663}\u{2665}-\u{2668}\u{267B}\u{2692}-\u{2694}\u{2696}-\u{2697}\u{2699}\u{269B}-\u{269C}\u{26A0}-\u{26A1}\u{26AA}-\u{26AB}\u{26B0}-\u{26B1}\u{26BD}-\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}\u{E0020}-\u{E007F}]/gu, '');
+        // Also remove common icon-like text sequences used in chat
+        text = text.replace(/\s*[📥🚀✅❌⚠️💡📌🔍🔧📦📁📄✨🎯🔥💬📌📌🚫🛠️🔗⭐📝📊👍👎🙏💪✋🎉🔒🔓🔑💻🖥️📱🌐🔧⚙️📌📎🗑️✏️📝📄📋📁📂📁📂💾📤📥↩️↪️➡️⬅️⬆️⬇️↗️↘️↙️↖️🔄🔁🔂▶️⏸️⏹️⏺️⏩⏪⏭️⏮️🔀🔁🔂📱💻🖥️⌨️🖥️🖨️🖲️💾💿📀️🎥🎞️📽️🎬📺📷📸📹📼🔍🔎💡🔦🏮📔📕📖📗📘📙📚📓📒📃📜📄📰🗞️📑🔖🏷️💰💴💵💷💶💳💹🏧💱💲✉️📧📨📩📤📥📦📫📪📬📭📮🗳️✏️✒️🖋️🖊️🖌️🖍️📝💼📁📂🗂️📅📆🗒️🗓️📇📈📉📊📋📌📍📎🖇️📏📐✂️🗃️🗄️🗑️🔒🔓🔏🔐🔑🗝️🔨⛏️⚒️🛠️🗡️⚔️🔫🏹🛡️🔧🔩⚙️🗜️⚖️🔗⛓️🧰🧲🧪🧫🧬🔬🔭📡💉🩸💊🩹🩺🚪🛏️🛋️🪑🚽🚿🛁🪒🧴🧷🧹🧺🧻🧼🧽🧯🛒🚬⚰️⚱️🗿]/gu, ' ');
+        // Remove lines that are just symbols/punctuation (after emoji removal)
         text = text.replace(/\n{3,}/g, '\n\n').trim();
-        // Remove lines that are just symbols/punctuation
-        text = text.replace(/^[^\w\u4e00-\u9fff]{3,}$/gm, '');
+        text = text.replace(/^[^\w\u4e00-\u9fff]{2,}$/gm, '');
+        // Collapse multiple spaces
+        text = text.replace(/ {2,}/g, ' ');
         return text.trim();
+    }
+
+    /**
+     * Convert a LaTeX inline formula to readable Chinese text.
+     * E.g. "x^2 + y^2" → "x 的平方 加 y 的平方"
+     * E.g. "a \\geq b" → "a 大于等于 b"
+     * E.g. "\\frac{a}{b}" → "a 分之 b"
+     */
+    function _latexToSpeech(latex) {
+        if (!latex) return '';
+        let s = latex.trim();
+        // Too complex → just say "公式"
+        if (s.length > 80 || s.includes('\\matrix') || s.includes('\\begin') || s.includes('\\array') || s.includes('\\cases')) {
+            return '，公式，';
+        }
+        // Common LaTeX symbols → Chinese spoken form
+        const symbols = {
+            '\\geq': '大于等于', '\\ge': '大于等于', '\\leq': '小于等于', '\\le': '小于等于',
+            '\\neq': '不等于', '\\ne': '不等于', '\\approx': '约等于', '\\equiv': '恒等于',
+            '\\times': '乘', '\\div': '除以', '\\pm': '加减', '\\mp': '减加',
+            '\\infty': '无穷大', '\\partial': '偏', '\\nabla': '梯度',
+            '\\int': '积分', '\\sum': '求和', '\\prod': '乘积', '\\lim': '极限',
+            '\\sin': '正弦', '\\cos': '余弦', '\\tan': '正切', '\\log': '对数', '\\ln': '自然对数',
+            '\\exp': 'e的', '\\sqrt': '根号', '\\cdot': '点', '\\ldots': '等等', '\\cdots': '等等',
+            '\\forall': '对于所有', '\\exists': '存在', '\\in': '属于', '\\notin': '不属于',
+            '\\subset': '包含于', '\\supset': '包含', '\\cup': '并', '\\cap': '交',
+            '\\rightarrow': '趋近于', '\\leftarrow': '左指', '\\Rightarrow': '推出',
+            '\\Leftarrow': '当且仅当', '\\iff': '当且仅当',
+            '\\alpha': '阿尔法', '\\beta': '贝塔', '\\gamma': '伽马', '\\delta': '德尔塔',
+            '\\epsilon': '艾普西隆', '\\zeta': '泽塔', '\\eta': '伊塔', '\\theta': '西塔',
+            '\\lambda': '兰姆达', '\\mu': '缪', '\\sigma': '西格玛', '\\omega': '欧米伽',
+            '\\pi': '派', '\\phi': '斐', '\\psi': '普赛', '\\rho': '柔',
+        };
+        // Replace known symbols first
+        for (const [cmd, spoken] of Object.entries(symbols)) {
+            s = s.replace(new RegExp(cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), ` ${spoken} `);
+        }
+        // \frac{a}{b} → a 分之 b
+        s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '$1 分之 $2');
+        // \sqrt[n]{x} → x 的 n 次根号
+        s = s.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '$2 的 $1 次根号');
+        // \sqrt{x} → 根号 x
+        s = s.replace(/\\sqrt\{([^{}]*)\}/g, '根号 $1');
+        // x^{abc} → x 的 abc 次方
+        s = s.replace(/\^{([{}][^{}]*[}])|(?:\^{([^{}]+))}/g, (match, g1, g2) => {
+            const inner = g1 || g2 || '';
+            const content = inner.replace(/[{}]/g, '');
+            return ` 的 ${content} 次方`;
+        });
+        // Simple ^2, ^3, ^n (without braces)
+        s = s.replace(/\^(\d+)/g, (m, n) => {
+            const map = {'2': '平方', '3': '立方'};
+            return map[n] ? ` 的${map[n]}` : ` 的 ${n} 次方`;
+        });
+        // x_{abc} → x 的下标 abc
+        s = s.replace(/_{([{}][^{}]*[}])|(?:_{([^{}]+))}/g, (match, g1, g2) => {
+            const inner = g1 || g2 || '';
+            const content = inner.replace(/[{}]/g, '');
+            return ` 下标 ${content}`;
+        });
+        // Remove remaining backslash commands that weren't matched
+        s = s.replace(/\\[a-zA-Z]+/g, '');
+        // Remove remaining braces/brackets
+        s = s.replace(/[{}]/g, '');
+        // Clean up whitespace
+        s = s.replace(/\s+/g, ' ').trim();
+        if (!s) return '，公式，';
+        return `，${s}，`;
     }
 
     /**
