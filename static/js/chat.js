@@ -1049,18 +1049,18 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      *   - dirty tab (user has unsaved edits) → ask user to confirm overwrite
      * Also handles delete_path (close tab) and move_file (close old, reload new).
      */
-    function syncEditorAfterTool() {
-        if (!window.EditorManager || !lastToolArgs) return;
-        const filePath = lastToolArgs.path || lastToolArgs.file;
-        if (filePath && ['write_file', 'edit_file', 'append_file'].includes(lastToolName)) {
+    function syncEditorAfterTool(toolName, toolArgs) {
+        if (!window.EditorManager || !toolArgs) return;
+        const filePath = toolArgs.path || toolArgs.file;
+        if (filePath && ['write_file', 'edit_file', 'append_file'].includes(toolName)) {
             window.EditorManager.reloadIfOpen(filePath);
         }
-        if (lastToolName === 'delete_path' && filePath) {
+        if (toolName === 'delete_path' && filePath) {
             window.EditorManager.closeTabByPath(filePath);
         }
-        if (lastToolName === 'move_file') {
-            if (lastToolArgs.old_path) window.EditorManager.closeTabByPath(lastToolArgs.old_path);
-            if (lastToolArgs.new_path) window.EditorManager.reloadIfOpen(lastToolArgs.new_path);
+        if (toolName === 'move_file') {
+            if (toolArgs.old_path) window.EditorManager.closeTabByPath(toolArgs.old_path);
+            if (toolArgs.new_path) window.EditorManager.reloadIfOpen(toolArgs.new_path);
         }
     }
 
@@ -2293,7 +2293,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
-                        syncEditorAfterTool();
+                        syncEditorAfterTool(lastToolName, lastToolArgs);
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
                                 'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
@@ -2706,7 +2706,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
-                        syncEditorAfterTool();
+                        syncEditorAfterTool(lastToolName, lastToolArgs);
                         // Dispatch AI debug activity event for debugger UI
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
@@ -3078,7 +3078,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                                 window.FileManager.refresh();
                             }
                         }
-                        syncEditorAfterTool();
+                        syncEditorAfterTool(lastToolName, lastToolArgs);
                         if (window.DebuggerUI && lastToolName) {
                             const debugTools = ['debug_start', 'debug_stop', 'debug_set_breakpoints',
                                 'debug_continue', 'debug_step', 'debug_inspect', 'debug_evaluate', 'debug_stack',
