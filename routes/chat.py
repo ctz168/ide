@@ -7419,7 +7419,8 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                 all_tool_calls.append({'name': tool_name})
                 _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
                 _emit({'type': 'tool_result', 'tool': tool_name, 'ok': ok,
-                       'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2)})
+                       'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2),
+                       'path': tool_args.get('path', '')})
                 context.append({'role': 'tool', 'tool_call_id': tool_call_id,
                                 'name': tool_name, 'tool': tool_name, 'content': result_str,
                                 'time': datetime.now().isoformat()})
@@ -7453,6 +7454,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                         'ok': False,
                         'result': result_str,
                         'elapsed': 0,
+                        'path': tool_args.get('path', ''),
                     })
                     _batch_results.append((tool_name, tool_args, False, result_str))
                     continue
@@ -7467,6 +7469,7 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
                     'ok': ok,
                     'result': _truncate(result_str, 30000),
                     'elapsed': round(elapsed, 2),
+                    'path': tool_args.get('path', ''),
                 })
 
                 # Add tool result to context
@@ -8175,7 +8178,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
             for idx, tool_name, tool_args, ok, result_str, elapsed, tool_call_id in parallel_results:
                 tool_calls_in_progress.append({'name': tool_name})
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
-                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS, 'path': tool_args.get('path', '')})}\n\n"
                 tool_msg = {'role': 'tool', 'tool_call_id': tool_call_id,
                             'name': tool_name, 'tool': tool_name, 'content': result_str,
                             'time': datetime.now().isoformat()}
@@ -8211,7 +8214,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
                     _skip_path = tool_args.get('path', '(unknown)')
                     result_str = f'Error: {tool_name} arguments were truncated by max_tokens (path: {_skip_path}). The model\'s response was cut off before the file content could be fully generated. Please try again with a smaller file or increase max_tokens.'
                     yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
-                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': False, 'result': result_str, 'elapsed': 0, 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': False, 'result': result_str, 'elapsed': 0, 'max_iterations': MAX_AGENT_ITERATIONS, 'path': tool_args.get('path', '')})}\n\n"
                     # Add tool result to context so model knows it failed (assistant_msg already added above)
                     tool_msg = {
                         'role': 'tool',
@@ -8229,7 +8232,7 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
 
                 ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
 
-                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS, 'path': tool_args.get('path', '')})}\n\n"
 
                 tool_msg = {
                     'role': 'tool',
