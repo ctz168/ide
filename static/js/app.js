@@ -2185,90 +2185,130 @@ const AppManager = (() => {
             }
         }
 
-        // Fallback: server-side git pull + restart (for code-only updates)
+        // Server-side code update via detached update script
         if (applyBtn) applyBtn.disabled = true;
         if (checkBtn) checkBtn.disabled = true;
 
-        statusEl.innerHTML = 'Updating server...\n<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress"></div></div>';
-
-        const progressEl = document.getElementById('update-progress');
+        statusEl.innerHTML = '正在启动更新...\n<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress"></div></div>';
+        statusEl.style.whiteSpace = 'pre-wrap';
+        statusEl.style.fontSize = '13px';
 
         try {
             const resp = await fetch('/api/update/apply', { method: 'POST' });
             const respText = await resp.text().catch(() => 'Unknown error');
 
             if (!resp.ok) {
-                // Parse error JSON and show full details
                 let errMsg = respText;
-                let diagInfo = '';
                 try {
                     const errJson = JSON.parse(respText);
                     errMsg = errJson.error || respText;
-                    // Show diagnostics if available
-                    if (errJson.diagnostics) {
-                        const d = errJson.diagnostics;
-                        diagInfo = '\n\n── 诊断信息 ──';
-                        if (d.SERVER_DIR) diagInfo += `\n目录: ${d.SERVER_DIR}`;
-                        if (d.write_test !== undefined) diagInfo += `\n写权限: ${d.write_test ? '✅' : '❌ ' + (d.write_error || '')}`;
-                        if (d.write_ok_after_fix !== undefined) diagInfo += `\n修复后写权限: ${d.write_ok_after_fix ? '✅' : '❌'}`;
-                        if (d.tmp_writable !== undefined) diagInfo += `\n/tmp写权限: ${d.tmp_writable ? '✅' : '❌'}`;
-                        if (d.network_ok !== undefined) diagInfo += `\n网络: ${d.network_ok ? '✅' : '❌ ' + (d.network_error || '')}`;
-                        if (d.disk_free_mb !== undefined) diagInfo += `\n剩余空间: ${d.disk_free_mb}MB`;
-                    }
-                    if (errJson.traceback) {
-                        diagInfo += '\n\n── 完整错误 ──\n' + errJson.traceback;
-                    }
-                } catch (parseErr) {
-                    // not JSON, use raw text
-                }
-                throw new Error(errMsg + diagInfo);
+                } catch (_) {}
+                throw new Error(errMsg);
             }
 
-            const data = JSON.parse(respText);
-            const method = data.method || 'zip';
+            // Update script launched — poll status file for real-time progress
+            const phaseLabels = {
+                start: '启动更新进程',
+                wait: '等待服务器就绪',
+                clean_locks: '清理Git锁文件',
+                discard: '丢弃本地更改',
+                clean: '清理未跟踪文件',
+                fetch: '从GitHub拉取代码',
+                reset: '重置到最新版本',
+                clean_pycache: '清理缓存',
+                restart: '重启服务器',
+                done: '更新完成',
+                error: '更新失败',
+            };
 
-            if (progressEl) progressEl.style.width = '100%';
-            statusEl.innerHTML = `✅ 更新指令已发送 (${method})! 服务器将在后台更新代码并自动重启...`;
-
-            showToast(`更新完成, 服务器即将自动重启...`, 'success', 3000);
-
-            // The server handles update + restart internally via os.execv.
-            // Just poll until the server comes back online, then reload.
+            let serverDown = false;
             let attempts = 0;
-            const maxAttempts = 90; // 90 * 2s = 3 minutes
+            const maxAttempts = 120; // 120 * 2s = 4 minutes
+
             const checker = setInterval(async () => {
                 attempts++;
+
                 if (attempts > maxAttempts) {
                     clearInterval(checker);
-                    statusEl.innerHTML = '⚠ 服务器重启超时，请手动刷新页面。';
-                    showToast('服务器重启超时，请手动刷新', 'error', 5000);
+                    statusEl.innerHTML = '⚠ 更新超时，请手动刷新页面或使用诊断功能排查。';
+                    showToast('更新超时', 'error', 5000);
+                    if (applyBtn) applyBtn.disabled = false;
+                    if (checkBtn) checkBtn.disabled = false;
                     return;
                 }
-                // Show countdown in status
+
                 const dots = '.'.repeat((attempts % 4));
-                statusEl.innerHTML = `⏳ 等待服务器重启 (${attempts * 2}s / ${maxAttempts * 2}s)${dots}
-<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress" style="width:${Math.min(attempts / maxAttempts * 100, 95)}%"></div></div>`;
+                let progressPct = Math.min(attempts / maxAttempts * 100, 95);
+
+                // Try to read update status from the backend
                 try {
-                    const r = await fetch('/api/server/status', { signal: AbortSignal.timeout(5000) });
-                    if (r.ok) {
-                        clearInterval(checker);
-                        statusEl.innerHTML = '✅ 服务器已重启，正在刷新页面...';
-                        showToast('更新完成，正在刷新...', 'success', 2000);
-                        setTimeout(() => window.location.reload(), 500);
+                    const statusResp = await fetch('/api/update/status', { signal: AbortSignal.timeout(3000) });
+                    if (statusResp.ok) {
+                        const s = await statusResp.json();
+                        const phase = s.phase || '';
+                        const label = phaseLabels[phase] || phase;
+                        const msg = s.message || '';
+
+                        if (s.status === 'fail' || phase === 'error') {
+                            // Update failed — show error details
+                            clearInterval(checker);
+                            let errDetail = msg;
+                            if (s.detail) errDetail += '\n' + s.detail;
+                            statusEl.innerHTML = `❌ 更新失败: ${label}\n${errDetail}\n\n请点击 🔧 诊断 查看详细信息。`;
+                            showToast('更新失败', 'error', 5000);
+                            if (applyBtn) applyBtn.disabled = false;
+                            if (checkBtn) checkBtn.disabled = false;
+                            return;
+                        }
+
+                        if (phase === 'done' || phase === 'restart') {
+                            // Update succeeded, wait for server to come back
+                            serverDown = true;
+                            progressPct = 90;
+                        } else if (phase !== 'idle') {
+                            // Map phase to rough progress
+                            const phaseOrder = ['start', 'wait', 'clean_locks', 'discard', 'clean', 'fetch', 'reset', 'clean_pycache', 'restart', 'done'];
+                            const idx = phaseOrder.indexOf(phase);
+                            if (idx >= 0) progressPct = Math.max(progressPct, (idx / phaseOrder.length) * 85);
+
+                            let statusIcon = s.status === 'ok' ? '✅' : s.status === 'warn' ? '⚠️' : '⏳';
+                            statusEl.innerHTML = `${statusIcon} ${label}${dots}\n${msg}
+<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress" style="width:${progressPct}%"></div></div>`;
+                        }
+                    } else {
+                        // Status endpoint returned error — server might be down/restarting
+                        serverDown = true;
                     }
                 } catch (_) {
-                    // Server not back yet — expected during update
+                    // Can't reach update/status — server might be down/restarting
+                    serverDown = true;
+                }
+
+                // If update script finished or server appears down, poll for server recovery
+                if (serverDown) {
+                    statusEl.innerHTML = `⏳ 等待服务器重启 (${attempts * 2}s)${dots}
+<div class="update-progress-bar"><div class="update-progress-fill" id="update-progress" style="width:${Math.min(progressPct + 5, 95)}%"></div></div>`;
+                    try {
+                        const r = await fetch('/api/server/status', { signal: AbortSignal.timeout(3000) });
+                        if (r.ok) {
+                            clearInterval(checker);
+                            statusEl.innerHTML = '✅ 服务器已重启，正在刷新页面...';
+                            showToast('更新完成，正在刷新...', 'success', 2000);
+                            setTimeout(() => window.location.reload(), 500);
+                        }
+                    } catch (_) {
+                        // Server not back yet
+                    }
                 }
             }, 2000);
 
         } catch (err) {
-            statusEl.textContent = '❌ ' + err.message;
+            statusEl.innerHTML = '❌ ' + err.message;
             statusEl.style.whiteSpace = 'pre-wrap';
             statusEl.style.wordBreak = 'break-all';
             statusEl.style.fontSize = '12px';
             statusEl.style.maxHeight = '300px';
             statusEl.style.overflowY = 'auto';
-            if (progressEl) progressEl.style.width = '0%';
             showToast('更新失败', 'error', 5000);
         } finally {
             if (applyBtn) applyBtn.disabled = false;
