@@ -8888,65 +8888,212 @@ def _clean_tts_text(text):
 
 
 def _latex_to_speech(latex):
-    """Convert a LaTeX inline formula to readable Chinese text."""
+    """Convert a LaTeX formula to readable Chinese text.
+    Supports inline and display math, including complex structures."""
     if not latex:
         return ''
     s = latex.strip()
-    # Too complex → just say "公式"
-    if len(s) > 80 or any(k in s for k in ('\\matrix', '\\begin', '\\array', '\\cases')):
+
+    # For very long display math, split by \\ and read each line
+    if len(s) > 300:
+        lines = [l.strip() for l in s.split('\\\\') if l.strip()]
+        if 1 < len(lines) <= 5:
+            read = [r for r in (_latex_line_toSpeech(l) for l in lines) if r and r != '，公式，']
+            if read:
+                return '，' + '，'.join(read) + '，'
         return '，公式，'
-    # Common LaTeX symbols → Chinese
+
+    # Handle \begin{...}...\end{...} environments
+    env_match = re.search(r'\\begin\{(\w+)\}([\s\S]*?)\\end\{\1\}', s)
+    if env_match:
+        return _latex_env_toSpeech(env_match.group(1), env_match.group(2))
+
+    return _latex_line_toSpeech(s)
+
+
+def _latex_line_toSpeech(s):
+    """Convert a single-line LaTeX expression to speech."""
+    if not s or not s.strip():
+        return '，公式，'
+    s = s.strip()
+
+    # Expand \left / \right
+    s = s.replace('\\left', '').replace('\\right', '')
+
+    # Handle big operators with sub/sup
+    s = _handle_big_operators(s)
+
+    # Common LaTeX symbols
     symbols = {
         r'\\geq': '大于等于', r'\\ge': '大于等于', r'\\leq': '小于等于', r'\\le': '小于等于',
         r'\\neq': '不等于', r'\\ne': '不等于', r'\\approx': '约等于', r'\\equiv': '恒等于',
         r'\\times': '乘', r'\\div': '除以', r'\\pm': '加减', r'\\mp': '减加',
         r'\\infty': '无穷大', r'\\partial': '偏', r'\\nabla': '梯度',
-        r'\\int': '积分', r'\\sum': '求和', r'\\prod': '乘积', r'\\lim': '极限',
-        r'\\sin': '正弦', r'\\cos': '余弦', r'\\tan': '正切', r'\\log': '对数', r'\\ln': '自然对数',
+        r'\\sin': '正弦', r'\\cos': '余弦', r'\\tan': '正切', r'\\sec': '正割', r'\\csc': '余割',
+        r'\\arcsin': '反正弦', r'\\arccos': '反余弦', r'\\arctan': '反正切',
+        r'\\log': '对数', r'\\ln': '自然对数', r'\\lg': '常用对数',
         r'\\exp': 'e的', r'\\cdot': '点', r'\\ldots': '等等', r'\\cdots': '等等',
-        r'\\forall': '对于所有', r'\\exists': '存在', r'\\in': '属于', r'\\notin': '不属于',
-        r'\\subset': '包含于', r'\\supset': '包含', r'\\cup': '并', r'\\cap': '交',
-        r'\\rightarrow': '趋近于', r'\\leftarrow': '左指', r'\\Rightarrow': '推出',
-        r'\\Leftarrow': '当且仅当', r'\\iff': '当且仅当',
+        r'\\vdots': '竖排省略', r'\\ddots': '斜排省略',
+        r'\\forall': '对于所有', r'\\exists': '存在',
+        r'\\in': '属于', r'\\notin': '不属于',
+        r'\\subset': '包含于', r'\\subseteq': '包含或等于',
+        r'\\supset': '包含', r'\\supseteq': '包含或等于',
+        r'\\cup': '并', r'\\cap': '交', r'\\setminus': '差集', r'\\emptyset': '空集',
+        r'\\rightarrow': '趋近于', r'\\to': '到', r'\\leftarrow': '左指',
+        r'\\Rightarrow': '推出', r'\\implies': '推出',
+        r'\\Leftarrow': '当且仅当', r'\\iff': '当且仅当', r'\\Leftrightarrow': '等价于',
+        r'\\hbar': 'h拔', r'\\Re': '实部', r'\\Im': '虚部',
+        r'\\deg': '度', r'\\arg': '幅角', r'\\dim': '维数', r'\\det': '行列式',
+        r'\\oplus': '直加', r'\\otimes': '张量积', r'\\odot': '点积',
+        r'\\neg': '非', r'\\land': '且', r'\\lor': '或',
+        r'\\text': '', r'\\mathrm': '', r'\\mathbf': '', r'\\mathit': '', r'\\mathcal': '', r'\\mathbb': '',
+        r'\\operatorname': '',
+        r'\\hat': '帽子', r'\\bar': '平均', r'\\vec': '向量', r'\\tilde': '波浪',
+        r'\\dot': '点', r'\\ddot': '双点',
+        r'\\widehat': '帽子', r'\\overline': '上划线', r'\\underline': '下划线',
+        r'\\quad': ' ', r'\\qquad': ' ', r'\\,': ' ', r'\\;': ' ', r'\\!': '', r'\\:': ' ',
+        # Greek lowercase
+        r'\\varepsilon': '小艾普西隆', r'\\vartheta': '小西塔', r'\\varpi': '小派',
+        r'\\varrho': '小柔', r'\\varsigma': '小西格玛', r'\\varphi': '小斐',
         r'\\alpha': '阿尔法', r'\\beta': '贝塔', r'\\gamma': '伽马', r'\\delta': '德尔塔',
         r'\\epsilon': '艾普西隆', r'\\zeta': '泽塔', r'\\eta': '伊塔', r'\\theta': '西塔',
-        r'\\lambda': '兰姆达', r'\\mu': '缪', r'\\sigma': '西格玛', r'\\omega': '欧米伽',
-        r'\\pi': '派', r'\\phi': '斐', r'\\psi': '普赛', r'\\rho': '柔',
+        r'\\iota': '约塔', r'\\kappa': '卡帕', r'\\lambda': '兰姆达', r'\\mu': '缪',
+        r'\\nu': '纽', r'\\xi': '克赛', r'\\omicron': '奥密克戎', r'\\pi': '派',
+        r'\\rho': '柔', r'\\sigma': '西格玛', r'\\tau': '套',
+        r'\\upsilon': '宇普西隆', r'\\phi': '斐', r'\\chi': '开', r'\\psi': '普赛',
+        r'\\omega': '欧米伽',
+        # Greek uppercase
+        r'\\Gamma': '大伽马', r'\\Delta': '大德尔塔', r'\\Theta': '大西塔',
+        r'\\Lambda': '大兰姆达', r'\\Xi': '大克赛', r'\\Pi': '大派',
+        r'\\Sigma': '大西格玛', r'\\Upsilon': '大宇普西隆', r'\\Phi': '大斐',
+        r'\\Psi': '大普赛', r'\\Omega': '大欧米伽',
     }
-    for cmd, spoken in symbols.items():
-        s = re.sub(cmd, f' {spoken} ', s)
+    # Sort by key length descending so longer commands match first
+    for cmd in sorted(symbols.keys(), key=len, reverse=True):
+        spoken = symbols[cmd]
+        if not spoken:
+            s = re.sub(cmd, '', s)
+        else:
+            s = re.sub(cmd, f' {spoken} ', s)
+
     # \frac{a}{b} → a 分之 b
     s = re.sub(r'\\frac\{([^{}]*)\}\{([^{}]*)\}', r'\1 分之 \2', s)
+    s = s.replace('\\frac', ' 分之 ')
+
     # \sqrt[n]{x} → x 的 n 次根号
     s = re.sub(r'\\sqrt\[([^\]]*)\]\{([^{}]*)\}', r'\2 的 \1 次根号', s)
-    # \sqrt{x} → 根号 x
     s = re.sub(r'\\sqrt\{([^{}]*)\}', r'根号 \1', s)
-    # x^{abc} → x 的 abc 次方
+    s = s.replace('\\sqrt', '根号')
+
+    # Superscripts: x^{abc} → x 的 abc 次方
     def _superscript(m):
-        inner = re.sub(r'[{}]', '', m.group(1) or m.group(2) or '')
-        return f' 的 {inner} 次方'
-    s = re.sub(r'\^{(\{[^{}]*\})|(\{[^{}]*\})', lambda m: _superscript(m), s)
-    # Simple ^2, ^3, ^n
+        inner = re.sub(r'[{}]', '', m.group(1)).strip()
+        return f' 的 {inner} 次方' if inner else ''
+    s = re.sub(r'\^\{([^{}]*)\}', _superscript, s)
+    # Simple ^2, ^3
     def _simple_sup(m):
         n = m.group(1)
         if n == '2': return '的平方'
         if n == '3': return '的立方'
         return f' 的 {n} 次方'
     s = re.sub(r'\^(\d+)', _simple_sup, s)
-    # x_{abc} → x 下标 abc
+    s = s.replace('^', ' 的')
+
+    # Subscripts: x_{abc} → x 下标 abc
     def _subscript(m):
-        inner = re.sub(r'[{}]', '', m.group(1) or m.group(2) or '')
-        return f' 下标 {inner}'
-    s = re.sub(r'_{(\{[^{}]*\})|(\{[^{}]*\})', lambda m: _subscript(m), s)
-    # Remove remaining backslash commands
+        inner = re.sub(r'[{}]', '', m.group(1)).strip()
+        return f' 下标 {inner}' if inner else ''
+    s = re.sub(r'_{([^{}]*)\}', _subscript, s)
+    s = re.sub(r'_([a-zA-Z0-9])', r' 下标 \1', s)
+
+    # Readable brackets
+    s = s.replace('（', '(').replace('）', ')')
+
+    # Remove remaining backslash commands and braces
     s = re.sub(r'\\[a-zA-Z]+', '', s)
-    # Remove remaining braces
     s = s.replace('{', '').replace('}', '')
+
     # Clean up
+    s = re.sub(r',+', '，', s)
     s = re.sub(r'\s+', ' ', s).strip()
+    s = s.replace('（）', '')
+
     if not s:
         return '，公式，'
     return f'，{s}，'
+
+
+def _handle_big_operators(s):
+    """Handle \sum, \int, \prod, \lim with sub/superscripts."""
+    op_names = {
+        'sum': '求和', 'prod': '乘积', 'coprod': '余乘积',
+        'int': '积分', 'iint': '二重积分', 'iiint': '三重积分', 'oint': '环路积分',
+        'lim': '极限', 'min': '最小值', 'max': '最大值',
+    }
+
+    def _replace_op(m):
+        op = m.group(1)
+        sub = m.group(2) or ''
+        sup = m.group(3) or ''
+        name = op_names.get(op, op)
+        sub_clean = sub.replace('\\to', '到').replace('\\infty', '无穷大').strip()
+        sup_clean = sup.replace('\\infty', '无穷大').strip()
+        if sub_clean and sup_clean:
+            return f' {sub_clean}到{sup_clean}的{name} '
+        elif sub_clean:
+            return f' {sub_clean}的{name} '
+        elif sup_clean:
+            return f' 到{sup_clean}的{name} '
+        return f' {name} '
+
+    s = re.sub(
+        r'\\(sum|prod|coprod|int|iint|iiint|oint|lim|sup|inf|min|max)\s*(?:_\{([^{}]*)\})?\s*(?:\^\{([^{}]*)\})?',
+        _replace_op, s
+    )
+    return s
+
+
+def _latex_env_toSpeech(env_type, body):
+    """Convert LaTeX environments to speech."""
+    env_names = {
+        'cases': '分段函数', 'aligned': '方程组', 'align': '方程组',
+        'matrix': '矩阵', 'pmatrix': '矩阵', 'bmatrix': '矩阵',
+        'vmatrix': '行列式', 'Vmatrix': '矩阵',
+        'array': '表格', 'tabular': '表格',
+        'equation': '', 'equation*': '', 'gather': '方程组', 'gathered': '方程组', 'split': '方程组',
+    }
+    prefix = env_names.get(env_type, '')
+    rows = [r.strip() for r in body.split('\\\\') if r.strip()]
+    if not rows:
+        return f'，{prefix}，'
+
+    spoken_rows = []
+    for row in rows:
+        clean = row.replace('&', '，')
+        clean = re.sub(r'\\[{}]', '', clean)
+        clean = clean.replace('{', '').replace('}', '')
+        read = _latex_line_toSpeech(clean).strip('，')
+        if read:
+            spoken_rows.append(read)
+
+    if not spoken_rows:
+        return f'，{prefix}，'
+    if len(spoken_rows) == 1:
+        return f'，{prefix}，{spoken_rows[0]}，'
+
+    result = ''
+    if prefix:
+        result += f'，{prefix}，'
+    for i, row in enumerate(spoken_rows):
+        if env_type == 'cases':
+            result += f'当{row}'
+            if i < len(spoken_rows) - 1:
+                result += '时；'
+        else:
+            result += f'第{i + 1}行，{row}'
+            if i < len(spoken_rows) - 1:
+                result += '；'
+    return f'，{result}，'
 
 
 @bp.route('/api/chat/tts', methods=['POST'])

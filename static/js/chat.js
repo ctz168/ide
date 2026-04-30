@@ -1435,71 +1435,246 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
     }
 
     /**
-     * Convert a LaTeX inline formula to readable Chinese text.
-     * E.g. "x^2 + y^2" → "x 的平方 加 y 的平方"
-     * E.g. "a \\geq b" → "a 大于等于 b"
-     * E.g. "\\frac{a}{b}" → "a 分之 b"
+     * Convert a LaTeX formula to readable Chinese text.
+     * Supports inline and display math, including complex structures.
      */
     function _latexToSpeech(latex) {
         if (!latex) return '';
         let s = latex.trim();
-        // Too complex → just say "公式"
-        if (s.length > 80 || s.includes('\\matrix') || s.includes('\\begin') || s.includes('\\array') || s.includes('\\cases')) {
+        // Increase limit — we'll try harder to read complex formulas
+        if (s.length > 300) {
+            // For very long display math, split by \\ and read each line
+            const lines = s.split(/\\\\/).map(l => l.trim()).filter(l => l);
+            if (lines.length > 1 && lines.length <= 5) {
+                const read = lines.map(line => _latexLineToSpeech(line)).filter(r => r && r !== '，公式，');
+                if (read.length > 0) return '，' + read.join('，') + '，';
+            }
             return '，公式，';
         }
-        // Common LaTeX symbols → Chinese spoken form
+
+        // Handle \begin{...}...\end{...} environments (matrix, cases, aligned, etc.)
+        const envMatch = s.match(/\\begin\{(\w+)\}([\s\S]*?)\\end\{\1\}/);
+        if (envMatch) {
+            const envType = envMatch[1];
+            const body = envMatch[2];
+            return _latexEnvToSpeech(envType, body);
+        }
+
+        return _latexLineToSpeech(s);
+    }
+
+    /**
+     * Convert a single-line LaTeX expression to speech (no environments).
+     */
+    function _latexLineToSpeech(s) {
+        if (!s || s.trim().length === 0) return '，公式，';
+        s = s.trim();
+
+        // Step 1: Expand \left / \right delimiters
+        s = s.replace(/\\left/g, '');
+        s = s.replace(/\\right/g, '');
+
+        // Step 2: Handle big operators with sub/sup: \sum_{i=1}^{n}, \int_0^{\infty}, \lim_{x \to 0}
+        s = _handleBigOperators(s);
+
+        // Step 3: Common LaTeX symbols → Chinese
         const symbols = {
             '\\geq': '大于等于', '\\ge': '大于等于', '\\leq': '小于等于', '\\le': '小于等于',
             '\\neq': '不等于', '\\ne': '不等于', '\\approx': '约等于', '\\equiv': '恒等于',
             '\\times': '乘', '\\div': '除以', '\\pm': '加减', '\\mp': '减加',
             '\\infty': '无穷大', '\\partial': '偏', '\\nabla': '梯度',
-            '\\int': '积分', '\\sum': '求和', '\\prod': '乘积', '\\lim': '极限',
-            '\\sin': '正弦', '\\cos': '余弦', '\\tan': '正切', '\\log': '对数', '\\ln': '自然对数',
-            '\\exp': 'e的', '\\sqrt': '根号', '\\cdot': '点', '\\ldots': '等等', '\\cdots': '等等',
-            '\\forall': '对于所有', '\\exists': '存在', '\\in': '属于', '\\notin': '不属于',
-            '\\subset': '包含于', '\\supset': '包含', '\\cup': '并', '\\cap': '交',
-            '\\rightarrow': '趋近于', '\\leftarrow': '左指', '\\Rightarrow': '推出',
+            '\\sin': '正弦', '\\cos': '余弦', '\\tan': '正切', '\\sec': '正割', '\\csc': '余割',
+            '\\arcsin': '反正弦', '\\arccos': '反余弦', '\\arctan': '反正切',
+            '\\log': '对数', '\\ln': '自然对数', '\\log_': '底数', 'lg': '常用对数',
+            '\\exp': 'e的', '\\cdot': '点', '\\ldots': '等等', '\\cdots': '等等', '\\vdots': '竖排省略', '\\ddots': '斜排省略',
+            '\\forall': '对于所有', '\\exists': '存在', '\\nexists': '不存在',
+            '\\in': '属于', '\\notin': '不属于',
+            '\\subset': '包含于', '\\subseteq': '包含或等于', '\\supset': '包含', '\\supseteq': '包含或等于',
+            '\\cup': '并', '\\cap': '交', '\\setminus': '差集', '\\emptyset': '空集',
+            '\\rightarrow': '趋近于', '\\to': '到', '\\leftarrow': '左指',
+            '\\Rightarrow': '推出', '\\implies': '推出',
             '\\Leftarrow': '当且仅当', '\\iff': '当且仅当',
-            '\\alpha': '阿尔法', '\\beta': '贝塔', '\\gamma': '伽马', '\\delta': '德尔塔',
-            '\\epsilon': '艾普西隆', '\\zeta': '泽塔', '\\eta': '伊塔', '\\theta': '西塔',
-            '\\lambda': '兰姆达', '\\mu': '缪', '\\sigma': '西格玛', '\\omega': '欧米伽',
-            '\\pi': '派', '\\phi': '斐', '\\psi': '普赛', '\\rho': '柔',
+            '\\Rightarrow': '推出', '\\Leftrightarrow': '等价于',
+            '\\hbar': 'h拔', '\\ell': 'ell', '\\Re': '实部', '\\Im': '虚部',
+            '\\deg': '度', '\\arg': '幅角', '\\dim': '维数', '\\det': '行列式',
+            '\\min': '最小值', '\\max': '最大值', '\\sup': '上确界', '\\inf': '下确界',
+            '\\operatorname': '', // strip, content follows
+            '\\text': '', '\\mathrm': '', '\\mathbf': '', '\\mathit': '', '\\mathcal': '', '\\mathbb': '',
+            '\\hat': '帽子', '\\bar': '平均', '\\vec': '向量', '\\tilde': '波浪', '\\dot': '点', '\\ddot': '双点',
+            '\\widehat': '帽子', '\\overline': '上划线', '\\underline': '下划线',
+            '\\quad': ' ', '\\qquad': ' ', '\\,', ' ', '\\;', ' ', '\\!': '', '\\:': ' ',
+            '\\oplus': '直加', '\\otimes': '张量积', '\\odot': '点积',
+            '\\le': '小于等于', '\\ge': '大于等于',
+            '\\lt': '小于', '\\gt': '大于',
+            '\\neg': '非', '\\land': '且', '\\lor': '或', '\\lnot': '非',
         };
-        // Replace known symbols first
-        for (const [cmd, spoken] of Object.entries(symbols)) {
+        // Greek letters — lowercase
+        const greekLower = {
+            '\\alpha': '阿尔法', '\\beta': '贝塔', '\\gamma': '伽马', '\\delta': '德尔塔',
+            '\\epsilon': '艾普西隆', '\\varepsilon': '小艾普西隆', '\\zeta': '泽塔', '\\eta': '伊塔',
+            '\\theta': '西塔', '\\vartheta': '小西塔', '\\iota': '约塔', '\\kappa': '卡帕',
+            '\\lambda': '兰姆达', '\\mu': '缪', '\\nu': '纽', '\\xi': '克赛',
+            '\\omicron': '奥密克戎', '\\pi': '派', '\\varpi': '小派',
+            '\\rho': '柔', '\\varrho': '小柔',
+            '\\sigma': '西格玛', '\\varsigma': '小西格玛',
+            '\\tau': '套', '\\upsilon': '宇普西隆', '\\phi': '斐', '\\varphi': '小斐',
+            '\\chi': '开', '\\psi': '普赛', '\\omega': '欧米伽',
+        };
+        // Greek letters — uppercase
+        const greekUpper = {
+            '\\Gamma': '大伽马', '\\Delta': '大德尔塔', '\\Theta': '大西塔',
+            '\\Lambda': '大兰姆达', '\\Xi': '大克赛', '\\Pi': '大派',
+            '\\Sigma': '大西格玛', '\\Upsilon': '大宇普西隆', '\\Phi': '大斐',
+            '\\Psi': '大普赛', '\\Omega': '大欧米伽',
+        };
+        // Sort by length descending so longer commands match first
+        const allSymbols = { ...greekUpper, ...greekLower, ...symbols };
+        const sortedKeys = Object.keys(allSymbols).sort((a, b) => b.length - a.length);
+        for (const cmd of sortedKeys) {
+            const spoken = allSymbols[cmd];
+            if (!spoken) {
+                // Just strip the command
+                s = s.replace(new RegExp(cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '');
+                continue;
+            }
             s = s.replace(new RegExp(cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), ` ${spoken} `);
         }
-        // \frac{a}{b} → a 分之 b
+
+        // Step 4: \frac{a}{b} → a 分之 b (support one level of nesting)
         s = s.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '$1 分之 $2');
-        // \sqrt[n]{x} → x 的 n 次根号
+        // Nested frac: \frac{... 分之 ...}{...} that leaked through → second pass
+        s = s.replace(/\\frac/g, ' 分之 ');
+
+        // Step 5: \sqrt[n]{x} → x 的 n 次根号
         s = s.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '$2 的 $1 次根号');
         // \sqrt{x} → 根号 x
         s = s.replace(/\\sqrt\{([^{}]*)\}/g, '根号 $1');
-        // x^{abc} → x 的 abc 次方
-        s = s.replace(/\^{([{}][^{}]*[}])|(?:\^{([^{}]+))}/g, (match, g1, g2) => {
-            const inner = g1 || g2 || '';
-            const content = inner.replace(/[{}]/g, '');
-            return ` 的 ${content} 次方`;
+        s = s.replace(/\\sqrt/g, '根号');
+
+        // Step 6: Readable parentheses
+        s = s.replace(/\\left\(/g, '（').replace(/\\right\)/g, '）');
+        s = s.replace(/\\left\[/g, '，其中，').replace(/\\right\]/g, '');
+
+        // Step 7: Superscripts  x^{abc} → x 的 abc 次方
+        s = s.replace(/\^\{([^{}]*)\}/g, (_, inner) => {
+            if (!inner.trim()) return '';
+            return ` 的 ${inner.trim()} 次方`;
         });
-        // Simple ^2, ^3, ^n (without braces)
+        // Simple ^2, ^3, ^n
         s = s.replace(/\^(\d+)/g, (m, n) => {
             const map = {'2': '平方', '3': '立方'};
             return map[n] ? ` 的${map[n]}` : ` 的 ${n} 次方`;
         });
-        // x_{abc} → x 的下标 abc
-        s = s.replace(/_{([{}][^{}]*[}])|(?:_{([^{}]+))}/g, (match, g1, g2) => {
-            const inner = g1 || g2 || '';
-            const content = inner.replace(/[{}]/g, '');
-            return ` 下标 ${content}`;
+        // Remove stray ^ followed by non-digit (e.g. ^{ already handled)
+        s = s.replace(/\^/g, ' 的');
+
+        // Step 8: Subscripts  x_{abc} → x 下标 abc
+        s = s.replace(/_\{([^{}]*)\}/g, (_, inner) => {
+            if (!inner.trim()) return '';
+            return ` 下标 ${inner.trim()}`;
         });
-        // Remove remaining backslash commands that weren't matched
+        // Simple _2, _i
+        s = s.replace(/_([a-zA-Z0-9])/g, ' 下标 $1');
+
+        // Step 9: Readable brackets → spoken form
+        s = s.replace(/\(/g, '（').replace(/\)/g, '）');
+        s = s.replace(/\[/g, '，其中，').replace(/\]/g, '');
+
+        // Step 10: Remove remaining backslash commands
         s = s.replace(/\\[a-zA-Z]+/g, '');
-        // Remove remaining braces/brackets
+        // Remove remaining braces
         s = s.replace(/[{}]/g, '');
-        // Clean up whitespace
+
+        // Step 11: Clean up
+        s = s.replace(/,+/g, '，');
         s = s.replace(/\s+/g, ' ').trim();
-        if (!s) return '，公式，';
+        // Remove empty parens
+        s = s.replace(/（）/g, '');
+        s = s.replace(/（\s+）/g, '');
+
+        if (!s || s.length < 1) return '，公式，';
         return `，${s}，`;
+    }
+
+    /**
+     * Handle big operators like \sum, \int, \prod, \lim with sub/superscripts.
+     * E.g. \sum_{i=1}^{n} x_i → "i从1到n的求和，x下标i"
+     * E.g. \int_0^1 → "0到1的积分"
+     * E.g. \lim_{x \to 0} → "x到0的极限"
+     */
+    function _handleBigOperators(s) {
+        // Pattern: \operator_{sub}^{sup} or \operator^{sup}_{sub}
+        s = s.replace(/\\(sum|prod|coprod|int|iint|iiint|oint|lim|sup|inf|min|max)\s*(?:_\{([^{}]*)\})?\s*(?:\^\{([^{}]*)\})?/g, (match, op, sub, sup) => {
+            const opNames = {
+                'sum': '求和', 'prod': '乘积', 'coprod': '余乘积',
+                'int': '积分', 'iint': '二重积分', 'iiint': '三重积分', 'oint': '环路积分',
+                'lim': '极限', 'sup': '上确界', 'inf': '下确界', 'min': '最小值', 'max': '最大值'
+            };
+            const name = opNames[op] || op;
+            if (sub || sup) {
+                // Clean sub/sup: resolve nested commands like \infty, \to
+                let subClean = sub ? sub.replace(/\\to/g, '到').replace(/\\infty/g, '无穷大').trim() : '';
+                let supClean = sup ? sup.replace(/\\infty/g, '无穷大').trim() : '';
+                if (subClean && supClean) {
+                    return ` ${subClean}到${supClean}的${name} `;
+                } else if (subClean) {
+                    return ` ${subClean}的${name} `;
+                } else if (supClean) {
+                    return ` 到${supClean}的${name} `;
+                }
+            }
+            return ` ${name} `;
+        });
+        return s;
+    }
+
+    /**
+     * Convert LaTeX environments (matrix, cases, aligned, bmatrix, etc.) to speech.
+     */
+    function _latexEnvToSpeech(envType, body) {
+        const envNames = {
+            'cases': '分段函数', 'aligned': '方程组', 'align': '方程组',
+            'matrix': '矩阵', 'pmatrix': '矩阵', 'bmatrix': '矩阵',
+            'vmatrix': '行列式', 'Vmatrix': '矩阵',
+            'array': '表格', 'tabular': '表格',
+            'equation': '', 'equation*': '', 'gather': '方程组', 'gathered': '方程组',
+            'split': '方程组',
+        };
+        const prefix = envNames[envType] || '';
+        // Split rows by \\
+        const rows = body.split(/\\\\/).map(r => r.trim()).filter(r => r.length > 0);
+        if (rows.length === 0) return `，${prefix}，`;
+
+        // Read each row
+        const spokenRows = rows.map((row, idx) => {
+            // Remove & separators, replace with逗号
+            let clean = row.replace(/&/g, '，');
+            // Strip \left \right \{ \}
+            clean = clean.replace(/\\left/g, '').replace(/\\right/g, '');
+            clean = clean.replace(/\\[{}]/g, '');
+            clean = clean.replace(/[{}]/g, '');
+            // Convert the row content
+            const read = _latexLineToSpeech(clean);
+            // Remove leading/trailing commas from the speech
+            return read.replace(/^，+|，+$/g, '');
+        }).filter(r => r && r.length > 0);
+
+        if (spokenRows.length === 0) return `，${prefix}，`;
+        if (spokenRows.length === 1) return `，${prefix}，${spokenRows[0]}，`;
+
+        // For 2+ rows, enumerate
+        let result = '';
+        if (prefix) result += `，${prefix}，`;
+        spokenRows.forEach((row, i) => {
+            if (envType === 'cases') {
+                result += `当${row}`;
+                if (i < spokenRows.length - 1) result += '时；';
+            } else {
+                result += `第${i + 1}行，${row}`;
+                if (i < spokenRows.length - 1) result += '；';
+            }
+        });
+        return `，${result}，`;
     }
 
     /**
