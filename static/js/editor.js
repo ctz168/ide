@@ -864,6 +864,7 @@ const EditorManager = (() => {
         for (const tp of tabOrder) {
             if (tp.endsWith('/' + tail) || tp.endsWith(tail)) return tp;
         }
+        console.log('[resolveTabPath] no match for:', rawPath, 'tabs:', Object.keys(tabs));
         return null;
     }
 

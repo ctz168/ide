@@ -5897,7 +5897,7 @@ def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
     If ALL tools in the batch are read-only, execute them concurrently (max 8 threads).
     If ANY tool has side effects (write/delete/run), fall back to sequential execution.
     
-    Returns list of (tool_name, ok, result_str, elapsed, tool_call_id) tuples.
+    Returns list of (idx, tool_name, tool_args, ok, result_str, elapsed, tool_call_id) tuples.
     """
     # Check if all tools are read-only
     all_readonly = True
@@ -5921,7 +5921,7 @@ def _execute_tools_parallel(tool_calls_raw, emit_fn=None):
         tool_args, _ = _parse_tool_args(raw_args, tool_name)
         tool_call_id = tc.get('id', f'call_{tool_name}')
         ok, result_str, elapsed = execute_agent_tool_with_timeout(tool_name, tool_args)
-        return (idx, tool_name, ok, result_str, elapsed, tool_call_id)
+        return (idx, tool_name, tool_args, ok, result_str, elapsed, tool_call_id)
 
     max_workers = min(len(tool_calls_raw), 8)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -7415,15 +7415,15 @@ def run_agent_loop(user_message, llm_config, history=None, stream_callback=None)
         if parallel_results is not None:
             # Parallel execution succeeded — emit all results
             _batch_results = []
-            for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
+            for idx, tool_name, tool_args, ok, result_str, elapsed, tool_call_id in parallel_results:
                 all_tool_calls.append({'name': tool_name})
-                _emit({'type': 'tool_start', 'tool': tool_name})
+                _emit({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})
                 _emit({'type': 'tool_result', 'tool': tool_name, 'ok': ok,
                        'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2)})
                 context.append({'role': 'tool', 'tool_call_id': tool_call_id,
                                 'name': tool_name, 'tool': tool_name, 'content': result_str,
                                 'time': datetime.now().isoformat()})
-                _batch_results.append((tool_name, {}, ok, result_str))
+                _batch_results.append((tool_name, tool_args, ok, result_str))
             context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (parallel batch) ===
@@ -8172,16 +8172,16 @@ def run_agent_loop_stream(user_message, llm_config, conv_id=None, is_retry=False
         if parallel_results is not None:
             # Parallel execution
             _batch_results = []
-            for idx, tool_name, ok, result_str, elapsed, tool_call_id in parallel_results:
+            for idx, tool_name, tool_args, ok, result_str, elapsed, tool_call_id in parallel_results:
                 tool_calls_in_progress.append({'name': tool_name})
-                yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name})}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
                 yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'ok': ok, 'result': _truncate(result_str, 30000), 'elapsed': round(elapsed, 2), 'max_iterations': MAX_AGENT_ITERATIONS})}\n\n"
                 tool_msg = {'role': 'tool', 'tool_call_id': tool_call_id,
                             'name': tool_name, 'tool': tool_name, 'content': result_str,
                             'time': datetime.now().isoformat()}
                 context.append(tool_msg)
                 history.append(tool_msg)
-                _batch_results.append((tool_name, {}, ok, result_str))
+                _batch_results.append((tool_name, tool_args, ok, result_str))
             context, _ = _compress_context(context, max_tokens=_get_context_budget(llm_config))
             
             # === Self-Correction Check (parallel batch) ===

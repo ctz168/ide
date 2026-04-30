@@ -1053,6 +1053,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (!window.EditorManager || !toolArgs) return;
         const filePath = toolArgs.path || toolArgs.file;
         if (filePath && ['write_file', 'edit_file', 'append_file'].includes(toolName)) {
+            console.log('[syncEditor] reloading:', toolName, filePath);
             window.EditorManager.reloadIfOpen(filePath);
         }
         if (toolName === 'delete_path' && filePath) {
