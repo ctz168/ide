@@ -1251,6 +1251,7 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         if (!currentStreamEl) return;
 
         streamBuffer = newContent || '';
+        ttsAllSpokenPos = 0; // Reset TTS position since buffer changed
 
         const contentEl = currentStreamEl.querySelector('.chat-content');
         if (contentEl) {
@@ -1419,13 +1420,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
         text = text.replace(/\$\$[\s\S]*?\$\$/g, '，公式，');
         // ── Inline math ($...$): convert LaTeX to readable text ──
         text = text.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, (_, latex) => {
-            return _latexToSpeech(latex);
+            try { return _latexToSpeech(latex); } catch(e) { console.warn('[TTS] latexToSpeech error:', e); return '，公式，'; }
         });
         // ── Remove emojis and icons ──
-        // Common emoji ranges + pictographic symbols + dingbats + misc symbols
-        text = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{2300}-\u{23FF}\u{2B50}\u{2B55}\u{2934}\u{2935}\u{25AA}-\u{25FE}\u{2601}-\u{2604}\u{260E}\u{2614}\u{2615}\u{2648}-\u{2653}\u{267F}\u{2693}\u{26A1}\u{26AA}\u{26AB}\u{26BD}\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2702}\u{2705}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}\u{27BF}\u{2934}\u{2935}\u{23CF}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25FB}-\u{25FE}\u{261D}\u{263A}-\u{263C}\u{2640}-\u{2640}\u{2642}\u{265F}-\u{2660}\u{2663}\u{2665}-\u{2668}\u{267B}\u{2692}-\u{2694}\u{2696}-\u{2697}\u{2699}\u{269B}-\u{269C}\u{26A0}-\u{26A1}\u{26AA}-\u{26AB}\u{26B0}-\u{26B1}\u{26BD}-\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}\u{E0020}-\u{E007F}]/gu, '');
-        // Also remove common icon-like text sequences used in chat
-        text = text.replace(/\s*[📥🚀✅❌⚠️💡📌🔍🔧📦📁📄✨🎯🔥💬📌📌🚫🛠️🔗⭐📝📊👍👎🙏💪✋🎉🔒🔓🔑💻🖥️📱🌐🔧⚙️📌📎🗑️✏️📝📄📋📁📂📁📂💾📤📥↩️↪️➡️⬅️⬆️⬇️↗️↘️↙️↖️🔄🔁🔂▶️⏸️⏹️⏺️⏩⏪⏭️⏮️🔀🔁🔂📱💻🖥️⌨️🖥️🖨️🖲️💾💿📀️🎥🎞️📽️🎬📺📷📸📹📼🔍🔎💡🔦🏮📔📕📖📗📘📙📚📓📒📃📜📄📰🗞️📑🔖🏷️💰💴💵💷💶💳💹🏧💱💲✉️📧📨📩📤📥📦📫📪📬📭📮🗳️✏️✒️🖋️🖊️🖌️🖍️📝💼📁📂🗂️📅📆🗒️🗓️📇📈📉📊📋📌📍📎🖇️📏📐✂️🗃️🗄️🗑️🔒🔓🔏🔐🔑🗝️🔨⛏️⚒️🛠️🗡️⚔️🔫🏹🛡️🔧🔩⚙️🗜️⚖️🔗⛓️🧰🧲🧪🧫🧬🔬🔭📡💉🩸💊🩹🩺🚪🛏️🛋️🪑🚽🚿🛁🪒🧴🧷🧹🧺🧻🧼🧽🧯🛒🚬⚰️⚱️🗿]/gu, ' ');
+        try {
+            text = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{2300}-\u{23FF}\u{2B50}\u{2B55}\u{2934}\u{2935}\u{25AA}-\u{25FE}\u{2601}-\u{2604}\u{260E}\u{2614}\u{2615}\u{2648}-\u{2653}\u{267F}\u{2693}\u{26A1}\u{26AA}\u{26AB}\u{26BD}\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2702}\u{2705}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}\u{27BF}\u{2934}\u{2935}\u{23CF}\u{23E9}-\u{23F3}\u{23F8}-\u{23FA}\u{25FB}-\u{25FE}\u{261D}\u{263A}-\u{263C}\u{2640}-\u{2640}\u{2642}\u{265F}-\u{2660}\u{2663}\u{2665}-\u{2668}\u{267B}\u{2692}-\u{2694}\u{2696}-\u{2697}\u{2699}\u{269B}-\u{269C}\u{26A0}-\u{26A1}\u{26AA}-\u{26AB}\u{26B0}-\u{26B1}\u{26BD}-\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}\u{26FD}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2764}\u{2795}-\u{2797}\u{27A1}\u{27B0}]/gu, '');
+        } catch(e) {
+            // Fallback for older browsers that don't support some Unicode ranges
+            text = text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '');
+        }
+        // Also remove common icon-like text sequences (duplicate emojis already handled above)
         // Remove lines that are just symbols/punctuation (after emoji removal)
         text = text.replace(/\n{3,}/g, '\n\n').trim();
         text = text.replace(/^[^\w\u4e00-\u9fff]{2,}$/gm, '');
@@ -1848,10 +1852,16 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
      */
     async function speakText(text) {
         if (!text || text.trim().length < 2) return;
-        const cleaned = cleanTtsText(text);
+        let cleaned;
+        try {
+            cleaned = cleanTtsText(text);
+        } catch(e) {
+            console.warn('[TTS] cleanTtsText error:', e);
+            cleaned = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`]+`/g, '').trim();
+        }
         if (cleaned.length < 2) return;
 
-        console.log('[TTS] speakText called:', cleaned.substring(0, 50));
+        console.log('[TTS] speakText called, cleaned length:', cleaned.length, 'text:', cleaned.substring(0, 80));
 
         // Mark as busy BEFORE async fetch to prevent duplicate calls
         ttsSpeaking = true;
@@ -1866,7 +1876,8 @@ Do NOT execute any tools. Only generate the plan.\n\nUser request: `;
                 body: JSON.stringify({ text: cleaned, voice: 'zh-CN-YunxiNeural' })
             });
             if (!resp.ok) {
-                console.warn('[TTS] fetch failed:', resp.status);
+                const errBody = await resp.text().catch(() => '');
+                console.warn('[TTS] fetch failed:', resp.status, errBody);
                 ttsSpeaking = false;
                 ttsCurrentAudio = null;
                 updateTtsButtonLabel(ttsBtnEl);
